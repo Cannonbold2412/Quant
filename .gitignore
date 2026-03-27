@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+storage/*.json
+storage/tmp/
+storage/tokens/
+output/
+credentials/google_drive/*.json
+
+.ipynb_checkpoints/

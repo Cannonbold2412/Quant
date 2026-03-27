@@ -1,0 +1,8 @@
+google-api-python-client
+google-auth
+google-auth-oauthlib
+nbformat
+numpy
+openai
+pandas
+pyarrow
