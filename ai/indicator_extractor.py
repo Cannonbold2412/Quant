@@ -177,7 +177,7 @@ class IndicatorExtractor:
     ) -> dict[str, Any]:
         system_prompt = "Return only valid JSON."
         user_prompt = (
-            "Extract all the indicators from this code in this schema:\n"
+            "Extract all the trading indicators from this code in this schema:\n"
             "{\n"
             '  "indicators": [\n'
             "    {\n"
