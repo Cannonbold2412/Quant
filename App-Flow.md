@@ -73,11 +73,17 @@ Every arrow into and out of an agent passes through the **job queue** and the **
    │    run evaluate.py   ← agent can neither read nor edit this
    │        │
    │        ▼
-   │    read the honest score
+   │    HARD BAR (enforced here, not in program.md)
+   │    min trades · max OOS drawdown · breadth · 2× costs · complexity
+   │        │
+   │   fail ├──────────────► discard, NO score computed
+   │        │
+   │   pass ▼
+   │    honest_score = SR_oos − 2·SE(SR) − SR*(N_trials)
    │        │
    │   ┌────┴──────────────┐
    │   │                   │
-   │ clears bar?        worse/equal
+   │ improved?          worse/equal
    │   │                   │
    │   ▼                   ▼
    │ keep commit        git reset
@@ -93,6 +99,8 @@ Every arrow into and out of an agent passes through the **job queue** and the **
 ### 1A.1 Rules
 
 - **`strategy.py` is the only writable file.** `data.py` is read-only; `evaluate.py` is neither readable nor writable.
+- **The bar is enforced in `evaluate.py`, not merely stated in `program.md`** (TRD §4A.3b). `program.md` tells the agent what it is aiming at; `evaluate.py` decides whether it got there. Otherwise the agent grades its own homework.
+- **One float drives the loop.** All other metrics are computed and stored, but only `honest_score` decides keep vs discard.
 - **`program.md` is human-edited.** As the agent makes avoidable mistakes, the human adds a line. That file — not an agent-maintained knowledge base — is where accumulated wisdom lives in v1.
 - **Every run gets a status:** `keep` · `discard` · `crash`. No result goes unjudged.
 - **Do not stop to ask the human.** Human gates exist only at paper trading and live capital.
@@ -653,3 +661,4 @@ Check vault budget for this FAMILY (not this strategy)
 |---|---|
 | 2026-07-27 | Initial document. All 11 flows mapped, evidence-based stop conditions, trial counting, curiosity loop closure, two human gates, error/edge cases, traceability chain. |
 | 2026-07-27 | Added §1A Flow 0 (the nanoAQRL loop that actually runs first), §15 null-world calibration, §16 vault access. |
+| 2026-07-27 | Flow 0 updated for the resolved honest score — the hard bar now gates inside `evaluate.py` before any score is computed, and one float drives keep/discard. |

@@ -75,8 +75,8 @@ Stages 1–13 remain the destination. None of them begin until Stage 0 has run f
 
 | # | Task | Why this order |
 |---|---|---|
-| **0.1** | **Decide the honest score** (TRD §4A) | A thinking task, not a coding task. Nothing works until this exists — a bigger loop on a dishonest score just produces wrong answers faster |
-| **0.2** | **Build `evaluate.py`** around that score | Structurally isolated: the agent can neither read nor edit it |
+| **0.1** | **Implement the honest score** — `SR_oos − 2·SE(SR) − SR*(N_trials)` (TRD §4A, ✔ resolved) | Purged/embargoed walk-forward at 2× costs. Embargo ≥ holding period. Returns one float |
+| **0.2** | **Build `evaluate.py`** around that score, with the **hard bar enforced inside it** | Structurally isolated: the agent can neither read nor edit it. The bar gates before any score is computed |
 | **0.3** | **Run the null-world test** (TRD §8A.3) | Prove the scorer does not invent discoveries in pure noise. Fix and re-run until FDR is low |
 | **0.4** | **Build the vault** (TRD §8A.2) | Lock the holdout *before* the loop ever touches real data |
 | **0.5** | Write `program.md` and `strategy.py`, wire the keep/reset loop | Small, once 0.1–0.4 exist |
@@ -466,8 +466,8 @@ Not in the one-shot build:
 
 ## 19. Open Planning Questions
 
-- [ ] **★ The honest score (TRD §4A) — Stage 0.1, blocks everything**
-- [ ] The numeric acceptance bar for the first campaign, written before searching
+- [x] ~~The honest score~~ — **resolved, TRD §4A**
+- [ ] The numeric acceptance bar and `z` multiplier for the first campaign, written before searching. *Owner: human*
 - [ ] Vault composition and per-family peek budget
 - [ ] Which market/timeframe is the first fully-supported profile? (Leaning `nse_equity` × `daily` — best existing data and domain knowledge)
 - [ ] Do we port existing JMA+ATR work into the operator library, or rewrite clean against the new base class?
@@ -483,3 +483,4 @@ Not in the one-shot build:
 |---|---|
 | 2026-07-27 | Initial plan. 13 stages, validation-engine-first ordering, A2/A3 before A1, 8 milestones, risk register, reuse mapping from the existing repo. |
 | 2026-07-27 | Added **Stage 0 (nanoAQRL)** as the real starting point and **M0 (null-world FDR)** as the gating milestone. Added reward-hacking and selection-bias risks. Prototype code removed from the tree; reuse mapping now points at git history `d08e812`. |
+| 2026-07-27 | Stage 0.1 changed from "decide the honest score" to "implement" it — resolved in TRD §4A. Stage 0.2 now enforces the hard bar inside `evaluate.py`. Remaining Stage 0 unknowns are numeric choices owned by the human. |

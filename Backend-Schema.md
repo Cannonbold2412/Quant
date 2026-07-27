@@ -227,6 +227,19 @@ One row per phase run of `evaluate.py`.
 | experiment_id | FK | |
 | phase | TEXT | `P0` \| `P1` \| `P2` \| `P3` \| `P4` |
 | result | TEXT | `pass` \| `fail` \| `warn` \| `error` |
+| **★ The honest score (TRD §4A)** | | |
+| bar_result | TEXT | `pass` \| `fail` — the pre-registered gate. On `fail`, no score is computed |
+| bar_failed_on | TEXT | Which bar item failed: `min_trades` \| `max_drawdown` \| `breadth` \| `cost_stress` \| `complexity` |
+| **honest_score** | REAL | `sr_oos − z·se_sr − trials_haircut`. **The single float that drives keep/discard** |
+| sr_oos | REAL | Sharpe on concatenated purged/embargoed walk-forward test windows, at 2× costs |
+| se_sr | REAL | Standard error incl. skew and kurtosis terms |
+| z_multiplier | REAL | 2.0 (~97.5% one-sided) or 1.65 (~95%) — recorded, since changing it changes comparability |
+| trials_haircut | REAL | `SR*(N_trials)` — expected best-under-null for this family |
+| n_trials_used | INTEGER | The family trial count fed into the haircut |
+| oos_skew, oos_kurtosis, oos_n_obs | REAL/INT | Inputs to `se_sr`, stored for audit |
+| embargo_bars, holding_period_bars | INTEGER | Embargo must be ≥ holding period or trades leak across the split |
+| autocorr_adjusted | INTEGER (bool) | Whether Lo's correction was applied |
+| complexity_count | INTEGER | Rules / free parameters — the tertiary criterion |
 | **Core metrics** | | |
 | sharpe, sortino, calmar | REAL | |
 | cagr, total_return | REAL | |
@@ -734,8 +747,9 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 |---|---|
 | id, uid | |
 | campaign_label | TEXT |
-| min_score, max_drawdown, min_trades, max_complexity | REAL/INTEGER |
+| min_score, max_drawdown, min_trades, min_breadth, max_complexity | REAL/INTEGER |
 | cost_stress_multiple | REAL |
+| z_multiplier | REAL |
 | locked_at | TEXT |
 | locked_by | TEXT |
 | superseded_by | FK |
@@ -750,3 +764,4 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 |---|---|
 | 2026-07-27 | Initial schema. Experiments as the central table with full provenance columns, trial-count support for deflated Sharpe, spec hashing for duplicate detection, knowledge graph edges with evidence counts, lease-based job queue. |
 | 2026-07-27 | Added §0A (build 3 tables first, not 15; code stays in git with `code_commit` linking) and §15 integrity tables — `vault_access_log`, `null_world_runs`, `acceptance_bars`. |
+| 2026-07-27 | Added the honest-score column group to `evaluations` — `honest_score` plus every input to it (`sr_oos`, `se_sr`, `z_multiplier`, `trials_haircut`, skew/kurtosis/n, embargo vs holding period) and the `bar_result` gate columns. Added `min_breadth` and `z_multiplier` to `acceptance_bars`. |

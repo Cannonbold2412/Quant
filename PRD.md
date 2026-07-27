@@ -356,12 +356,17 @@ If the objective is *best*, the loop never stops. It keeps grinding for a higher
 
 Instead: **write the acceptance bar down before the search begins**, and take the *first* strategy that clears it and holds.
 
-The bar lives in `program.md` and is decided in advance:
-- Minimum out-of-sample score
-- Maximum drawdown (survivable financially and emotionally)
+The bar is decided in advance and **written into `program.md` *and* enforced in `evaluate.py`** (TRD §4A.3b) — stated in the first so the agent knows the target, enforced in the second so the agent cannot grade its own homework:
+- Minimum out-of-sample score (the honest score, TRD §4A)
+- Maximum out-of-sample drawdown (survivable financially and emotionally)
 - Minimum trade count
+- Minimum breadth across instruments
 - Maximum complexity (number of rules/filters)
 - Must survive costs at 2× assumed level
+
+Failing any item returns `discard` with **no score computed**. The bar gates; the score ranks (TRD §4A.3a).
+
+There is a second reason to stop early, beyond selection bias: **out-of-sample data is a consumable resource.** Every iteration against the walk-forward window makes it slightly less out-of-sample, until it has simply been fitted more slowly (TRD §4A.3c).
 
 The strategy found on attempt 400 is mostly better *at fitting history*. The one that clears a pre-set bar on attempt 30 is more likely to survive live. Fewer trials means less selection bias, which means the out-of-sample number remains believable.
 
@@ -440,8 +445,8 @@ Adopt the throughput. Do **not** adopt the keep/discard rule unmodified. In his 
 
 Tracked here until resolved in a session, then moved into the body of the docs.
 
-- [ ] **★ What is the honest score — our `val_bpb` equivalent? Blocks everything else (TRD §4A)**
-- [ ] The numeric acceptance bar for §13.2, written before the search begins
+- [x] ~~What is the honest score?~~ — **resolved: the deflated lower bound on out-of-sample Sharpe (TRD §4A)**
+- [ ] The numeric acceptance bar for §13.2, written before the search begins. *Owner: human*
 - [ ] Which specific statistical tests are gating (hard fail) vs advisory in Phase III?
 - [ ] Numeric thresholds for each promotion gate (deflated Sharpe floor, PBO ceiling, MC 5th-percentile floor)
 - [ ] How is "genuinely different" measured for Phase B admission (correlation ceiling, and over which window)?
@@ -459,3 +464,4 @@ Tracked here until resolved in a session, then moved into the body of the docs.
 |---|---|
 | 2026-07-27 | Initial document. Vision, 5-agent architecture, promotion rules, health monitoring, portfolio allocation, success criteria captured from architecture sessions. |
 | 2026-07-27 | Reconciled against karpathy/autoresearch (§14). Added null-world false discovery rate as the headline integrity metric (§4.5), the two-phase search objective, satisficing over maximising, ranked acceptance criteria with a simplicity penalty, and the diversification-as-anti-overfitting argument (§13). |
+| 2026-07-27 | Honest score resolved (TRD §4A). §13.2 updated: the bar is stated in `program.md` and enforced in `evaluate.py`; failing it returns `discard` with no score; out-of-sample data noted as a consumable resource. |
