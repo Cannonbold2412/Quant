@@ -75,7 +75,7 @@ Stages 1–13 remain the destination. None of them begin until Stage 0 has run f
 
 | # | Task | Why this order |
 |---|---|---|
-| **0.1** | **Implement the honest score** — `SR_oos − 2·SE(SR) − SR*(N_trials)` (TRD §4A, ✔ resolved) | Purged/embargoed walk-forward at 2× costs. Embargo ≥ holding period. Returns one float |
+| **0.1** | **Implement the honest score** — `SR_oos − 2·SE(SR) − SR*(N_trials)` (TRD §4A, ✔ resolved) | **Rolling** walk-forward, 1-year test windows, purged, embargo ≥ holding period, 2× costs. All folds **concatenated** into one OOS series. Returns one float |
 | **0.2** | **Build `evaluate.py`** around that score, with the **hard bar enforced inside it** | Structurally isolated: the agent can neither read nor edit it. The bar gates before any score is computed |
 | **0.3** | **Run the null-world test** (TRD §8A.3) | Prove the scorer does not invent discoveries in pure noise. Fix and re-run until FDR is low |
 | **0.4** | **Build the vault** (TRD §8A.2) | Lock the holdout *before* the loop ever touches real data |

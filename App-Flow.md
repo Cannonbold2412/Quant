@@ -79,6 +79,10 @@ Every arrow into and out of an agent passes through the **job queue** and the **
    │   fail ├──────────────► discard, NO score computed
    │        │
    │   pass ▼
+   │    rolling walk-forward (1yr test, purged + embargo, 2× costs)
+   │    all folds CONCATENATED into one OOS series
+   │        │
+   │        ▼
    │    honest_score = SR_oos − 2·SE(SR) − SR*(N_trials)
    │        │
    │   ┌────┴──────────────┐

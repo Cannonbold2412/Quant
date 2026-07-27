@@ -238,6 +238,12 @@ One row per phase run of `evaluate.py`.
 | n_trials_used | INTEGER | The family trial count fed into the haircut |
 | oos_skew, oos_kurtosis, oos_n_obs | REAL/INT | Inputs to `se_sr`, stored for audit |
 | embargo_bars, holding_period_bars | INTEGER | Embargo must be ≥ holding period or trades leak across the split |
+| **wf_scheme** | TEXT | `rolling` \| `anchored` \| `holdout` \| `cpcv`. **Hashed into provenance** — changing it invalidates comparability (TRD §4A.2g) |
+| wf_train_bars, wf_test_bars | INTEGER | Window sizes |
+| n_folds | INTEGER | |
+| folds_profitable | INTEGER | How many test windows made money — the consistency diagnostic concatenation hides |
+| fold_metrics | TEXT (JSON) | Per-fold score, trades, drawdown. **Stored for diagnosis; does not drive keep/discard** |
+| params_refit_per_fold | INTEGER (bool) | Whether tuning re-ran on each training window. Determines what walk-forward actually tested (TRD §4A.2i) |
 | autocorr_adjusted | INTEGER (bool) | Whether Lo's correction was applied |
 | complexity_count | INTEGER | Rules / free parameters — the tertiary criterion |
 | **Core metrics** | | |
@@ -764,4 +770,5 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 |---|---|
 | 2026-07-27 | Initial schema. Experiments as the central table with full provenance columns, trial-count support for deflated Sharpe, spec hashing for duplicate detection, knowledge graph edges with evidence counts, lease-based job queue. |
 | 2026-07-27 | Added §0A (build 3 tables first, not 15; code stays in git with `code_commit` linking) and §15 integrity tables — `vault_access_log`, `null_world_runs`, `acceptance_bars`. |
+| 2026-07-27 | Added walk-forward columns to `evaluations` — `wf_scheme` (hashed into provenance), window sizes, `n_folds`, `folds_profitable`, per-fold `fold_metrics` stored but non-gating, and `params_refit_per_fold`. |
 | 2026-07-27 | Added the honest-score column group to `evaluations` — `honest_score` plus every input to it (`sr_oos`, `se_sr`, `z_multiplier`, `trials_haircut`, skew/kurtosis/n, embargo vs holding period) and the `bar_result` gate columns. Added `min_breadth` and `z_multiplier` to `acceptance_bars`. |
