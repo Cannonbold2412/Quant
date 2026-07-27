@@ -56,6 +56,54 @@ Every arrow into and out of an agent passes through the **job queue** and the **
 
 ---
 
+## 1A. Flow 0 — the nanoAQRL loop ★
+
+**This is what actually runs first.** Everything in §2–§12 is the destination; this is the starting point (TRD §2A). One agent, one editable file, no queue, no orchestration.
+
+```
+      program.md  (human-written: goal, rules, acceptance bar)
+            │
+            ▼
+   ┌──► agent edits strategy.py
+   │        │
+   │        ▼
+   │    git commit
+   │        │
+   │        ▼
+   │    run evaluate.py   ← agent can neither read nor edit this
+   │        │
+   │        ▼
+   │    read the honest score
+   │        │
+   │   ┌────┴──────────────┐
+   │   │                   │
+   │ clears bar?        worse/equal
+   │   │                   │
+   │   ▼                   ▼
+   │ keep commit        git reset
+   │   │                   │
+   │   └─────────┬─────────┘
+   │             ▼
+   │   append row to results.tsv
+   │   insert row into experiments (SQLite, with code_commit)
+   │             │
+   └─────────────┘   repeat, unattended, no human interruption
+```
+
+### 1A.1 Rules
+
+- **`strategy.py` is the only writable file.** `data.py` is read-only; `evaluate.py` is neither readable nor writable.
+- **`program.md` is human-edited.** As the agent makes avoidable mistakes, the human adds a line. That file — not an agent-maintained knowledge base — is where accumulated wisdom lives in v1.
+- **Every run gets a status:** `keep` · `discard` · `crash`. No result goes unjudged.
+- **Do not stop to ask the human.** Human gates exist only at paper trading and live capital.
+- **Stop on satisficing, not maximising.** The first strategy clearing the pre-set bar wins (PRD §13.2). A later, higher score replaces it only by a wide margin on untouched data.
+
+### 1A.2 What this flow deliberately omits
+
+No A1/A3/A4/A5, no job queue, no scheduler, no knowledge graph, no research plans, no promotion committee. Each is added when a specific pain is felt — the loop plateaus, a question arrives that `results.tsv` cannot answer, one agent visibly fails at one job. Not on a schedule.
+
+---
+
 ## 2. Flow 1 — Hypothesis Generation (A1)
 
 **Trigger:** nightly batch, or event-driven when a research question is answered, or when a goal has unused hypothesis budget.
@@ -521,7 +569,75 @@ If any link in that chain is missing, the system has violated its foundational p
 
 ---
 
-## 15. Open Flow Questions
+## 15. Flow 12 — Null-World Calibration (runs before anything real)
+
+The procedure that establishes whether the pipeline can be trusted at all (PRD §4.5, TRD §8A.3).
+
+```
+Generate null datasets — NO alpha by construction
+   permuted returns · block bootstrap · synthetic GBM · matched-vol fat-tail paths
+            │
+            ▼
+Run the COMPLETE loop against them
+   generation → iteration → evaluation → promotion recommendation
+   (identical code path to real data — no shortcuts, no special-casing)
+            │
+            ▼
+Count reported "discoveries"
+            │
+      ┌─────┴─────────────────┐
+      │                       │
+   0 found                 12 found
+      │                       │
+      ▼                       ▼
+ pipeline_trusted        pipeline_suspect
+ proceed to real data    fix evaluate.py / scoring rule,
+                         then re-run. Do NOT proceed.
+            │
+            ▼
+Record null_world_runs · surface FDR on the Laboratory screen
+Record max_score_observed → the bar any real result must clear
+```
+
+**Re-run as a regression test** after every change to `evaluate.py`, the scoring rule, or any profile. Throughput is tied to the result (the autonomy ratchet, TRD §8A.4): if FDR rises, experiments-per-day automatically fall.
+
+---
+
+## 16. Flow 13 — Vault Access (the only path to real capital)
+
+```
+Strategy clears the acceptance bar on searchable data
+            │
+            ▼
+A4 / human requests promotion
+            │
+            ▼
+Check vault budget for this FAMILY (not this strategy)
+            │
+      ┌─────┴──────┐
+      │            │
+  budget = 0   budget > 0
+      │            │
+      ▼            ▼
+  BLOCKED      open the vault segment  ← logged, decrements budget
+  until new         │
+  data exists       ▼
+             score on data the loop never touched
+                    │
+              ┌─────┴──────┐
+              │            │
+          confirmed    contradicted
+              │            │
+              ▼            ▼
+        human gate    reject; record as knowledge;
+                      family budget already spent
+```
+
+**The loop has no read path to the vault** — not "must not," *cannot*. Every other protection depends on honestly counting trials, which becomes unknowable once hypotheses are influenced by memory of past results. This is the one defence that does not depend on counting anything.
+
+---
+
+## 17. Open Flow Questions
 
 - [ ] Does A1 run as a nightly batch, purely event-driven, or both?
 - [ ] Parallel iteration: may several variants of one spec be evaluated simultaneously, or is the loop strictly sequential per strategy?
@@ -536,3 +652,4 @@ If any link in that chain is missing, the system has violated its foundational p
 | Date | Change |
 |---|---|
 | 2026-07-27 | Initial document. All 11 flows mapped, evidence-based stop conditions, trial counting, curiosity loop closure, two human gates, error/edge cases, traceability chain. |
+| 2026-07-27 | Added §1A Flow 0 (the nanoAQRL loop that actually runs first), §15 null-world calibration, §16 vault access. |

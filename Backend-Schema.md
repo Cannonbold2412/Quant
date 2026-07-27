@@ -18,6 +18,28 @@
 
 ---
 
+## 0A. What to build first ★
+
+**This document describes the destination, not the starting point.** Building 15 tables before running one experiment is designing the archive before doing the science.
+
+**v1 (nanoAQRL, TRD §2A) uses three tables:**
+
+| Table | Why on day one |
+|---|---|
+| `strategies` | The research thread, carrying `family` — required for trial counting |
+| `experiments` | One row per attempt: provenance, `code_commit`, `status` |
+| `evaluations` | The metrics produced by `evaluate.py` |
+
+Add `jobs` when the scheduler arrives. Add `vault_access_log` and `null_world_runs` (§15) alongside the integrity work, which precedes any real-data result. Everything else is added on **felt need** — when a question arrives that the existing tables cannot answer. The designs already exist here, so later addition is cheap.
+
+### 0A.1 Code lives in git, not in the database
+
+Strategy code is **never** stored as a blob. git holds the code, diffs and history; SQLite holds metadata and metrics; `experiments.code_commit` links them. Storing code in the database loses diffs, blame, and the ability to check out and re-run a past experiment.
+
+The reference project (PRD §14) uses git as the *entire* experiment database. We diverge because deflated Sharpe needs a queryable trial count — "how many attempts in this family?" cannot be answered from `git log` — and because deployment, paper trading and health state need real storage.
+
+---
+
 ## 1. Entity Overview
 
 ```
@@ -664,8 +686,67 @@ These drove the design. Each must be a simple indexed query, not a scan.
 
 ---
 
+## 15. Integrity Tables
+
+Added alongside the integrity work (TRD §8A), which precedes any real-data result.
+
+### `vault_access_log`
+Every opening of the locked holdout. The vault is the one defence that does not depend on honestly counting trials, so its own bookkeeping must be exact.
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| strategy_id, family | FK / TEXT | Budget is consumed **per family**, not per strategy |
+| vault_segment | TEXT | Which locked span/instruments/market was opened |
+| opened_at | TEXT | |
+| opened_by | TEXT | `human` \| `promotion_gate` — never the research loop |
+| reason | TEXT | |
+| promotion_id | FK → promotions | The decision this unlock served |
+| budget_before, budget_after | INTEGER | Remaining lifetime opens for this family |
+| result_score | REAL | What the vault said |
+| outcome | TEXT | `confirmed` \| `contradicted` |
+
+> A family whose budget reaches zero cannot be promoted again until genuinely new data exists.
+
+### `null_world_runs`
+The headline integrity metric (PRD §4.5). Re-run after any change to `evaluate.py`, the scoring rule, or a profile.
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| run_label | TEXT | |
+| null_model | TEXT | `permuted_returns` \| `block_bootstrap` \| `synthetic_gbm` \| `synthetic_fat_tail` |
+| replications | INTEGER | |
+| eval_engine_version | TEXT | What was being calibrated |
+| scoring_rule_version | TEXT | |
+| experiments_run | INTEGER | |
+| **discoveries_reported** | INTEGER | The number that matters |
+| **false_discovery_rate** | REAL | discoveries / replications |
+| max_score_observed | REAL | The best "strategy" found in pure noise — a useful bar for real results |
+| verdict | TEXT | `pipeline_trusted` \| `pipeline_suspect` |
+| notes | TEXT | |
+| created_at | | |
+
+### `acceptance_bars`
+The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it cannot be adjusted after seeing results.
+
+| Column | Type |
+|---|---|
+| id, uid | |
+| campaign_label | TEXT |
+| min_score, max_drawdown, min_trades, max_complexity | REAL/INTEGER |
+| cost_stress_multiple | REAL |
+| locked_at | TEXT |
+| locked_by | TEXT |
+| superseded_by | FK |
+
+> Written at campaign start. Changing a bar mid-campaign creates a new row and marks the campaign's prior results incomparable.
+
+---
+
 ## Changelog
 
 | Date | Change |
 |---|---|
 | 2026-07-27 | Initial schema. Experiments as the central table with full provenance columns, trial-count support for deflated Sharpe, spec hashing for duplicate detection, knowledge graph edges with evidence counts, lease-based job queue. |
+| 2026-07-27 | Added §0A (build 3 tables first, not 15; code stays in git with `code_commit` linking) and §15 integrity tables — `vault_access_log`, `null_world_runs`, `acceptance_bars`. |

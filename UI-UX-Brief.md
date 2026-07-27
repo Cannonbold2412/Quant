@@ -6,6 +6,16 @@
 
 ---
 
+## 0. What v1 actually looks like
+
+**There is no dashboard in v1.** The nanoAQRL loop (TRD §2A) produces `results.tsv` — one row per experiment, read in a terminal — and a `aqrl review` CLI for the human gates (Stage 9).
+
+That is deliberate and sufficient. Reading every row by hand for the first few weeks is how you learn what the agent actually does, and it is the input that improves `program.md`. A dashboard built before the loop produces candidates worth reviewing is decoration.
+
+Everything below describes the destination, built at Stage 12.
+
+---
+
 ## 1. Design Premise
 
 The dashboard is **not a control panel for running the lab.** The lab runs itself. The dashboard exists for three jobs only:
@@ -210,6 +220,7 @@ This is the screen the Research Director actually cares about long-term. It answ
 
 Additional panels:
 
+- **Null-world false discovery rate** ★ — the headline integrity number (PRD §4.5). How many "discoveries" the pipeline reports when run on data containing no alpha by construction. Displayed beside cost-per-discovery, with the date of the last calibration run and the `max_score_observed` in noise — the bar any real result must clear. If this rises, **nothing else on this screen means anything.**
 - **Repeat-failure rate** — how often did we test something memory should have killed? **Target → 0.** If this rises, A5 is not working and the whole premise is broken.
 - **Reproducibility rate** — target 100%. Any deviation is an integrity emergency, displayed as such.
 - **Knowledge growth** — new lessons and graph edges per week, split novel vs reinforcing.
@@ -343,3 +354,4 @@ The dashboard is the **last thing built**, not the first. A CLI that lists pendi
 | Date | Change |
 |---|---|
 | 2026-07-27 | Initial brief. "Make it easy to reject" premise, case-against-first review layout, health-not-profit color semantics, laboratory self-measurement screen, sparse notification policy. |
+| 2026-07-27 | Added §0 — v1 has no dashboard; `results.tsv` plus a review CLI is the interface until Stage 12. Added the null-world false discovery rate panel to the Laboratory screen. |

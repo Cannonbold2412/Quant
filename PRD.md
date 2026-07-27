@@ -3,6 +3,7 @@
 > **Status:** Living document. Updated after every design session.
 > **Last updated:** 2026-07-27
 > **Phase:** Architecture / brainstorming. No implementation started.
+> **Primary design reference:** [karpathy/autoresearch](https://github.com/karpathy/autoresearch) — see §14.
 
 ---
 
@@ -86,8 +87,22 @@ We do **not** optimize for "number of strategies generated" or "number of backte
 | Novel lessons added to knowledge base | Is the lab learning? |
 | **Repeat-failure rate** (ideas re-tested that memory should have killed) | Is memory actually working? Target → 0 |
 | Cost per credible discovery | Efficiency of the funnel |
+| **False discovery rate (null-world)** | See §4.5 — the headline integrity number |
 
-### 4.4 Research portfolio allocation
+### 4.5 The headline integrity metric — null-world false discovery rate
+
+**The single most important number the laboratory produces about itself.**
+
+Run the entire loop on data with **no alpha by construction** — permuted returns, block-bootstrapped noise, or synthetic paths with matched volatility and fat tails. Count how many "statistically valid discoveries" it reports.
+
+- **0 discoveries** → the pipeline is honest; real results can be trusted.
+- **12 discoveries** → the pipeline manufactures roughly 12 findings from nothing, and every real discovery it has ever produced is suspect.
+
+This is the only way to know whether the machine works. It is a permanent regression test: re-run it after every change to `evaluate.py`, every new profile, every change to the scoring rule.
+
+**No real-data result may be trusted before the null-world FDR has been measured and driven low.** This is Milestone 0.
+
+### 4.6 Research portfolio allocation
 
 Borrowed from pharma R&D. The Research Scientist's hypothesis budget is split:
 
@@ -320,12 +335,116 @@ The repository already contains reusable pieces (see `README.md`):
 
 ---
 
-## 13. Open Questions
+## 13. The Search Objective
+
+### 13.1 Two phases, in strict order
+
+The objective the loop optimises **changes once** in the life of the laboratory.
+
+| Phase | Objective | When |
+|---|---|---|
+| **Phase A** | *"Find one strategy that is tradeable, risk-controlled and robust."* | Now, until the first strategy completes paper trading |
+| **Phase B** | *"Find a good strategy that makes money when the ones I already run don't."* | After Phase A completes |
+
+You cannot build a portfolio from zero strategies. Phase A is the v1 KPI (§4.1) and nothing about Phase B replaces it.
+
+### 13.2 Satisficing, not maximising ★
+
+**"Find the best possible strategy" is the wrong instruction**, even in Phase A.
+
+If the objective is *best*, the loop never stops. It keeps grinding for a higher number, and every extra attempt is another trial burned against the same data. That is how a strategy ends up excellent on history and mediocre in reality.
+
+Instead: **write the acceptance bar down before the search begins**, and take the *first* strategy that clears it and holds.
+
+The bar lives in `program.md` and is decided in advance:
+- Minimum out-of-sample score
+- Maximum drawdown (survivable financially and emotionally)
+- Minimum trade count
+- Maximum complexity (number of rules/filters)
+- Must survive costs at 2× assumed level
+
+The strategy found on attempt 400 is mostly better *at fitting history*. The one that clears a pre-set bar on attempt 30 is more likely to survive live. Fewer trials means less selection bias, which means the out-of-sample number remains believable.
+
+The loop may continue running afterwards, but a later, higher score must not replace an already-passing strategy unless it wins by a wide margin **on data the search never touched**.
+
+### 13.3 Ranked acceptance criteria
+
+Modelled directly on the reference project's primary/secondary/tertiary structure:
+
+1. **Primary** — the honest score (TRD §4A)
+2. **Secondary** — a resource constraint: capacity, turnover, or capital efficiency
+3. **Tertiary** — **simplicity.** Where two strategies score alike, the simpler wins
+
+Simplicity is a *scored criterion*, not a matter of reviewer judgment. A strategy with 7 filters must beat one with 2 filters by a real margin, not a hair. Complexity is one of the few reliable predictors of overfitting, so it must cost something.
+
+### 13.4 Why diversification is an anti-overfitting device, not a lowering of standards
+
+Phase B is frequently misread as "accept worse strategies." It is not. There are two distinct questions:
+
+**Question 1 — "Is this tradeable at all?"** A pass/fail floor. Non-negotiable: risk controlled, survives out-of-sample, survives realistic costs, actually executable, drawdown within limits, and the mechanism is understood. A failing strategy is rejected. Diversity never rescues it.
+
+**Question 2 — "Given what I already run, is this worth adding?"** Asked *only* of strategies that already cleared Question 1.
+
+The arithmetic that motivates Phase B: two strategies each at Sharpe 1.0 that are genuinely uncorrelated combine to roughly 1.41; three to 1.73; four to 2.0. A strategy at **Sharpe 0.7 that profits when the existing one bleeds is worth more** than one at Sharpe 1.3 that profits at the same time. A strategy's value is measured against the book, not in isolation.
+
+The same logic applies to drawdown. Per-strategy limits are unchanged, but the number that matters is **portfolio** drawdown — and two strategies whose bad periods occur at different times produce a combined drawdown smaller than either alone. Diversification is the strongest drawdown control available, stronger than tightening stops on a single strategy.
+
+**The overfitting argument is the decisive one.** Trend following fails in sideways markets; that is inherent to the logic, not a defect. The natural response — adding filters and regime detectors until it performs well in every historical period — does not fix the weakness. It memorises where the weakness occurred in *this* history. The honest alternative is to accept the specialisation and find a *different* strategy for that regime. "Works everywhere" is usually a fitted illusion.
+
+### 13.5 Fake diversification
+
+Guarded against explicitly. These are **not** diverse — they are the same bet in different clothes, and their correlation rises precisely during crises:
+
+- The same strategy across 20 instruments
+- The same logic at different lookback lengths
+- Trend following on NIFTY and on Bank NIFTY
+- Trend following on equities and on commodities
+
+Genuine diversity is difference in **logic**: trend vs mean reversion, long vs short holding period, volatility breakout vs volatility selling, price-based vs volume-based vs cross-sectional.
+
+The test is not whether it feels different. The test is whether the return series actually move independently — measured, including correlation during each strategy's worst months.
+
+---
+
+## 14. Design Reference — karpathy/autoresearch
+
+The structural template for v1. What it is: three files — `prepare.py` (fixed, agent may read but never edit), `train.py` (**the only file the agent edits**), and `program.md` (instructions, **edited by humans**). Fixed 5-minute wall-clock budget per experiment. Metric is `val_bpb`. Improved → keep the commit; worse or equal → `git reset`. ~100 experiments overnight. Agent cannot modify the evaluation harness or install dependencies. Ranked criteria with simplicity as tertiary. Once running, the agent does not stop to ask the human whether to continue.
+
+### 14.1 What we adopt
+
+- The **file structure and its permissions boundary** (TRD §2A)
+- **Evaluator isolation enforced structurally**, not by instruction
+- **One fixed invariant** that makes all results comparable
+- **Simplicity as a ranked scoring criterion**
+- **`program.md` edited by humans, never by the agent** — the honest version of "the lab learns"
+- **No human interruption of the research loop** (gates exist only at paper and live)
+- **Explicit keep / discard / crash status** on every experiment
+
+### 14.2 What does not transfer, and why it matters
+
+**His metric is nearly unhackable; ours is trivially hackable.**
+
+`val_bpb` is a held-out likelihood. Running 100 experiments and keeping the best is epistemically sound — the held-out set was never trained on. Running 100 backtests and keeping the best Sharpe is a selection-bias failure: with enough attempts, noise produces a beautiful equity curve.
+
+So the reference's encouragement toward high throughput and keep-if-improved makes our integrity machinery **more** necessary, not less:
+
+- **The vault** (TRD §8A.2) — data the loop physically cannot read
+- **Null-world calibration** (§4.5) — measuring how often we invent discoveries
+- **Satisficing** (§13.2) — stopping early rather than searching for the maximum
+
+Adopt the throughput. Do **not** adopt the keep/discard rule unmodified. In his setting, improvement-on-metric is evidence. In ours, it is a hypothesis.
+
+---
+
+## 15. Open Questions
 
 Tracked here until resolved in a session, then moved into the body of the docs.
 
+- [ ] **★ What is the honest score — our `val_bpb` equivalent? Blocks everything else (TRD §4A)**
+- [ ] The numeric acceptance bar for §13.2, written before the search begins
 - [ ] Which specific statistical tests are gating (hard fail) vs advisory in Phase III?
 - [ ] Numeric thresholds for each promotion gate (deflated Sharpe floor, PBO ceiling, MC 5th-percentile floor)
+- [ ] How is "genuinely different" measured for Phase B admission (correlation ceiling, and over which window)?
 - [ ] Broker/data-feed choice for paper trading per market
 - [ ] Correlation ceiling for admitting a new strategy to the live portfolio
 - [ ] Whether A1 hypothesis generation is scheduled (nightly batch) or purely event-driven
@@ -339,3 +458,4 @@ Tracked here until resolved in a session, then moved into the body of the docs.
 | Date | Change |
 |---|---|
 | 2026-07-27 | Initial document. Vision, 5-agent architecture, promotion rules, health monitoring, portfolio allocation, success criteria captured from architecture sessions. |
+| 2026-07-27 | Reconciled against karpathy/autoresearch (§14). Added null-world false discovery rate as the headline integrity metric (§4.5), the two-phase search objective, satisficing over maximising, ranked acceptance criteria with a simplicity penalty, and the diversification-as-anti-overfitting argument (§13). |

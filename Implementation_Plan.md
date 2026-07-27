@@ -14,11 +14,16 @@
 
 **Prove the loop closes before making it fast.** Single-threaded, one laptop, SQLite. Parallelism and cloud are Stage 9+, and only after the loop demonstrably works.
 
+**Start smaller than feels right.** The reference project (PRD §14) runs a complete autonomous research loop in three files. Stage 0 mirrors that. Every stage after it must be triggered by a **pain actually felt** — the loop plateaus, a question arrives that `results.tsv` cannot answer, one agent visibly fails at one job — never by the plan alone. The six documents describe a good destination and a bad starting point.
+
 ---
 
 ## 1. Dependency Graph
 
 ```
+Stage 0  nanoAQRL + integrity   ★ START HERE
+    │        (honest score · evaluate.py · null-world · vault · 5 files)
+    │
 Stage 1  Foundations (config, DB, profiles, data layer)
     │
     ├──► Stage 2  Operator Library
@@ -57,6 +62,47 @@ Stage 1  Foundations (config, DB, profiles, data layer)
 ```
 
 **Note the ordering choice:** A2 and A3 (Stages 5–6) come *before* A1 (Stage 7). The iteration loop is the heart of the system and can be exercised with hand-written specs. Building A1 first would mean generating hypotheses with nothing capable of properly testing them.
+
+---
+
+## 1A. Stage 0 — nanoAQRL ★ START HERE
+
+**Goal:** a complete autonomous research loop, in five files, whose verdicts are proven trustworthy before a single real-data result is believed.
+
+Stages 1–13 remain the destination. None of them begin until Stage 0 has run for real.
+
+### 1A.1 The work, in strict order
+
+| # | Task | Why this order |
+|---|---|---|
+| **0.1** | **Decide the honest score** (TRD §4A) | A thinking task, not a coding task. Nothing works until this exists — a bigger loop on a dishonest score just produces wrong answers faster |
+| **0.2** | **Build `evaluate.py`** around that score | Structurally isolated: the agent can neither read nor edit it |
+| **0.3** | **Run the null-world test** (TRD §8A.3) | Prove the scorer does not invent discoveries in pure noise. Fix and re-run until FDR is low |
+| **0.4** | **Build the vault** (TRD §8A.2) | Lock the holdout *before* the loop ever touches real data |
+| **0.5** | Write `program.md` and `strategy.py`, wire the keep/reset loop | Small, once 0.1–0.4 exist |
+| **0.6** | **Run it one night. Read every row of `results.tsv` by hand** | The only way to learn what the agent actually does |
+| **0.7** | Improve `program.md` from what you saw | Repeat for several weeks |
+
+**Steps 0.1–0.4 are the real work. 0.5 is small. That ratio is the point.**
+
+### 1A.2 Deliverables
+
+```
+data.py        # snapshots, calendars, costs, universe   — agent: READ ONLY
+strategy.py    # the one file the agent edits
+evaluate.py    # the harness                             — agent: NO READ, NO WRITE
+program.md     # instructions + acceptance bar           — human-edited only
+results.tsv    # commit | score | n_trades | status | description
+```
+
+Plus three SQLite tables (`strategies`, `experiments`, `evaluations`) with `experiments.code_commit` pointing at git. No job queue, no scheduler, no agents beyond the one.
+
+### 1A.3 Done when
+
+- Null-world FDR measured and low — **the pipeline does not manufacture discoveries**
+- The vault exists and the loop provably cannot read it
+- The loop runs unattended overnight and every row carries a verdict
+- The acceptance bar was written down *before* the search started and was not moved afterwards
 
 ---
 
@@ -343,6 +389,7 @@ Only after the loop is proven and producing candidates.
 
 | # | Milestone | Proves |
 |---|---|---|
+| **M0** | **Null-world FDR measured and low** | The pipeline does not invent discoveries. **Nothing downstream means anything without this** |
 | **M1** | `evaluate.py` passes all known-answer tests | We can trust our own verdicts |
 | **M2** | A2↔A3 loop iterates autonomously on a hand-written spec | The research loop closes |
 | **M3** | A1 generates specs that feed the loop end to end | Full autonomy from goal to result |
@@ -352,7 +399,7 @@ Only after the loop is proven and producing candidates.
 | **M7** | A discovered strategy survives paper trading | Forward evidence, not just backtests |
 | **M8** | Health monitoring correctly calls a live strategy's decline | The lifecycle closes |
 
-M1, M2 and M6 are the ones that matter. M6 is the whole point.
+M0, M2 and M6 are the ones that matter. **M0 gates everything** — a discovery from an uncalibrated pipeline is not a discovery. M6 is the whole point.
 
 ---
 
@@ -360,7 +407,10 @@ M1, M2 and M6 are the ones that matter. M6 is the whole point.
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| **`evaluate.py` is subtly wrong** | 🔴 Critical | Known-answer test suite before trusting any result. Everything downstream inherits its errors |
+| **`evaluate.py` is subtly wrong** | 🔴 Critical | Known-answer test suite **and null-world calibration (M0)** before trusting any result. Everything downstream inherits its errors |
+| **Reward hacking — the agent optimises the scorer, not the market** | 🔴 Critical | `evaluate.py` unreadable and unwritable; `data.py` read-only; too-good-to-be-true tripwire; periodic red-teaming (TRD §8A.1) |
+| **Best-of-N selection bias** | 🔴 Critical | Satisficing against a pre-set bar (PRD §13.2) + the vault (TRD §8A.2). "Best after 500 tries" is the luckiest, not the best |
+| **Building the full architecture before the simple loop runs** | 🟠 High | Stage 0 exists precisely to prevent this. Every later stage needs a felt pain to justify it |
 | **Look-ahead bias in generated code** | 🔴 Critical | P0 static checks as a hard gate; failures classified as bugs, not findings |
 | **Trial under-counting → false discoveries** | 🔴 Critical | Family-level trial counting is a schema requirement, not an afterthought |
 | **The loop feeds on itself, plateaus** | 🟠 High | Stage 10 external ingestion; monitor novelty of generated specs |
@@ -373,9 +423,17 @@ M1, M2 and M6 are the ones that matter. M6 is the whole point.
 
 ---
 
-## 17. What Gets Reused from the Current Repo
+## 17. What Gets Reused from the Prior Prototype
 
-| Existing | Becomes |
+> **The working tree now contains only these six documents.** The prior prototype (Drive notebook ingestion, indicator extraction, backtest engine, tradebooks) was removed from the tree to give the build a clean start.
+>
+> **Nothing is lost — it lives in git history at commit `d08e812`.** Recover any file with:
+> ```
+> git show d08e812:engine/backtester.py
+> git checkout d08e812 -- engine/          # restore a directory
+> ```
+
+| In `d08e812` | Becomes |
 |---|---|
 | `engine/backtester.py`, `tradebook.py` | Backtest core inside `evaluate.py` (Stage 3) |
 | `engine/jobs.py`, `registry.py` | Job/discovery patterns (Stages 3–4) |
@@ -388,7 +446,7 @@ M1, M2 and M6 are the ones that matter. M6 is the whole point.
 | `config.py`, `schemas.py` | Config and validation foundations (Stage 1) |
 | Existing JMA+ATR, walk-forward, Monte Carlo, robustness work | Operators + robustness battery (Stages 2–3) |
 
-The existing `main.py` pipeline keeps working throughout. AQRL is additive.
+These are **reference implementations to borrow from**, not a codebase to extend. Stage 0 is written fresh against the five-file structure; the prototype is consulted for the backtest mechanics, indicator maths and LLM plumbing already solved there.
 
 ---
 
@@ -408,6 +466,9 @@ Not in the one-shot build:
 
 ## 19. Open Planning Questions
 
+- [ ] **★ The honest score (TRD §4A) — Stage 0.1, blocks everything**
+- [ ] The numeric acceptance bar for the first campaign, written before searching
+- [ ] Vault composition and per-family peek budget
 - [ ] Which market/timeframe is the first fully-supported profile? (Leaning `nse_equity` × `daily` — best existing data and domain knowledge)
 - [ ] Do we port existing JMA+ATR work into the operator library, or rewrite clean against the new base class?
 - [ ] Known-answer test corpus — which published strategies do we use as ground truth?
@@ -421,3 +482,4 @@ Not in the one-shot build:
 | Date | Change |
 |---|---|
 | 2026-07-27 | Initial plan. 13 stages, validation-engine-first ordering, A2/A3 before A1, 8 milestones, risk register, reuse mapping from the existing repo. |
+| 2026-07-27 | Added **Stage 0 (nanoAQRL)** as the real starting point and **M0 (null-world FDR)** as the gating milestone. Added reward-hacking and selection-bias risks. Prototype code removed from the tree; reuse mapping now points at git history `d08e812`. |

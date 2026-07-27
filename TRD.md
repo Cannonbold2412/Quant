@@ -76,6 +76,68 @@ Documented so architecture does not preclude it:
 
 ---
 
+## 2A. nanoAQRL — what v1 actually is ★
+
+**Everything in §2.1 is the destination. This section is the starting point.**
+
+The reference project (PRD §14) runs a complete autonomous research loop in three files. Our v1 mirrors that shape exactly. The five-agent architecture, the job queue, the knowledge graph and the full schema are **later stages**, added when a felt need arrives — not built up front.
+
+### 2A.1 The files
+
+| File | Contents | Agent permission |
+|---|---|---|
+| `data.py` | Snapshots, calendars, cost models, universe definition | **read only** |
+| `strategy.py` | Signal logic, entries, exits, filters, sizing | **the only writable file** |
+| `evaluate.py` | The scoring harness | **neither readable nor writable** |
+| `program.md` | The agent's operating instructions and the acceptance bar | **human-edited only** |
+| `results.tsv` | `commit \| score \| n_trades \| status \| description` | append only |
+
+### 2A.2 The loop
+
+```
+edit strategy.py → commit → run evaluate.py → read score
+      → clears the bar?  keep the commit
+      → worse/equal?     git reset
+      → append one row to results.tsv
+      → repeat, unattended
+```
+
+Status values are exactly three: `keep` · `discard` · `crash`. Every experiment gets one. Forcing a verdict on every run prevents results piling up unjudged.
+
+### 2A.3 One deliberate deviation from the reference
+
+The reference lets the agent **read** `prepare.py`; only editing is forbidden. We forbid **reading** `evaluate.py` as well.
+
+Justification: `val_bpb` survives being understood — knowing how a held-out likelihood is computed does not help you fake one. A backtest score does not survive being understood. An agent that can read the scorer will eventually exploit a weakness in it, not from malice but because exploiting the measurement is the cheapest path to a higher number. See §8A.1.
+
+### 2A.4 Storage decision — SQLite *and* git, not either/or
+
+The reference uses git as the entire experiment database. We do not, for one decisive reason: **deflated Sharpe requires a trial count**, and "how many attempts have been made in this family?" cannot be answered by grepping `git log`. Paper trading, health monitoring and deployment state reinforce the same conclusion.
+
+His loop is one file evolving in a straight line; ours produces many independent candidates that form no single lineage, so the keep/reset ratchet does not map cleanly.
+
+The split:
+
+| Store | Holds |
+|---|---|
+| **git** | The actual strategy code, diffs, history |
+| **SQLite** | Metadata, metrics, provenance, state, trial counts |
+| **`experiments.code_commit`** | The hash linking the two |
+
+Strategy code is **never** stored as a blob in the database — that loses diffs, blame, and the ability to check out and re-run a past experiment.
+
+### 2A.5 Minimum viable schema
+
+`Backend-Schema.md` defines 15+ tables. Building all of them before running one experiment is designing the archive before doing the science. v1 starts with **three**:
+
+- `strategies` — the research thread, carrying `family` for trial counting
+- `experiments` — one row per attempt: provenance, `code_commit`, status
+- `evaluations` — the metrics from `evaluate.py`
+
+`jobs` is added with the scheduler. Everything else is added on felt need. The designs already exist, so later addition is cheap.
+
+---
+
 ## 3. Execution Model
 
 ### 3.1 Event-driven, not timer-driven
@@ -226,6 +288,38 @@ Changing any profile or the engine bumps a version. Old results are not deleted;
 
 ---
 
+## 4A. The Honest Score — our `val_bpb` ★
+
+**Unresolved, and it blocks everything else.** No amount of loop engineering compensates for scoring the wrong thing; a bigger, faster loop on a dishonest score just produces wrong answers more efficiently.
+
+### 4A.1 Why this is the crux
+
+The reference project works because it has **one honest scalar**. `val_bpb` is held out, vocab-independent (so architectures compare fairly), a single number, and effectively impossible to game.
+
+The current design has a battery of ten tests and a vaguely-defined `primary_score`. Ten tests is a **report**. A loop needs a **decision**.
+
+### 4A.2 Requirements
+
+| `val_bpb` property | Required AQRL equivalent |
+|---|---|
+| Held out | Computed only on data the search never touched |
+| Vocab-independent | **Frequency-fair** — a 5-trades/year and a 50-trades/day strategy must be comparable |
+| Single scalar | One number, so "better or worse" is unambiguous |
+| Hard to game | **Not raw Sharpe** — inflatable via leverage and frequency effects |
+| — | Cost-inclusive by construction, not adjusted afterwards |
+
+Starting candidate for evaluation: an out-of-sample, cost-inclusive, deflated risk-adjusted return computed on purged and embargoed splits. To be settled in a dedicated session.
+
+### 4A.3 Ranked criteria
+
+Mirrors the reference's primary/secondary/tertiary structure (PRD §13.3): **primary** the honest score; **secondary** a resource constraint (capacity or turnover — the analogue of his VRAM ceiling); **tertiary** simplicity, scored rather than left to reviewer judgment.
+
+### 4A.4 The invariant
+
+The reference achieves comparability with a single constant — the 5-minute wall clock — rather than a versioning scheme. The AQRL analogue is a **fixed evaluation contract**: data slice, cost model, and test protocol held constant across a campaign. §4.7 provenance hashing enforces this; the design goal is to keep the contract simple enough that it rarely changes, because every change partitions the result history.
+
+---
+
 ## 5. The Validation Battery
 
 Executed as an ordered funnel. Cheap tests first; a failure short-circuits the rest.
@@ -356,6 +450,50 @@ Edges carry **evidence counts and confidence**, and link back to the experiments
 
 ---
 
+## 8A. Adversarial Integrity & Self-Calibration ★
+
+The three mechanisms that make automated search in markets defensible. **None of these are optional, and all three precede any real-data result.**
+
+### 8A.1 Reward hacking is a certainty, not a risk
+
+Give an agent a scoring function and enough iterations and it will optimise the scorer rather than the market — usually by accident, through a subtle look-ahead path, a fill assumption, or a near-zero denominator.
+
+Defences:
+
+- **`evaluate.py` is neither readable nor writable by the agent** (§2A.3). Separate process, no source access.
+- **`data.py` is read-only.** An agent able to edit the cost model will eventually make costs cheaper and call it a discovery.
+- **"Too good to be true" tripwire.** Sharpe > 3 on daily data is a *bug hypothesis*, not a discovery. Auto-route to adversarial audit rather than promotion.
+- **Periodic red-teaming.** Deliberately task an agent with breaking `evaluate.py`; treat every exploit found as a high-value knowledge entry and fix it.
+
+### 8A.2 The vault — data the loop cannot read
+
+Every other protection — deflated Sharpe, walk-forward, PBO — depends on honestly counting trials. Once an LLM generates hypotheses influenced by a memory of past results, the effective trial count becomes genuinely unknowable. The vault is the one defence that does not depend on counting anything.
+
+- A span of years, and/or a set of instruments, and/or an entire market is **locked away**.
+- The research loop has **no read path**. Not "should not" — *cannot*.
+- Opened only at promotion, **once per strategy family**.
+- Every open is logged (`vault_access_log`) and counts against a lifetime budget.
+- A family that exhausts its budget cannot be promoted again until genuinely new data exists.
+
+### 8A.3 Null-world calibration — measuring our own false discovery rate
+
+The procedure defined in PRD §4.5, stated as an engineering requirement:
+
+- Generate datasets with **no alpha by construction**: permuted returns, block bootstrap, synthetic paths with matched volatility and fat tails.
+- Run the **complete loop** — generation, iteration, evaluation, promotion recommendation — against them.
+- Count reported discoveries. That count is the false discovery rate.
+
+Requirements:
+- Runs as a **permanent regression test** after any change to `evaluate.py`, the scoring rule, or any profile.
+- Results recorded in `null_world_runs` and surfaced on the Laboratory screen beside cost-per-discovery.
+- **Milestone 0.** No real-data result is trusted before FDR has been measured and driven low.
+
+### 8A.4 The autonomy ratchet
+
+Experiment throughput is tied to measured FDR. If FDR rises, throughput automatically drops. Scaling becomes earned rather than assumed — the reference project's encouragement toward ~100 experiments overnight is safe only once the pipeline has demonstrated it does not invent discoveries at that volume.
+
+---
+
 ## 9. LLM Integration Requirements
 
 - **Model:** Claude, via Claude Code sessions. Sessions are stateless and disposable.
@@ -403,8 +541,9 @@ Edges carry **evidence counts and confidence**, and link back to the experiments
 |---|---|---|
 | Language | Python 3.11+ | same |
 | Reasoning | Claude Code (stateless sessions) | same |
-| Job queue | SQLite table + leases | Redis |
-| Metadata DB | SQLite | PostgreSQL |
+| Strategy code history | git (hash referenced from SQLite) | same |
+| Job queue | none in nanoAQRL; SQLite table + leases when the scheduler arrives | Redis |
+| Metadata DB | SQLite, 3 tables to start (§2A.5) | PostgreSQL |
 | Columnar data | Parquet + DuckDB | same + object storage |
 | Vector search | Local (FAISS/sqlite-vss) | Dedicated vector DB |
 | Scheduling | `scheduler.py` tick loop | Prefect/Airflow if warranted |
@@ -430,6 +569,10 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 
 ## 14. Open Technical Questions
 
+- [ ] **★ The honest score (§4A.2) — blocks everything downstream**
+- [ ] Null-world generator: which null models, and how many replications for a stable FDR estimate?
+- [ ] Vault composition — which years, instruments, or markets are locked, and what is the per-family peek budget?
+- [ ] How is `evaluate.py` isolated in practice so the agent cannot read it (separate process, container, or file permissions)?
 - [ ] Walk-forward window sizing policy per timeframe — fixed bars, expanding, or anchored?
 - [ ] Which Monte Carlo variant is canonical (trade-order shuffle, block bootstrap, synthetic path generation)?
 - [ ] Trial-counting scope for deflated Sharpe — per strategy, per family, or global?
@@ -445,3 +588,4 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 | Date | Change |
 |---|---|
 | 2026-07-27 | Initial document. Execution model, single-`evaluate.py` decision with Market/Timeframe profile factoring, provenance hashing, validation battery, operator library, knowledge subsystem, safety controls. |
+| 2026-07-27 | Added §2A nanoAQRL (the actual v1 shape, file permissions, SQLite+git split, 3-table minimum), §4A the honest score and ranked criteria, §8A adversarial integrity (reward hacking, the vault, null-world calibration, autonomy ratchet). Evaluator is now unreadable as well as unwritable by the agent. |
