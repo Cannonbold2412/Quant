@@ -269,7 +269,10 @@ One row per phase run of `evaluate.py`.
 | equity_curve_path, tradebook_path | TEXT | Parquet references |
 | report_path | TEXT | Full evaluation report |
 | metrics_json | TEXT (JSON) | Everything not promoted to a column |
-| duration_seconds | INTEGER | |
+| duration_seconds | REAL | Wall clock. Tracked against the per-experiment budget (TRD §4B.6) |
+| cpu_seconds | REAL | Total across workers — reveals parallel efficiency |
+| n_workers | INTEGER | Processes used |
+| timed_out | INTEGER (bool) | Exceeded the budget → recorded as `crash`, not `discard` |
 | created_at | | |
 
 ### `evaluation_tests`
@@ -770,5 +773,6 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 |---|---|
 | 2026-07-27 | Initial schema. Experiments as the central table with full provenance columns, trial-count support for deflated Sharpe, spec hashing for duplicate detection, knowledge graph edges with evidence counts, lease-based job queue. |
 | 2026-07-27 | Added §0A (build 3 tables first, not 15; code stays in git with `code_commit` linking) and §15 integrity tables — `vault_access_log`, `null_world_runs`, `acceptance_bars`. |
+| 2026-07-27 | Added timing columns to `evaluations` — wall clock vs CPU seconds, worker count, and `timed_out` for experiments killed by the per-experiment budget. |
 | 2026-07-27 | Added walk-forward columns to `evaluations` — `wf_scheme` (hashed into provenance), window sizes, `n_folds`, `folds_profitable`, per-fold `fold_metrics` stored but non-gating, and `params_refit_per_fold`. |
 | 2026-07-27 | Added the honest-score column group to `evaluations` — `honest_score` plus every input to it (`sr_oos`, `se_sr`, `z_multiplier`, `trials_haircut`, skew/kurtosis/n, embargo vs holding period) and the `bar_result` gate columns. Added `min_breadth` and `z_multiplier` to `acceptance_bars`. |

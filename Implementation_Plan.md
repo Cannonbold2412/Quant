@@ -80,6 +80,7 @@ Stages 1–13 remain the destination. None of them begin until Stage 0 has run f
 | **0.3** | **Run the null-world test** (TRD §8A.3) | Prove the scorer does not invent discoveries in pure noise. Fix and re-run until FDR is low |
 | **0.4** | **Build the vault** (TRD §8A.2) | Lock the holdout *before* the loop ever touches real data |
 | **0.5** | Write `program.md` and `strategy.py`, wire the keep/reset loop | Small, once 0.1–0.4 exist |
+| **0.5a** | **Profile, then parallelise across folds** (TRD §4B) | Vectorised maths, Numba for path-dependent logic, processes not threads. Verify determinism before trusting any parallel result |
 | **0.6** | **Run it one night. Read every row of `results.tsv` by hand** | The only way to learn what the agent actually does |
 | **0.7** | Improve `program.md` from what you saw | Repeat for several weeks |
 
@@ -201,6 +202,8 @@ Before trusting it, `evaluate.py` must be tested against **known-answer cases**:
 - A strategy overfit to one regime → PBO must flag it
 - A strategy with a real but small edge → must survive P2, die on realistic costs
 - A known-good published strategy → results within tolerance of published figures
+- **A deliberately leaky *vectorised* strategy** (unlagged signal, whole-sample normalisation, backfilled NaNs) → P0 must catch it. Vectorisation is the top source of look-ahead (TRD §4B.4), so this case is mandatory
+- **The same experiment run single-threaded and in parallel** → must produce a bit-identical `honest_score` (TRD §4B.5)
 
 **Done when:** all known-answer cases behave correctly, and identical inputs reproduce identical outputs bit-for-bit.
 
@@ -417,6 +420,9 @@ M0, M2 and M6 are the ones that matter. **M0 gates everything** — a discovery 
 | **A5's knowledge is never actually used** | 🟠 High | Repeat-failure rate is an explicit, tracked metric |
 | **Token cost outruns value** | 🟠 High | Budgets with hard back-pressure; cost-per-discovery on the Laboratory screen |
 | **Human rubber-stamps approvals** | 🟠 High | Case-against-first UI; mandatory typed justification |
+| **Vectorisation introduces look-ahead** | 🔴 Critical | The fastest code leaks most easily. P0 checks plus a mandatory leaky-vectorised known-answer test (TRD §4B.4) |
+| **Parallelism breaks determinism** | 🟠 High | Per-fold seeds, fixed reduction order, chronological concatenation. Bit-identical re-run is a gate (TRD §4B.5) |
+| **`evaluate.py` too slow to be useful** | 🟠 High | Seconds-not-minutes target; per-experiment time budget; profile before optimising (TRD §4B) |
 | **Scaling requires a rewrite** | 🟡 Medium | No SQLite-specific SQL; lease-based queue from day one |
 | **Data quality corrupts everything silently** | 🟡 Medium | Validators at ingest; immutable hashed snapshots |
 | **Overbuilding before proving value** | 🟡 Medium | This staged plan; stop-and-assess after M2 and M6 |
@@ -483,4 +489,5 @@ Not in the one-shot build:
 |---|---|
 | 2026-07-27 | Initial plan. 13 stages, validation-engine-first ordering, A2/A3 before A1, 8 milestones, risk register, reuse mapping from the existing repo. |
 | 2026-07-27 | Added **Stage 0 (nanoAQRL)** as the real starting point and **M0 (null-world FDR)** as the gating milestone. Added reward-hacking and selection-bias risks. Prototype code removed from the tree; reuse mapping now points at git history `d08e812`. |
+| 2026-07-27 | Added Stage 0.5a (profile then parallelise), two mandatory known-answer tests (leaky *vectorised* strategy; parallel vs single-threaded bit-identity), and three performance/correctness risks. |
 | 2026-07-27 | Stage 0.1 changed from "decide the honest score" to "implement" it — resolved in TRD §4A. Stage 0.2 now enforces the hard bar inside `evaluate.py`. Remaining Stage 0 unknowns are numeric choices owned by the human. |

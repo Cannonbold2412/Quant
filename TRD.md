@@ -454,6 +454,89 @@ The reference achieves comparability with a single constant — the 5-minute wal
 
 ---
 
+## 4B. Performance & Parallelism
+
+**Speed is a first-class requirement, because throughput is what makes the loop viable at all.**
+
+### 4B.1 Why it decides whether the lab works
+
+| `evaluate.py` runtime | Experiments overnight (12h, 1 core) |
+|---|---|
+| 1 second | ~43,000 |
+| 10 seconds | ~4,300 |
+| 2 minutes | ~360 |
+| 20 minutes | ~36 |
+
+That is the difference between a research laboratory and a slow notebook. The reference project (PRD §14) fixes a 5-minute budget precisely so ~100 experiments fit in a night. **Target: `evaluate.py` completes in seconds, not minutes.**
+
+### 4B.2 Vectorise the maths, JIT the path
+
+- **Vectorised NumPy / Polars for everything expressible as array maths** — indicators, transforms, returns, aggregations. No Python loops over bars.
+- **Numba JIT for genuinely path-dependent logic** — trailing stops, position state, sequential fills. These cannot be vectorised honestly, and a `@njit` loop is far faster than a Python one *and* far easier to keep correct than a contorted vectorised version.
+- **Polars over pandas** for large frames; **DuckDB** for analytical queries straight over Parquet without materialising in Python.
+- **Memory-mapped columnar reads.** Load only the columns and date range a fold needs.
+- **Compute indicators once per snapshot, not once per fold.** Across ~24 rolling folds this is the single largest easy win.
+
+### 4B.3 Parallelism — processes, not threads ★
+
+**Python threads do not speed up CPU-bound backtesting.** The GIL serialises them; you get complexity and no throughput. Use:
+
+- **`multiprocessing` / `joblib` across independent units of work**
+- **NumPy and Numba release the GIL** internally, so vectorised work already uses hardware efficiently within one process
+- Free-threaded CPython builds are maturing but should not be depended on
+
+What is embarrassingly parallel, in priority order:
+
+| Work | Parallel across | Notes |
+|---|---|---|
+| Walk-forward folds | ~24 folds | Each fold is fully independent — the biggest single win |
+| Monte Carlo / bootstrap | replications | Trivially parallel |
+| **Null-world calibration** | replications × null models | The heaviest job in the system; parallelise hard |
+| Parameter sweeps | combinations | |
+| Multiple experiments | strategies | Later stages, once the queue exists |
+
+Rule of thumb: parallelise at the **outermost independent level** (folds, replications), not inside the inner maths — the inner loop should already be vectorised or JIT-compiled.
+
+### 4B.4 The tension nobody mentions: vectorisation is the top source of look-ahead ★
+
+This is the one place where "make it fast" fights "make it honest," and speed must not win.
+
+Classic vectorised leaks:
+
+```python
+df['signal'] = df['close'] > df['ma']          # signal from THIS bar's close
+df['ret'] = df['signal'] * df['close'].pct_change()   # ...traded at THIS bar's close
+```
+
+Others: rolling z-scores or percentile ranks computed over the **whole** series; `fillna(method='bfill')` pulling values backwards from the future; centred rolling windows; any normalisation fitted on the full sample before splitting.
+
+Consequences for the design:
+
+- **P0's look-ahead checks (§5.1) become more important as the code gets more vectorised**, not less.
+- Every signal must be explicitly lagged relative to the bar it can act on, and that lag verified by test, not by eyeballing.
+- **Known-answer tests** (Implementation_Plan §4.2) must include a deliberately leaky vectorised strategy that P0 is required to catch.
+
+### 4B.5 Determinism under parallelism — non-negotiable
+
+Parallel execution must not change results. Reproducibility is a hard requirement (§13), and a score that shifts between runs destroys the comparability everything else rests on.
+
+- **Seeds derived per fold / per replication** from a base seed, never from wall clock or worker ID.
+- **Deterministic reduction order** — floating-point summation is not associative, so results must be combined in a fixed order regardless of which worker finishes first.
+- Concatenation of fold returns follows **chronological order**, never completion order.
+- The same experiment re-run must produce a **bit-identical** `honest_score`.
+
+### 4B.6 Per-experiment time budget
+
+Borrowed from the reference project's fixed wall clock: an experiment exceeding its budget is **killed and recorded as `crash`**, not allowed to run for an hour. This keeps overnight throughput predictable and stops one pathological strategy from consuming a whole night.
+
+### 4B.7 Order of work
+
+**Correct first, then measure, then optimise the measured bottleneck.** A fast wrong answer is worse than a slow one, because it is wrong at scale. But nothing in the architecture may *preclude* speed — hence vectorised data structures, process-level parallelism, and columnar storage from the start.
+
+Profile before optimising. The bottleneck is rarely where it feels like it is; on this workload it is usually data loading and per-fold indicator recomputation, not the maths.
+
+---
+
 ## 5. The Validation Battery
 
 Executed as an ordered funnel. Cheap tests first; a failure short-circuits the rest.
@@ -674,6 +757,10 @@ Experiment throughput is tied to measured FDR. If FDR rises, throughput automati
 | Concern | v1 | Later |
 |---|---|---|
 | Language | Python 3.11+ | same |
+| Array maths | NumPy + Polars (Parquet-native) | same |
+| Path-dependent loops | Numba `@njit` | same |
+| Analytics over Parquet | DuckDB | same |
+| Parallelism | `multiprocessing`/`joblib` across folds and replications — **not threads** (§4B.3) | Distributed workers |
 | Reasoning | Claude Code (stateless sessions) | same |
 | Strategy code history | git (hash referenced from SQLite) | same |
 | Job queue | none in nanoAQRL; SQLite table + leases when the scheduler arrives | Redis |
@@ -692,6 +779,9 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 
 | Requirement | Target |
 |---|---|
+| **`evaluate.py` runtime** | **Seconds, not minutes** (§4B.1) |
+| **Determinism under parallelism** | Bit-identical `honest_score` on re-run (§4B.5) |
+| **Fold-level parallelism** | Scales with cores; no shared mutable state |
 | Experiment reproducibility | 100% from stored record |
 | Scheduler recovery | Resumes cleanly after kill -9; no orphaned RUNNING jobs beyond lease TTL |
 | Idempotency | Re-running any job produces no duplicate state |
@@ -729,5 +819,6 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 |---|---|
 | 2026-07-27 | Initial document. Execution model, single-`evaluate.py` decision with Market/Timeframe profile factoring, provenance hashing, validation battery, operator library, knowledge subsystem, safety controls. |
 | 2026-07-27 | Added §2A nanoAQRL (the actual v1 shape, file permissions, SQLite+git split, 3-table minimum), §4A the honest score and ranked criteria, §8A adversarial integrity (reward hacking, the vault, null-world calibration, autonomy ratchet). Evaluator is now unreadable as well as unwritable by the agent. |
+| 2026-07-27 | Added **§4B Performance & Parallelism** — throughput targets, vectorise-the-maths/JIT-the-path, process-level parallelism across folds and replications (threads are useless here under the GIL), determinism requirements under parallelism, per-experiment time budget, and the tension that vectorisation is the top source of look-ahead bias. |
 | 2026-07-27 | **Walk-forward resolved.** Scheme fixed as rolling with 1-year test windows (§4A.2f); fold combination fixed as concatenation into a single OOS series (§4A.2h), with per-fold metrics stored for diagnosis but not driving keep/discard. Added §4A.2g — scheme selection is a multiple-testing channel the deflated Sharpe cannot see, so the scheme is fixed per campaign and hashed into provenance. Added §4A.2i on what walk-forward actually tests. |
 | 2026-07-27 | **§4A resolved.** Honest score fixed as the deflated lower bound on out-of-sample Sharpe: `SR_oos − 2·SE(SR) − SR*(N_trials)`, on purged/embargoed walk-forward returns at 2× costs. Added the three-term derivation and the gaming vectors each term closes, rejected alternatives, bar/score separation (drawdown gates but does not rank), gate enforcement in `evaluate.py` rather than `program.md` alone, and OOS as a consumable resource. |
