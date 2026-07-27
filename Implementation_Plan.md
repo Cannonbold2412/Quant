@@ -79,7 +79,7 @@ Stages 1–13 remain the destination. None of them begin until Stage 0 has run f
 | **0.2** | **Build `evaluate.py`** around that score, with the **hard bar enforced inside it** | Structurally isolated: the agent can neither read nor edit it. The bar gates before any score is computed |
 | **0.3** | **Run the null-world test** (TRD §8A.3) | Prove the scorer does not invent discoveries in pure noise. Fix and re-run until FDR is low |
 | **0.4** | **Build the vault** (TRD §8A.2) | Lock the holdout *before* the loop ever touches real data |
-| **0.5** | Write `program.md` and `strategy.py`, wire the keep/reset loop | Small, once 0.1–0.4 exist |
+| **0.5** | Write `program.md` (contents specified in TRD §2A.3a) and `strategy.py`, wire the keep/reset loop | Small, once 0.1–0.4 exist. `program.md` must carry the anti-look-ahead rules and the bar's dimensions, but never the scoring formula or its numbers |
 | **0.5a** | **Profile, then parallelise across folds** (TRD §4B) | Vectorised maths, Numba for path-dependent logic, processes not threads. Verify determinism before trusting any parallel result |
 | **0.6** | **Run it one night. Read every row of `results.tsv` by hand** | The only way to learn what the agent actually does |
 | **0.7** | Improve `program.md` from what you saw | Repeat for several weeks |

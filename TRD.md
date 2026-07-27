@@ -110,6 +110,51 @@ The reference lets the agent **read** `prepare.py`; only editing is forbidden. W
 
 Justification: `val_bpb` survives being understood — knowing how a held-out likelihood is computed does not help you fake one. A backtest score does not survive being understood. An agent that can read the scorer will eventually exploit a weakness in it, not from malice but because exploiting the measurement is the cheapest path to a higher number. See §8A.1.
 
+### 2A.3a What `program.md` must contain ★
+
+Since the agent cannot read `evaluate.py` (§2A.3), `program.md` is the **only** channel through which it learns what will be checked. That forces a deliberate split:
+
+| Reveal | Hide |
+|---|---|
+| **Correctness rules** — the look-ahead prohibitions below. Not gameable; hiding them only causes avoidable failures | **The scoring formula and its thresholds.** These *are* gameable — an agent that knows the exact haircut can aim at it |
+| The bar's *dimensions* (trades, drawdown, breadth, complexity exist) | The bar's *numbers* |
+
+**These instructions reduce the error rate. They do not enforce anything.** The agent cannot grade its own look-ahead; P0 (§5.1) remains the enforcement layer. Both, always.
+
+#### Required content — anti-look-ahead rules
+
+**Signal timing**
+- Every signal is computed from data available at or before bar *t*, and acted on at *t+1* or later per the fill model.
+- Explicitly lag every signal before combining it with returns. Never multiply a same-bar signal by a same-bar return.
+- `shift(-n)` is forbidden anywhere, for any reason.
+
+**Statistics and normalisation**
+- Rolling statistics only. Never compute mean, standard deviation, z-score or percentile rank over the whole series.
+- No centred windows (`center=True`).
+- Any fitted transform — scaler, PCA, threshold — is fitted on **training data only** and applied to test data.
+- Thresholds are derived from the training window, never from the full sample.
+
+**Missing data**
+- `bfill()` / `fillna(method='backfill')` is forbidden — it pulls the future backwards.
+- Forward-fill only, and be explicit about why it is safe.
+
+**Resampling and joins**
+- A bar's own close is not known until that bar closes. Do not use it to decide an action inside the same bar.
+- Timestamp merges must not silently align future data to past rows.
+
+**Fitting**
+- Parameter tuning happens **inside the fold, on the training window only** (§4A.2i). If tuning ever touches the test window, the fold is worthless.
+
+**Verification duty**
+- Before committing, state in the commit message which bars each signal reads and what its lag is. Articulating the timing catches most errors before they reach P0.
+
+#### Required content — behavioural rules
+
+- **A P0 rejection is a bug in your code, not an obstacle.** Fix the cause. Do not restructure code to get past the check while preserving the behaviour — that is the failure mode this whole architecture exists to prevent.
+- **Prefer the simpler strategy** where results are close (tertiary criterion, §4A.3).
+- **Stop when the bar is cleared.** Do not keep searching for a higher number (PRD §13.2).
+- **Do not pause to ask the human whether to continue.**
+
 ### 2A.4 Storage decision — SQLite *and* git, not either/or
 
 The reference uses git as the entire experiment database. We do not, for one decisive reason: **deflated Sharpe requires a trial count**, and "how many attempts have been made in this family?" cannot be answered by grepping `git log`. Paper trading, health monitoring and deployment state reinforce the same conclusion.
@@ -515,6 +560,7 @@ Consequences for the design:
 - **P0's look-ahead checks (§5.1) become more important as the code gets more vectorised**, not less.
 - Every signal must be explicitly lagged relative to the bar it can act on, and that lag verified by test, not by eyeballing.
 - **Known-answer tests** (Implementation_Plan §4.2) must include a deliberately leaky vectorised strategy that P0 is required to catch.
+- **The prohibitions are written into `program.md`** (§2A.3a) so the agent avoids them by default — but that is error reduction, not enforcement. P0 remains the guard.
 
 ### 4B.5 Determinism under parallelism — non-negotiable
 
@@ -819,6 +865,7 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 |---|---|
 | 2026-07-27 | Initial document. Execution model, single-`evaluate.py` decision with Market/Timeframe profile factoring, provenance hashing, validation battery, operator library, knowledge subsystem, safety controls. |
 | 2026-07-27 | Added §2A nanoAQRL (the actual v1 shape, file permissions, SQLite+git split, 3-table minimum), §4A the honest score and ranked criteria, §8A adversarial integrity (reward hacking, the vault, null-world calibration, autonomy ratchet). Evaluator is now unreadable as well as unwritable by the agent. |
+| 2026-07-27 | Added **§2A.3a — required contents of `program.md`**: the reveal/hide split (correctness rules are shown since they are not gameable; the scoring formula and bar numbers are hidden since they are), the full anti-look-ahead rule set the agent must follow, and behavioural rules including "a P0 rejection is a bug, not an obstacle". Instructions reduce the error rate; P0 still enforces. |
 | 2026-07-27 | Added **§4B Performance & Parallelism** — throughput targets, vectorise-the-maths/JIT-the-path, process-level parallelism across folds and replications (threads are useless here under the GIL), determinism requirements under parallelism, per-experiment time budget, and the tension that vectorisation is the top source of look-ahead bias. |
 | 2026-07-27 | **Walk-forward resolved.** Scheme fixed as rolling with 1-year test windows (§4A.2f); fold combination fixed as concatenation into a single OOS series (§4A.2h), with per-fold metrics stored for diagnosis but not driving keep/discard. Added §4A.2g — scheme selection is a multiple-testing channel the deflated Sharpe cannot see, so the scheme is fixed per campaign and hashed into provenance. Added §4A.2i on what walk-forward actually tests. |
 | 2026-07-27 | **§4A resolved.** Honest score fixed as the deflated lower bound on out-of-sample Sharpe: `SR_oos − 2·SE(SR) − SR*(N_trials)`, on purged/embargoed walk-forward returns at 2× costs. Added the three-term derivation and the gaming vectors each term closes, rejected alternatives, bar/score separation (drawdown gates but does not rank), gate enforcement in `evaluate.py` rather than `program.md` alone, and OOS as a consumable resource. |

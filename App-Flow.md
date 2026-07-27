@@ -105,7 +105,7 @@ Every arrow into and out of an agent passes through the **job queue** and the **
 - **`strategy.py` is the only writable file.** `data.py` is read-only; `evaluate.py` is neither readable nor writable.
 - **The bar is enforced in `evaluate.py`, not merely stated in `program.md`** (TRD §4A.3b). `program.md` tells the agent what it is aiming at; `evaluate.py` decides whether it got there. Otherwise the agent grades its own homework.
 - **One float drives the loop.** All other metrics are computed and stored, but only `honest_score` decides keep vs discard.
-- **`program.md` is human-edited.** As the agent makes avoidable mistakes, the human adds a line. That file — not an agent-maintained knowledge base — is where accumulated wisdom lives in v1.
+- **`program.md` is human-edited.** As the agent makes avoidable mistakes, the human adds a line. That file — not an agent-maintained knowledge base — is where accumulated wisdom lives in v1. Its required contents, including the anti-look-ahead rule set and the reveal/hide split, are specified in TRD §2A.3a.
 - **Every run gets a status:** `keep` · `discard` · `crash`. No result goes unjudged.
 - **Do not stop to ask the human.** Human gates exist only at paper trading and live capital.
 - **Stop on satisficing, not maximising.** The first strategy clearing the pre-set bar wins (PRD §13.2). A later, higher score replaces it only by a wide margin on untouched data.
@@ -665,4 +665,5 @@ Check vault budget for this FAMILY (not this strategy)
 |---|---|
 | 2026-07-27 | Initial document. All 11 flows mapped, evidence-based stop conditions, trial counting, curiosity loop closure, two human gates, error/edge cases, traceability chain. |
 | 2026-07-27 | Added §1A Flow 0 (the nanoAQRL loop that actually runs first), §15 null-world calibration, §16 vault access. |
+| 2026-07-27 | Flow 0 now points at TRD §2A.3a for the required contents of `program.md`. |
 | 2026-07-27 | Flow 0 updated for the resolved honest score — the hard bar now gates inside `evaluate.py` before any score is computed, and one float drives keep/discard. |
