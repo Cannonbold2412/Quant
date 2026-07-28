@@ -1,0 +1,30 @@
+# Weekly bars.
+#
+# At and above one day, the count comes from calendar arithmetic rather than
+# session hours: 365.25 days / 7 = 52.18 bars per year, the same on every
+# market. The assertion below is therefore market-independent in value.
+
+name: weekly
+version: "1.0.0"
+description: One bar per calendar week.
+
+bar_seconds: 604800
+fill_model: next_open
+cost_stress_multipliers: [1.0, 2.0]
+
+walk_forward:
+  train_years: [1, 2, 3]
+  test_years: 1
+  min_train_bars: 52
+  min_test_bars: 52
+
+# Far fewer opportunities per year than daily, so the 100-trade floor would
+# demand ~2 years of continuous trading. Kept at 100 anyway: the bar is
+# pre-registered and lowering it per timeframe is exactly the kind of
+# after-the-fact adjustment the acceptance bar exists to prevent.
+min_trades: 100
+overnight_positions: true
+fidelity_warning: null
+
+periods_per_year_assertions:
+  nse_equity: 52.1786

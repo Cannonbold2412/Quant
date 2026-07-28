@@ -1,0 +1,33 @@
+# Daily bars.
+#
+# periods_per_year is NOT declared here — it depends on the market calendar as
+# well as the bar size, and is derived at resolution time. The assertion below
+# is a regression guard: if the NSE calendar is ever edited such that daily bars
+# stop deriving 252, loading this profile fails loudly rather than silently
+# rescaling every Sharpe in the database (TRD §13.2).
+
+name: daily
+version: "1.0.0"
+description: One bar per trading session. The default research timeframe.
+
+bar_seconds: 86400
+fill_model: next_open
+
+# 1x for the reported result, 2x for the pre-registered cost stress.
+cost_stress_multipliers: [1.0, 2.0]
+
+walk_forward:
+  # All three evaluated, best reported, N_trials x3 for the selection (TRD §8.2).
+  train_years: [1, 2, 3]
+  # Always 1. Fixed regardless of train length — it represents re-fit cadence,
+  # not a search parameter.
+  test_years: 1
+  min_train_bars: 252
+  min_test_bars: 252
+
+min_trades: 100
+overnight_positions: true
+fidelity_warning: null
+
+periods_per_year_assertions:
+  nse_equity: 252

@@ -1,6 +1,6 @@
 # Implementation Plan — AQRL
 
-> **Status:** Design complete. **Nothing here is built yet.**
+> **Status:** **Stage 0 (nanoAQRL) and Stage 1 (Foundations) are built.** Stages 2–13 not started.
 > **Last updated:** 2026-07-28
 > **Companion docs:** `PRD.md` (why) · `TRD.md` (how) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences)
 
@@ -133,6 +133,10 @@ Plus three SQLite tables (`strategies`, `experiments`, `evaluations`) with `expe
 | Structured logging | Correlation IDs threading `strategy → experiment → job` |
 
 **Done when:** a market snapshot can be ingested, versioned, hashed and loaded by ID; profiles resolve and hash deterministically.
+
+> ✅ **Built.** The `aqrl/` package: layered config, canonical content hashing, structured logging with correlation IDs, a migration runner over every `Backend-Schema.md` table, a thin repository layer, YAML→validated→hashed profiles spanning 1 second to 1 month, and the data layer — content-addressed snapshots, load-time corporate-action adjustment, point-in-time universe resolution, and ingest-time validators. `nanoaqrl` now persists through the canonical schema. Exercised via the `aqrl` CLI.
+>
+> **Still blocked on data, as designed:** point-in-time membership ships as table, resolver, importer and tests, but real snapshots stay `point_in_time_membership = 0` until price history exists for the ~100–150 ever-members of NIFTY-50. Indian equity results must not reach live capital until then.
 
 ---
 
@@ -514,3 +518,5 @@ Not in the v1 build:
 | 2026-07-28 | **Design decisions locked in** — Stage 0.1 specifies best-of-three train windows with the ×3 trial count and per-fold tuning; Stage 1 gained per-`(market, asset_class)` cost models and the 1s–1month profile range. |
 | 2026-07-28 | **Data integrity added to Stage 1** — the corporate-action adjustment pipeline, the unexplained-jump validator, and point-in-time universe resolution. Added the survivorship, unadjusted-data and incomplete-actions risks. |
 | 2026-07-28 | **Full rewrite.** Cross-references updated to the renumbered TRD; changelog consolidated. No plan decisions changed. |
+| 2026-07-28 | **Stage 0 built.** nanoAQRL's five files, the honest score, best-of-three walk-forward, the vault, P0 look-ahead scans, and null-world calibration — **FDR measured at 0/40 on all three null models, clearing M0.** |
+| 2026-07-28 | **Stage 1 built.** The `aqrl/` package: config, content hashing, correlation-ID logging, migrations covering every `Backend-Schema.md` table, a thin repository layer, content-hashed profiles with **derived** annualisation across 1s–1month, and the data layer (snapshots, load-time adjustment, point-in-time universe, ingest validators) plus the `aqrl` CLI. `nanoaqrl` ported onto the canonical schema; its hardcoded `PERIODS_PER_YEAR = 252` and duplicate cost model are gone. Point-in-time membership remains blocked on data collection. |

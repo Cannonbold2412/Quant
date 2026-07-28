@@ -1,6 +1,6 @@
 # App Flow — AQRL
 
-> **Status:** Design complete for v1. No implementation started.
+> **Status:** Design complete for v1. **Stages 0-1 built** (`nanoaqrl/`, `aqrl/`); Stages 2-13 not started.
 > **Last updated:** 2026-07-28
 > **Companion docs:** `PRD.md` (why) · `TRD.md` (architecture) · `Backend-Schema.md` (state) · `UI-UX-Brief.md` (human touchpoints)
 

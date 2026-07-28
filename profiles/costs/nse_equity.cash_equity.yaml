@@ -1,0 +1,50 @@
+# NSE cash equity, DELIVERY (TRD §6.3).
+#
+# Round trip works out to ~27.7 bps all-in against ~22.2 bps statutory. That
+# number shapes what is worth researching at all: a swing strategy must average
+# more than ~30 bps per round trip merely to break even, and the 2x cost stress
+# means clearing ~55-65 bps. At 100 trades/year that is ~3% of turnover consumed
+# annually before any edge exists.
+#
+# PROVENANCE: these are currently-published statutory rates, not contract-note
+# figures. `requires_contract_note_verification` stays true until each is
+# re-derived from a real broker contract note — the risk register calls stale
+# published rates "a silent, systematic bias in every backtest that uses it".
+
+market: nse_equity
+asset_class: cash_equity
+version: "1.0.0"
+currency: INR
+
+# Securities Transaction Tax: 0.1% on BOTH sides of a delivery trade.
+stt_buy_bps: 10.0
+stt_sell_bps: 10.0
+
+# Stamp duty: 0.015%, buy side only. SEBI-uniform since 2020.
+stamp_duty_buy_bps: 1.5
+stamp_duty_sell_bps: 0.0
+
+# NSE exchange transaction charge, each side.
+exchange_txn_bps: 0.297
+
+# SEBI turnover fee plus IPFT, each side.
+sebi_turnover_bps: 0.01
+
+# GST at 18% on (brokerage + exchange + SEBI), each side.
+gst_rate: 0.18
+
+# Zero on delivery at a discount broker.
+brokerage_bps: 0.0
+
+# NOT a statutory rate — a market-impact allowance for a liquid NIFTY-50 name,
+# 2 bps per side. Shrinks with liquidity and must be revisited per instrument.
+slippage_bps: 2.0
+
+# Flat DP charge on delivery sells, expressed against a reference trade size.
+flat_charge_sell: 15.0
+reference_trade_size: 100000.0
+
+source: "Public NSE/SEBI statutory rate schedules"
+derived_at: "2026-07"
+requires_contract_note_verification: true
+is_placeholder: false

@@ -1,0 +1,27 @@
+# Monthly bars — the slow end of the supported range.
+#
+# bar_seconds is 365.25/12 days, so the derivation yields exactly 12 bars per
+# year. A 1-year test window is 12 bars: statistical power is the binding
+# constraint here, the mirror image of the fidelity problem at 1 second.
+
+name: monthly
+version: "1.0.0"
+description: One bar per calendar month.
+
+bar_seconds: 2629746
+fill_model: next_open
+# At monthly, costs are close to a rounding error against the move size.
+cost_stress_multipliers: [1.0, 2.0]
+
+walk_forward:
+  train_years: [1, 2, 3]
+  test_years: 1
+  min_train_bars: 12
+  min_test_bars: 12
+
+min_trades: 100
+overnight_positions: true
+fidelity_warning: null
+
+periods_per_year_assertions:
+  nse_equity: 12.0

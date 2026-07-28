@@ -1,5 +1,19 @@
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local configuration and secrets — never tracked.
+.env
+
+# Metadata databases and the Parquet snapshot store. Snapshots are immutable
+# content-addressed data, not source; they are reproduced by `aqrl snapshot
+# ingest`, never committed.
+*.db
+data/
 nanoaqrl/*.db
 nanoaqrl/results.tsv.bak

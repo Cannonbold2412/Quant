@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from aqrl.profiles import ProfileLoader
+
 from ._lib.cost_models import CostModel, get_cost_model
 from ._lib.synthetic_data import synthetic_ohlcv
 from ._lib.vault import VaultConfig, VaultGuard, VaultLockedError  # noqa: F401  (re-exported for callers)
@@ -30,8 +32,18 @@ from ._lib.vault import VaultConfig, VaultGuard, VaultLockedError  # noqa: F401 
 MARKET = "nse_equity"
 ASSET_CLASS = "cash_equity"
 TIMEFRAME = "daily"
-PERIODS_PER_YEAR = 252
 INSTRUMENT = "SYN_NSE_INDEX_PROXY"
+
+# Derived from the market calendar and the bar size, never hardcoded (TRD
+# §13.2): "one wrong value makes every Sharpe in the database fiction." For
+# nse_equity x daily this resolves to 252, but it resolves to 94,500 for 1-minute
+# bars on the same market and 525,600 for 1-minute bars on a 24/7 venue — which
+# is exactly why the constant that used to sit here was a latent bug.
+_RESOLVED = ProfileLoader().resolve(MARKET, TIMEFRAME, ASSET_CLASS)
+PERIODS_PER_YEAR = _RESOLVED.periods_per_year
+MARKET_PROFILE_HASH = _RESOLVED.market_profile_hash
+TIMEFRAME_PROFILE_HASH = _RESOLVED.timeframe_profile_hash
+COST_MODEL_HASH = _RESOLVED.cost_model_hash
 
 _N_YEARS = 20
 _N_DAYS = 252 * _N_YEARS

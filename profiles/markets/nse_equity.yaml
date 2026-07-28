@@ -1,0 +1,71 @@
+# NSE cash equity (TRD §6.4).
+#
+# The first fully-specified market profile. The loader is generic — this file
+# is data, not a special case.
+
+name: nse_equity
+version: "1.0.0"
+description: >
+  National Stock Exchange of India, cash equity segment. Regular session only;
+  the pre-open call auction (09:00-09:15) is excluded because it does not
+  produce bars a strategy can trade on the same terms.
+
+asset_classes:
+  - cash_equity
+  - etf
+
+calendar:
+  timezone: Asia/Kolkata
+  sessions:
+    - start: "09:15:00"
+      end: "15:30:00"
+  # 250-252 sessions is the long-run NSE average after ~13 gazetted holidays.
+  trading_days_per_year: 252
+  holidays: []
+  half_days: {}
+
+constraints:
+  tick_size: 0.05
+  lot_size: 1
+  contract_multiplier: 1.0
+  # Circuit limits, not halts: NSE bands are 2/5/10/20% by instrument, with 10%
+  # index-level bands. 20 is the widest single-instrument band.
+  circuit_limit_pct: 20.0
+  # Indian cash equities cannot be held short overnight.
+  short_selling: intraday_only
+
+universe:
+  index_name: NIFTY50
+  # FALSE, deliberately. Point-in-time membership requires price history for the
+  # ~100-150 stocks EVER in NIFTY-50, not today's 50, and that collection is
+  # still open (TRD §14.3a, §14.5). Snapshots resolved against this profile are
+  # therefore marked point_in_time_membership = 0 and cannot reach live capital.
+  point_in_time_available: false
+
+reference:
+  currency: INR
+  risk_free_rate_source: "India 91-day T-bill (RBI weekly auction cut-off)"
+  benchmark: NIFTY50
+  # Cap on participation in a bar's volume, for the capacity check.
+  adv_participation_cap_pct: 1.0
+
+hazards:
+  # Both known-true for this market, and they compound — each inflates results
+  # in the same direction (TRD §14).
+  survivorship: true
+  unadjusted_prices: true
+  contract_roll: false
+  exchange_bad_prints: false
+  notes: >
+    Source data is unadjusted, so splits and bonuses appear as phantom gaps
+    until the load-time adjustment pipeline is applied. Survivorship remains
+    unresolved pending index-membership and delisted-ticker price collection.
+
+# Bar drawdown ceiling. 0.15 is the pre-registered default; only crypto
+# overrides it to 0.20, so this market inherits the default.
+max_drawdown_override: null
+
+# |return| beyond this with no matching corporate action raises an
+# unexplained_jump flag. 20% sits just above the widest circuit band, so a
+# legal single-session move cannot trip it.
+unexplained_jump_threshold: 0.20

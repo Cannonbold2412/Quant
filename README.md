@@ -1,7 +1,14 @@
 # AQRL — Autonomous Quantitative Research Laboratory
 
-> **Status: design phase. No implementation yet.**
-> This repository contains architecture documents only. Nothing has been built.
+> **Status: Stages 0–1 built.**
+> `nanoaqrl/` is the working research loop (Stage 0); `aqrl/` is the foundation layer it now runs on (Stage 1). Stages 2–13 remain design only.
+>
+> ```bash
+> pip install -e .            # Python 3.11+
+> aqrl db migrate             # create the schema
+> aqrl profile show nse_equity --timeframe daily
+> pytest                      # 179 tests
+> ```
 
 ---
 
@@ -86,7 +93,7 @@ The three above stop the **agent** fooling us. They cannot stop the **data** foo
 
 ---
 
-## What gets built first — nanoAQRL
+## What gets built first — nanoAQRL ✅ built
 
 Five files. The five-agent architecture, job queue, knowledge graph and full schema are **later stages**, added on felt need.
 

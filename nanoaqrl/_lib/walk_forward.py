@@ -9,7 +9,7 @@ it never inflates `N_trials` (TRD §8.6) because it never sees the test window.
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
