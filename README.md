@@ -49,7 +49,7 @@ The deflated lower bound on out-of-sample Sharpe. *What Sharpe can we be confide
 
 **Satisficing, not maximising.** Take the *first* strategy that clears a pre-registered bar, not the best after 500 tries. The strategy found on attempt 400 is mostly better at fitting history, and out-of-sample data is a consumable resource. → PRD §13.2
 
-**Storage** — SQLite for metadata, git for strategy code, `experiments.code_commit` linking them. → TRD §2A.4
+**Storage** — SQLite for metadata, git for strategy code, `experiments.code_commit` linking them. One repo, forever — one branch per strategy (`strategy/<id>`), never a separate repo. Branches are never deleted; git's own garbage collector only protects commits a branch points at, so the branch *is* what keeps a strategy's history safe. Almost nothing merges — two unrelated hypotheses have nothing to combine — except at approval: clearing each human gate merges the strategy's branch into `deploy/paper` or `deploy/live`, giving both gates a physical, auditable action and making "what's trading right now" answerable by one command. → TRD §2A.4a/b
 
 **The Librarian** — a sixth agent, outside the five-agent research loop. Reads external documents (papers, books, blogs, GitHub) through one unified pipeline: chunk large documents by structure, extract candidate claims per chunk, then synthesize across chunks into a small number of distinct ideas — one database row per idea, never one per document. Every row is tagged `evidence_tier = external_claim`: a paper's claim is a candidate worth testing, never a fact, and only an internal, tested experiment can promote it to real knowledge. → PRD §6.2, TRD §7.2, Backend-Schema §9
 

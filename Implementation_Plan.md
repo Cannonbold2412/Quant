@@ -258,6 +258,7 @@ Before trusting it, `evaluate.py` must be tested against **known-answer cases**:
 |---|---|
 | Claude session wrapper | Stateless, structured output, schema-validated |
 | Context assembler | **Python builds the brief** — spec, research plan, prior code + diff, prior evaluation, operator catalog |
+| Branch creation | On a strategy's first `IMPLEMENT` job: create `strategy/<strategy_id>`. Every later iteration is just another commit on that same branch (TRD §2A.4a) |
 | Code generation | Emits a strategy module composed from operators |
 | Sandboxed execution | No network, no credentials (TRD §11) |
 | Static check pipeline | Compile, lint, look-ahead scan before evaluation is even queued |
@@ -342,6 +343,7 @@ Before trusting it, `evaluate.py` must be tested against **known-answer cases**:
 | Approve/reject with mandatory note | Recorded to `promotions` |
 | Structured rejection reasons | Flow into A5 as knowledge |
 | Deployment record creation | Baseline `expected_*` copied from validation |
+| **Merge-on-approve** | Approval merges `strategy/<id>` into `deploy/paper` or `deploy/live`; the merge commit references the `promotions.uid` (TRD §2A.4b, `promotions.merge_commit`) |
 
 **Done when:** a human can make a fully-informed gate decision from the terminal. The dashboard is deferred — a CLI is sufficient to validate the loop.
 
@@ -520,3 +522,4 @@ Not in the one-shot build:
 | 2026-07-27 | Rewrote **Stage 10** around the formalized **Librarian Agent** (PRD §6.2): a single unified ingestion pipeline for every source type, explicit chunk/per-chunk-extract/synthesize steps, one `external_knowledge` row per idea rather than per document, and trust tagging (`evidence_tier = external_claim`) so extracted claims are never confused with tested internal evidence. Dropped the earlier idea of separate code-graph tooling for GitHub sources — GitHub text flows through the same pipeline as everything else. |
 | 2026-07-28 | Resolved the plateau rule for Stage 6: default 5 consecutive non-improving iterations, defined against a noise margin rather than raw score comparison, with two-destination routing depending on whether the bar was ever cleared. Added the corresponding done-when criterion. |
 | 2026-07-28 | **Superseded above.** Clearing the acceptance bar is now an immediate, unconditional stop — Stage 6's A3 verdict logic drops `promote` entirely, since the only path to A4 is a bar-clear short-circuit the worker enforces before A3 is invoked. Plateau collapses to a single below-the-bar concept, always routing to A5. Removed the portfolio-correlation deliverable from Stage 8's A4 — out of scope for v1 (PRD §3), replaced with a capacity/liquidity check and a note that correlation is dashboard-only. |
+| 2026-07-28 | Added the git branch/merge convention (TRD §2A.4a/b) to the plan: Stage 5 creates `strategy/<id>` on a strategy's first implementation, and Stage 9's human-gate approval merges it into `deploy/paper` or `deploy/live`, with the merge commit cross-referencing the `promotions` row. |

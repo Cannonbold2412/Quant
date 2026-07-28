@@ -531,6 +531,9 @@ Human sees:
         └── APPROVE → INSERT deployment (mode = paper)
                       set expected_* baseline from validation
                       set trades_required from timeframe profile
+                      merge strategy/<id> → deploy/paper (TRD §2A.4b)
+                      merge commit references this promotion's ID —
+                      the physical record of "this is what's now running"
 ```
 
 ---
@@ -582,6 +585,8 @@ All true → enqueue PROMOTE (stage paper → live_small) → Human Gate 2
 Human reviews paper-trading evidence
         │
         └── APPROVE → deployment (mode = live, allocation 1–5%)
+                       merge strategy/<id> → deploy/live (TRD §2A.4b)
+                       — the second and last merge this strategy ever gets
         │
         ▼
 Continuous monitoring (same health machinery, higher stakes)
@@ -613,6 +618,8 @@ These exist so that **a 100% drawdown is structurally unreachable.** If a strate
 ### 10.2 Retirement feeds back
 
 A retired strategy is not deleted. It becomes a knowledge entry: what worked, for how long, in what regimes, why it decayed. Edge decay is itself a research finding.
+
+**Retirement removes the strategy from `deploy/live` (or `deploy/paper`), never from `strategy/<id>`.** The deploy branches exist purely to answer "what's running right now," so a retired strategy has to leave them; the original research branch is untouched and keeps the full iteration history forever, exactly as it did the day it was first promoted (TRD §2A.4b).
 
 ---
 
@@ -820,3 +827,4 @@ Check vault budget for this FAMILY (not this strategy)
 | 2026-07-27 | Rewrote **Flow 1** around the **Research Brief**: made explicit that A1 is stateless and performs a fresh relevance search over the whole combined knowledge pool on every run rather than tracking "new vs old"; added the high-novelty push trigger so a standout new idea doesn't wait for the nightly batch; clarified that combining external (candidate) and internal (tested) knowledge happens in A1's own reasoning, not a database join, with a worked example; split A1's output traceability into `source_external_knowledge_ids` and `source_internal_knowledge_ids`. |
 | 2026-07-27 | Rewrote **Flow 10** around the Librarian Agent: a single unified pipeline for every source type (no separate code-repository branch), explicit chunk → per-chunk extraction → cross-chunk synthesis → classify steps, and confirmation that the Librarian sits outside the five-agent loop and never blocks an experiment. |
 | 2026-07-27 | Flow 0 updated for the resolved honest score — the hard bar now gates inside `evaluate.py` before any score is computed, and one float drives keep/discard. |
+| 2026-07-28 | Wired the git branching/merge convention (TRD §2A.4a/b) into both human-gate flows: approval at Flow 7 merges `strategy/<id>` into `deploy/paper`, approval at Flow 9 merges into `deploy/live` — each merge commit references the triggering `promotions` row. Flow 9's retirement note (§10.2) now states explicitly that retirement removes a strategy from its deploy branch only, never from its own research branch. |

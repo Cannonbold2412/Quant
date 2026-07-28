@@ -105,6 +105,8 @@ The durable identity of a research thread. One strategy has many experiments (it
 | market | TEXT | |
 | timeframe | TEXT | |
 | status | TEXT | See §11.1 |
+| **git_branch** | TEXT | `strategy/<strategy_id>`. Created on the first `IMPLEMENT` job, one per strategy — never per experiment, never per family (TRD §2A.4a). **Never deleted**, including on rejection |
+| **code_path** | TEXT | Where this strategy's file lives once multiple strategies coexist, e.g. `strategies/<strategy_id>/strategy.py` — required so many strategies can be merged into one deploy branch conflict-free |
 | current_experiment_id | FK → experiments | Latest iteration |
 | best_experiment_id | FK → experiments | Best by primary score |
 | iteration_count | INTEGER | **Feeds the multiple-testing correction** |
@@ -349,6 +351,7 @@ A4's decision. Sees the **entire** research history, not just the final result. 
 | requires_human_approval | INTEGER (bool) | Always 1 for paper and live gates |
 | human_decision | TEXT | `approved` \| `rejected` \| `pending` |
 | human_decided_by, human_decided_at, human_notes | TEXT | |
+| **merge_commit** | TEXT | Set only on `approve`. The commit hash where `strategy/<id>` was merged into `deploy/paper` or `deploy/live` (TRD §2A.4b) — the merge message references this row's `uid`, so the git history and this table cross-reference each other |
 | prompt_version | TEXT | |
 | created_at | | |
 
@@ -363,6 +366,7 @@ A strategy running in paper or live mode.
 | strategy_id, experiment_id | FK | The exact validated version deployed |
 | mode | TEXT | `paper` \| `live` |
 | status | TEXT | `active` \| `paused` \| `stopped` \| `retired` |
+| deploy_branch | TEXT | `deploy/paper` or `deploy/live` — whichever branch currently contains this strategy's code (TRD §2A.4b) |
 | allocation_pct | REAL | |
 | capital_minor_units, currency | INTEGER/TEXT | |
 | broker_ref | TEXT | |
@@ -429,7 +433,7 @@ Immutable audit trail of everything that happened to a deployment.
 | from_state, to_state | TEXT |
 | triggered_by | TEXT (`agent`/`human`/`automatic_rule`) |
 | reason | TEXT |
-| evidence | TEXT (JSON) |
+| evidence | TEXT (JSON) — on `retired`, includes the commit that removed this strategy from its deploy branch (App-Flow §10.2) |
 | created_at | TEXT |
 
 ---
@@ -813,3 +817,4 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 | 2026-07-27 | Split `strategy_specs.source_knowledge_ids` into `source_external_knowledge_ids` and `source_internal_knowledge_ids`, matching the two-trust-tier distinction — a spec can now be traced separately back to the untested candidate ideas it drew on and the tested lessons it respected or overrode (App-Flow §2.2). |
 | 2026-07-27 | Added **`document_chunks`** table and rewrote `external_knowledge` as the Librarian Agent's formal output schema: `source_chunk_ids` for exact-passage traceability, one row per idea rather than per document, `extraction_confidence` renamed and clarified to mean reading accuracy (not truth of the claim), and a new `evidence_tier` column fixed to `external_claim` so this table can never be mistaken for tested, internal evidence. `external_documents` gained `chunk_count` and a `chunked` extraction status. |
 | 2026-07-28 | **Superseded the 2026-07-28 plateau entry above.** Clearing the bar is now an immediate, unconditional stop (App-Flow §5.0) — there is never more than one passing evaluation per strategy, so score-to-score comparison is gone. Removed `acceptance_bars.plateau_margin_factor`. Redefined `plateau_counter` and `plateau_patience` as counting **consecutive bar failures** only. Removed `promotions.correlation_with_live` — A4 no longer assesses portfolio fit; that's deferred, out-of-scope-for-v1 portfolio-construction work, not A4's job. Portfolio correlation is now documented as a dashboard-computed display value only. Added `capacity_liquidity_ok` to `promotions` in its place. |
+| 2026-07-28 | Added the git branch/merge convention (TRD §2A.4a/b): `git_branch` and `code_path` on `strategies`, `merge_commit` on `promotions` (set only on approval, cross-referencing the git history back to this row), `deploy_branch` on `deployments`, and a note on `lifecycle_events.evidence` for the removal commit on retirement. |

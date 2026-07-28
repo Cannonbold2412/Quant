@@ -171,6 +171,52 @@ The split:
 
 Strategy code is **never** stored as a blob in the database — that loses diffs, blame, and the ability to check out and re-run a past experiment.
 
+### 2A.4a Git layout — one repo, branch per strategy, not repo per strategy ★
+
+**One shared repository, forever.** A separate repo per hypothesis was considered and rejected: repos are meant to be a large, durable unit, and creating one per idea — of which there will eventually be millions — means real overhead per hypothesis, no way to search across all of them at once, and a backup/cleanup problem that multiplies without bound.
+
+**Branches are the right size instead.** A branch is a cheap, lightweight pointer to a commit chain — exactly the shape of one hypothesis's story:
+
+```
+ONE repo
+├── branch: strategy/<strategy_id>     — one per strategy (not per experiment,
+│      commit 1: iteration 1 code         not per family). Each iteration within
+│      commit 2: iteration 2 code         the strategy is just another commit
+│      commit 3: ...                      on the same branch (App-Flow §5)
+├── branch: strategy/<other_id>
+│      ...
+```
+
+This is the same convention already adopted from the reference project (PRD §14) — "one branch per campaign" — scaled from one hypothesis to many running concurrently.
+
+**File layout changes once more than one strategy exists at a time.** nanoAQRL's single `strategy.py` (§2A.2) only works because exactly one hypothesis is live at once. Once strategies coexist — several in paper trading, several live — each strategy must live at its own path, e.g. `strategies/<strategy_id>/strategy.py`, so that two strategies' code can be merged into the same branch (§2A.4b) without ever touching the same file.
+
+**Why a branch is not optional, technically:** git's own garbage collector only protects commits reachable from a branch or tag. `experiments.code_commit` records a commit hash in SQLite, but **git has no knowledge of that database** — a commit with no branch pointing at it is, from git's perspective, unreferenced, and `git gc` can eventually delete it. Keeping a live branch per strategy is what guarantees a `code_commit` pointer never silently breaks. Branches are **never deleted**, including for rejected strategies — the branch *is* the permanent research record, cheap to keep forever.
+
+### 2A.4b Merging — only forward, only on approval
+
+Most branches are **never merged anywhere.** Two unrelated hypotheses (an SMA crossover, a mean-reversion RSI strategy) have no shared content to combine — merging them would be meaningless. A rejected or plateaued strategy's branch simply stays where it is, permanently, as the record of what was tried.
+
+**There is exactly one place merging happens: when a strategy is approved to actually run.** Two additional branches exist for this:
+
+```
+deploy/paper   — only strategies approved for paper trading
+deploy/live    — only strategies approved for real capital
+```
+
+This gives the two human gates already established (App-Flow §8, §10) a concrete, physical action:
+
+```
+Human approves research → paper   →  merge strategy/<id> into deploy/paper
+Human approves paper → live        →  merge strategy/<id> into deploy/live
+```
+
+Because each strategy lives at its own file path (§2A.4a), merging many strategies into one deploy branch is conflict-free by construction — they never touch the same files.
+
+**The merge commit doubles as an audit record.** Its message references the `promotions` row it came from (approver, timestamp, promotion ID) — the same fact the database already stores, echoed directly into the code history itself, so "what is trading right now" is always answerable by one unambiguous command: `git show deploy/live`.
+
+**Retirement removes a strategy from the deploy branch, never from its research branch.** `deploy/live` should only ever reflect what is *currently* running; the original `strategy/<id>` branch keeps the full history forever regardless of what happens to the deployment (App-Flow §10.2).
+
 ### 2A.5 Minimum viable schema
 
 `Backend-Schema.md` defines 15+ tables. Building all of them before running one experiment is designing the archive before doing the science. v1 starts with **three**:
@@ -907,6 +953,7 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 - [ ] Near-duplicate spec detection: exact hash only, or embedding similarity threshold?
 - [ ] Vector index choice for v1
 - [ ] How is the operator library versioned against in-flight experiments?
+- [ ] At what branch count does `strategy/<id>` per-strategy branching need a lighter-weight ref namespace instead (tags, or `refs/experiments/*`) rather than full branches — millions of branches is still cheap for git itself, but browsing tools may need this
 - [ ] Paper trading: simulated internally vs broker paper API per market?
 - [ ] Chunk size / section-detection method for documents with poor structural markup (scanned PDFs, plain-text blog posts)
 - [ ] Does the Librarian run continuously or in scheduled batches, and how is its own compute budget capped (TRD §3.4 back-pressure)?
@@ -919,6 +966,7 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 |---|---|
 | 2026-07-27 | Initial document. Execution model, single-`evaluate.py` decision with Market/Timeframe profile factoring, provenance hashing, validation battery, operator library, knowledge subsystem, safety controls. |
 | 2026-07-27 | Added §2A nanoAQRL (the actual v1 shape, file permissions, SQLite+git split, 3-table minimum), §4A the honest score and ranked criteria, §8A adversarial integrity (reward hacking, the vault, null-world calibration, autonomy ratchet). Evaluator is now unreadable as well as unwritable by the agent. |
+| 2026-07-28 | Added **§2A.4a/b — the git branching and merge convention.** One repo, one branch per strategy (not per experiment, not per family, not a separate repo — repos are too heavy a unit for a disposable hypothesis and branches are the right size). Branches are never deleted, including on rejection, because git's garbage collector only protects commits reachable from a branch — `experiments.code_commit` alone doesn't stop `git gc` from reaping an orphaned commit. Merging happens in exactly one direction, at exactly one moment: `deploy/paper` and `deploy/live` branches receive a merge only when a strategy clears a human approval gate, giving both existing gates (App-Flow §8, §10) a physical, auditable action. Retirement removes a strategy from its deploy branch but never from its own research branch. Noted the file-layout consequence: once multiple strategies coexist, each needs its own file path so merges into a shared deploy branch stay conflict-free. |
 | 2026-07-28 | Updated the §3.1 event table: clearing the bar now enqueues PROMOTE directly, bypassing REVIEW/A3 entirely (App-Flow §5.0); "review says done" replaced with "review says plateau," which now only ever enqueues ARCHIVE (A5) since A3 can no longer produce a PROMOTE verdict. |
 | 2026-07-27 | Added **§2A.3a — required contents of `program.md`**: the reveal/hide split (correctness rules are shown since they are not gameable; the scoring formula and bar numbers are hidden since they are), the full anti-look-ahead rule set the agent must follow, and behavioural rules including "a P0 rejection is a bug, not an obstacle". Instructions reduce the error rate; P0 still enforces. |
 | 2026-07-27 | Added **§4B Performance & Parallelism** — throughput targets, vectorise-the-maths/JIT-the-path, process-level parallelism across folds and replications (threads are useless here under the GIL), determinism requirements under parallelism, per-experiment time budget, and the tension that vectorisation is the top source of look-ahead bias. |
