@@ -13,7 +13,13 @@ __pycache__/
 # Metadata databases and the Parquet snapshot store. Snapshots are immutable
 # content-addressed data, not source; they are reproduced by `aqrl snapshot
 # ingest`, never committed.
+#
+# `/data/` is anchored to the project root ON PURPOSE. A bare `data/` matches a
+# directory of that name at ANY depth, which is how the entire `aqrl/data/`
+# package — the Stage 1 data layer — was silently excluded from the Stage 1
+# commit. `Settings.data_root` defaults to `PROJECT_ROOT / "data"` and nothing
+# else, so the anchored form is also the accurate one.
 *.db
-data/
+/data/
 nanoaqrl/*.db
 nanoaqrl/results.tsv.bak
