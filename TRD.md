@@ -197,7 +197,8 @@ Review says "done"       → enqueue PROMOTE job
 Promotion decided        → enqueue ARCHIVE job + notify dashboard
 Paper trading milestone  → enqueue MONITOR job
 Health check trips Red   → enqueue lifecycle action + notify dashboard
-New paper ingested       → enqueue EXTRACT job
+New paper ingested       → enqueue EXTRACT job (the Librarian, PRD §6.2)
+High-novelty extraction  → enqueue GENERATE_SPEC job directly (App-Flow §2.0) — skip the nightly wait
 Failure pattern detected → enqueue research question to curiosity queue
 ```
 

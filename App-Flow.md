@@ -118,26 +118,63 @@ No A1/A3/A4/A5, no job queue, no scheduler, no knowledge graph, no research plan
 
 ## 2. Flow 1 — Hypothesis Generation (A1)
 
-**Trigger:** nightly batch, or event-driven when a research question is answered, or when a goal has unused hypothesis budget.
+### 2.0 A1 is stateless — there is no "since last time" ★
+
+**A1 has no memory between runs.** Every `GENERATE_SPEC` job is a brand-new Claude session that knows nothing about any prior run (TRD §2A "Claude is stateless"). So the question "does it look at new knowledge or old knowledge" has a specific answer: **neither, exclusively — every run searches the whole combined pool, old and new mixed together, fresh, every time.** There is no separate "new" bucket A1 tracks. Freshly written `external_knowledge` rows simply become part of the same searchable pool the very next time anyone queries it.
+
+**Trigger — three kinds, all producing the same job type:**
+1. **Nightly batch** — one `GENERATE_SPEC` job per active `research_goal` with unused hypothesis budget.
+2. **Curiosity closure** — a `research_question` gets answered by new external knowledge.
+3. **Novelty push ★** — when the Librarian writes an `external_knowledge` row with `novelty_score` above a threshold, it enqueues a `GENERATE_SPEC` job directly instead of waiting for the nightly batch, so a genuinely new idea doesn't sit unused for a day.
+
+### 2.1 The Research Brief — what A1 actually receives ★
+
+The worker does **not** hand A1 the database. It hands A1 a small, targeted packet — the **Research Brief** — built by a **relevance search** (vector similarity + structured filters on market/timeframe/category), not a full read of every row. At scale this is the only thing that keeps a job cheap regardless of how large the knowledge base has grown.
 
 ```
 Scheduler picks up GENERATE_SPEC job
         │
         ▼
-Worker assembles context (Python, not Claude):
-        ├── active research_goals + allocation bucket (70/20/10)
-        ├── relevant external_knowledge (vector search on goal)
-        ├── relevant knowledge_entries + knowledge_edges (what we know works/fails)
-        ├── open research_questions
-        ├── recent failure_reasons in this family
-        └── operator catalog (valid for this market + timeframe)
+Worker assembles the RESEARCH BRIEF (Python, not Claude):
+        ├── the research_goal + its allocation bucket (70/20/10)
+        ├── top-K relevant external_knowledge      ← candidates, untested (relevance search)
+        ├── top-K relevant knowledge_entries + edges ← tested, trusted (relevance search)
+        ├── open research_questions for this goal
+        ├── recent failure_reasons in this family     (anti-amnesia)
+        ├── operator catalog valid for this market/timeframe
+        └── trials already spent in this family        (ties to the honest score's trial haircut, TRD §4A.2a)
         │
         ▼
-Claude session (A1)
-        │
-        ▼
-Structured output: hypothesis, rationale, operator composition,
-                   parameter ranges, expected_behavior, source_knowledge_ids
+Claude session (A1) — reads the brief, proposes ONE spec
+```
+
+**Combination happens in A1's reasoning, not in a database join.** The worker's only job is to make sure the *right* old (trusted) and new (candidate) items land in the same brief; noticing a useful combination between them is exactly what the LLM is for. Concretely:
+
+```
+OLD, trusted (knowledge_entries):
+  "ATR multiplier > 3.0 overfits in this NSE trend family"
+
+NEW, untested (external_knowledge, from the Librarian):
+  "Volatility-normalized position sizing reduces drawdown in trending regimes"
+
+→ A1's proposal: replace the fixed ATR multiplier with volatility-normalized
+  sizing — same purpose, a mechanism that sidesteps the known failure mode,
+  incorporating the new idea while respecting the old lesson.
+```
+
+### 2.2 A1's output — one row, always traceable back to both sources
+
+```
+Structured output (→ strategy_specs, Backend-Schema §3):
+        hypothesis            — one falsifiable sentence
+        rationale              — why this is worth trying
+        entry_logic, exit_logic, filter_logic, risk_logic   — operator DAG
+        universe                — instrument selection
+        parameters              — names, defaults, allowed ranges
+        expected_behavior      — A1's prediction, scored later for calibration
+        source_external_knowledge_ids  — which candidate ideas it drew on
+        source_internal_knowledge_ids  — which tested lessons it respected/avoided
+        prompt_version
         │
         ▼
 Compute spec_hash from the canonical operator DAG
@@ -150,7 +187,7 @@ Compute spec_hash from the canonical operator DAG
 Emit event → enqueue IMPLEMENT job
 ```
 
-**Key property:** A1 never sees raw papers or raw data. It sees pre-digested knowledge records. Its whole job is judgment about *what to investigate*.
+**Key property, unchanged:** A1 never sees a raw paper or raw market data. It sees pre-digested, structured records — from both knowledge bases — and its whole job is judgment about what to investigate next.
 
 **Anti-amnesia check:** before proposing, the worker surfaces prior failures matching the proposed operators. If knowledge says "ATR > 3.0 always overfits here," A1 receives that and must justify contradicting it.
 
@@ -694,5 +731,6 @@ Check vault budget for this FAMILY (not this strategy)
 | 2026-07-27 | Initial document. All 11 flows mapped, evidence-based stop conditions, trial counting, curiosity loop closure, two human gates, error/edge cases, traceability chain. |
 | 2026-07-27 | Added §1A Flow 0 (the nanoAQRL loop that actually runs first), §15 null-world calibration, §16 vault access. |
 | 2026-07-27 | Flow 0 now points at TRD §2A.3a for the required contents of `program.md`. |
+| 2026-07-27 | Rewrote **Flow 1** around the **Research Brief**: made explicit that A1 is stateless and performs a fresh relevance search over the whole combined knowledge pool on every run rather than tracking "new vs old"; added the high-novelty push trigger so a standout new idea doesn't wait for the nightly batch; clarified that combining external (candidate) and internal (tested) knowledge happens in A1's own reasoning, not a database join, with a worked example; split A1's output traceability into `source_external_knowledge_ids` and `source_internal_knowledge_ids`. |
 | 2026-07-27 | Rewrote **Flow 10** around the Librarian Agent: a single unified pipeline for every source type (no separate code-repository branch), explicit chunk → per-chunk extraction → cross-chunk synthesis → classify steps, and confirmation that the Librarian sits outside the five-agent loop and never blocks an experiment. |
 | 2026-07-27 | Flow 0 updated for the resolved honest score — the hard bar now gates inside `evaluate.py` before any score is computed, and one float drives keep/discard. |

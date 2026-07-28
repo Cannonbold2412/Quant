@@ -130,7 +130,8 @@ A1's output. Immutable once created; a revised spec is a new row.
 | universe | TEXT (JSON) | Instrument selection rules |
 | parameters | TEXT (JSON) | Parameter names, defaults, and **allowed ranges** |
 | spec_hash | TEXT | **Canonical hash of the operator DAG — duplicate detection (TRD §6.1)** |
-| source_knowledge_ids | TEXT (JSON) | Which knowledge entries inspired this — traceability |
+| source_external_knowledge_ids | TEXT (JSON) | Which `external_knowledge` rows (candidate, untested — TRD §7.2b) inspired this |
+| source_internal_knowledge_ids | TEXT (JSON) | Which `knowledge_entries` (tested, trusted) this spec respects or deliberately overrides |
 | source_question_id | FK → research_questions | If curiosity-driven |
 | expected_behavior | TEXT | What A1 predicts, so we can score A1's calibration |
 | prompt_version | TEXT | |
@@ -804,4 +805,5 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 | 2026-07-27 | Added walk-forward columns to `evaluations` — `wf_scheme` (hashed into provenance), window sizes, `n_folds`, `folds_profitable`, per-fold `fold_metrics` stored but non-gating, and `params_refit_per_fold`. |
 | 2026-07-27 | Added `wf_config_hash` to `experiments` provenance and to the comparability index — hashes `{scheme, train_years, test_years}` together, since train window length carries the same hidden-multiple-testing risk as scheme choice. Split `wf_train_bars`/`wf_test_bars` into explicit `wf_train_years` (configurable 1/2/3) and `wf_test_years` (always 1) on `evaluations`. |
 | 2026-07-27 | Added the honest-score column group to `evaluations` — `honest_score` plus every input to it (`sr_oos`, `se_sr`, `z_multiplier`, `trials_haircut`, skew/kurtosis/n, embargo vs holding period) and the `bar_result` gate columns. Added `min_breadth` and `z_multiplier` to `acceptance_bars`. |
+| 2026-07-27 | Split `strategy_specs.source_knowledge_ids` into `source_external_knowledge_ids` and `source_internal_knowledge_ids`, matching the two-trust-tier distinction — a spec can now be traced separately back to the untested candidate ideas it drew on and the tested lessons it respected or overrode (App-Flow §2.2). |
 | 2026-07-27 | Added **`document_chunks`** table and rewrote `external_knowledge` as the Librarian Agent's formal output schema: `source_chunk_ids` for exact-passage traceability, one row per idea rather than per document, `extraction_confidence` renamed and clarified to mean reading accuracy (not truth of the claim), and a new `evidence_tier` column fixed to `external_claim` so this table can never be mistaken for tested, internal evidence. `external_documents` gained `chunk_count` and a `chunked` extraction status. |
