@@ -13,7 +13,11 @@ __pycache__/
 # Metadata databases and the Parquet snapshot store. Snapshots are immutable
 # content-addressed data, not source; they are reproduced by `aqrl snapshot
 # ingest`, never committed.
+#
+# The leading slash on `/data/` is load-bearing: an unanchored `data/` matches a
+# directory of that name at ANY depth, which silently excluded the `aqrl/data/`
+# source package. Only the snapshot store at the repository root is ignored.
 *.db
-data/
+/data/
 nanoaqrl/*.db
 nanoaqrl/results.tsv.bak
