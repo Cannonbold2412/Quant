@@ -322,6 +322,7 @@ Every experiment row records:
 eval_engine_version      # semver of evaluate.py
 market_profile_hash      # content hash of the resolved profile
 timeframe_profile_hash   # content hash of the resolved profile
+wf_config_hash           # content hash of {scheme, train_years, test_years} — §4A.2f/g
 code_version             # git commit of the strategy code
 data_snapshot_id         # exact dataset version used
 operator_library_version
@@ -425,15 +426,32 @@ Rationale: it matches how a swing strategy is actually maintained; 2000–2025 y
 
 > **Override condition:** if parameters will be fitted once and never revised in production, switch to anchored — the validation scheme should mirror how the strategy will actually be maintained. Changing this mid-campaign invalidates comparability (§4.7).
 
+### 4A.2f-a Train window length ✔ DECIDED
+
+**Test window is always 1 year (fixed, non-negotiable — §4A.2f). Train window length is configurable: 1, 2, or 3 years**, chosen once per strategy family before the campaign begins.
+
+The train window is *not* a free variable to be swept in search of a better score — see §4A.2g. It is a modelling decision about how much history the strategy's slowest-moving component genuinely needs, made once, by the human, in advance.
+
+**What actually trades off, precisely:**
+
+- **Fit stability vs recency.** More train years gives more data to estimate parameters or statistics robustly — this matters if the strategy relies on slow-moving structure (long-lookback indicators, correlation regimes, macro conditioning). But a longer train window also anchors each fold's fit to older information relative to the 1-year test period that follows, so the strategy adapts more slowly if the underlying relationship drifts.
+- **Fold count, and its effect on `n` is real but modest, not dominant.** Because the test window is always 1 year regardless of train length, total out-of-sample observations scale roughly as `(dataset_years − train_years)`. On ~26 years of data: train=1yr → ~25 years of OOS data; train=3yr → ~23 years. An ~8% difference in `n` — worth knowing, but the fit-stability-vs-recency tradeoff above is the dominant consideration, not the width of `SE(SR)`.
+- **The test window never changes with train length.** It stays fixed at 1 year because it represents the strategy's realistic re-fit/re-validation cadence in production (§4A.2f), which is independent of how much history each fit is allowed to see.
+
+**Default, absent a specific reason otherwise: 1 year.** Maximises fold count and forces the strategy to prove it doesn't need a long memory to work. Move to 2 or 3 years only when the strategy's own logic demands more history to stabilise — and say so in the campaign record.
+
+**An emergent property worth naming:** because `evaluate.py` is neither readable nor writable by the agent (§2A.3), the walk-forward configuration — scheme, train length, test length — **cannot be an iteration lever at all.** A3 may propose changes to `strategy.py` (§6.1 of the PRD), but it can never propose "try a 2-year training window instead" — that would be a change to the evaluation contract, which is structurally outside its reach. This is not a limitation to work around; it is the correct consequence of evaluator isolation, and it is exactly why the choice is safe to leave with the human.
+
 ### 4A.2g Scheme selection is a hidden multiple-testing channel ★
 
-Run rolling, get 0.4. Run anchored, get 0.9. Report 0.9. **The deflated Sharpe will not catch this**, because `N_trials` counts strategies tried, not validation methods tried. The leak sits entirely outside the integrity machinery.
+Run rolling, get 0.4. Run anchored, get 0.9. Report 0.9. **The deflated Sharpe will not catch this**, because `N_trials` counts strategies tried, not validation methods tried. The leak sits entirely outside the integrity machinery. **The same leak applies to train window length** — running train=1yr, train=2yr and train=3yr and reporting whichever scored best is the identical mistake in a different variable.
 
 Therefore:
 
-- **One scheme per campaign**, fixed in `evaluate.py` before searching begins.
-- The agent cannot select it — `evaluate.py` is unreadable and unwritable (§2A.3).
-- The scheme is **hashed into provenance** alongside the profiles. Changing it marks all prior results `comparable = 0`.
+- **One scheme, and one train window length, per campaign** — both fixed in `evaluate.py` before searching begins.
+- The agent cannot select either — `evaluate.py` is unreadable and unwritable (§2A.3).
+- Both are **hashed into provenance** alongside the profiles, as `wf_config_hash` (§4.7). Changing either marks all prior results `comparable = 0`.
+- If a human deliberately wants to compare train lengths, that is a legitimate research question — but it must be run as **separate, explicitly labelled campaigns**, each contributing its own count to `N_trials`, never as a silent retry.
 
 ### 4A.2h Combining folds ✔ DECIDED — concatenate, always
 
@@ -844,7 +862,7 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 - [ ] Numeric bar values — min trades, max OOS drawdown, breadth, complexity cap. *Owner: human, written into `program.md` and enforced in `evaluate.py`*
 - [ ] Autocorrelation correction — required from the start, or only once overlapping-position strategies appear?
 - [ ] **Does the agent tune parameters per fold, or write fixed-parameter strategies?** Determines what walk-forward is actually testing and how `evaluate.py` is built (§4A.2i). *Owner: human*
-- [ ] Rolling train-window length — 1 year, matching the test window, or longer for more stable fits?
+- [x] ~~Rolling train-window length~~ — **resolved: configurable 1/2/3 years, test fixed at 1 year, default 1 year (§4A.2f-a)**. Which of the three for the first campaign is still *Owner: human*
 - [ ] Minimum fold count before a score is considered meaningful
 - [ ] Null-world generator: which null models, and how many replications for a stable FDR estimate?
 - [ ] Vault composition — which years, instruments, or markets are locked, and what is the per-family peek budget?
@@ -867,5 +885,6 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 | 2026-07-27 | Added §2A nanoAQRL (the actual v1 shape, file permissions, SQLite+git split, 3-table minimum), §4A the honest score and ranked criteria, §8A adversarial integrity (reward hacking, the vault, null-world calibration, autonomy ratchet). Evaluator is now unreadable as well as unwritable by the agent. |
 | 2026-07-27 | Added **§2A.3a — required contents of `program.md`**: the reveal/hide split (correctness rules are shown since they are not gameable; the scoring formula and bar numbers are hidden since they are), the full anti-look-ahead rule set the agent must follow, and behavioural rules including "a P0 rejection is a bug, not an obstacle". Instructions reduce the error rate; P0 still enforces. |
 | 2026-07-27 | Added **§4B Performance & Parallelism** — throughput targets, vectorise-the-maths/JIT-the-path, process-level parallelism across folds and replications (threads are useless here under the GIL), determinism requirements under parallelism, per-experiment time budget, and the tension that vectorisation is the top source of look-ahead bias. |
+| 2026-07-27 | Added **§4A.2f-a — train window length.** Test window stays fixed at 1 year; train window is configurable at 1/2/3 years, chosen once per family before the campaign, defaulting to 1 year. Documented the real tradeoff (fit stability vs recency; a modest ~8% effect on total OOS `n`, not the dominant factor). Extended §4A.2g: train length is subject to the same hidden-multiple-testing risk as scheme choice, so it is fixed per campaign and folded into a new `wf_config_hash` alongside the scheme. Noted the emergent property that evaluator isolation makes the walk-forward configuration structurally impossible for any agent to select — it can never be an iteration lever. |
 | 2026-07-27 | **Walk-forward resolved.** Scheme fixed as rolling with 1-year test windows (§4A.2f); fold combination fixed as concatenation into a single OOS series (§4A.2h), with per-fold metrics stored for diagnosis but not driving keep/discard. Added §4A.2g — scheme selection is a multiple-testing channel the deflated Sharpe cannot see, so the scheme is fixed per campaign and hashed into provenance. Added §4A.2i on what walk-forward actually tests. |
 | 2026-07-27 | **§4A resolved.** Honest score fixed as the deflated lower bound on out-of-sample Sharpe: `SR_oos − 2·SE(SR) − SR*(N_trials)`, on purged/embargoed walk-forward returns at 2× costs. Added the three-term derivation and the gaming vectors each term closes, rejected alternatives, bar/score separation (drawdown gates but does not rank), gate enforcement in `evaluate.py` rather than `program.md` alone, and OOS as a consumable resource. |

@@ -12,7 +12,7 @@
 
 That is deliberate and sufficient. Reading every row by hand for the first few weeks is how you learn what the agent actually does, and it is the input that improves `program.md`. A dashboard built before the loop produces candidates worth reviewing is decoration.
 
-Everything below describes the destination, built at Stage 12.
+Everything below describes the destination, built at Stage 12 — **except §7a Observability**, which ships far earlier. Decisions need candidates to decide on; watching the machine work is needed the moment more than one agent can be running at once. See §7a and `Implementation_Plan.md` Stage 4.
 
 ---
 
@@ -35,8 +35,8 @@ So the entire interface is designed around one question: **make it easy to rejec
 ### 1.2 Anti-goals
 
 - ❌ Not a trading terminal. No order entry, no live P&L ticker, no charts-for-the-sake-of-charts.
-- ❌ Not a notebook. No code editing, no ad-hoc query building.
-- ❌ Not a data explorer. Deep analysis happens in DuckDB/notebooks; this surfaces decisions.
+- ❌ Not a notebook. No code editing.
+- ❌ The **decision** screens (§3–§6) are not a data explorer — deep ad-hoc analysis lives in §7a Observability, kept structurally separate from where capital decisions are made.
 - ❌ No dark-pattern nudging toward approval. Default state of every gate is **not approved**.
 
 ---
@@ -51,11 +51,12 @@ AQRL Dashboard
 │     ├── Pending: Paper → Live
 │     └── Pending: Lifecycle actions (reduce / pause / retire)
 │
-├── ⬤ Health              ← live & paper deployments, ranked by concern
+├── ⬤ Health              ← live & paper deployments, ranked by concern (flat, ignores hierarchy)
 │     └── Deployment detail
 │
-├── ⬤ Pipeline            ← the funnel, at a glance
-│     ├── Strategies in research
+├── ⬤ Pipeline            ← the LIFECYCLE view — everything, and where it sits (§7)
+│     ├── Research → Review → Paper → Review → Live 1–5% → Live scaled → Retired
+│     ├── Group by: Strategy (default) | Market — a toggle, not a fixed tree (§7.1)
 │     ├── Recently rejected (with reasons)
 │     └── Quarantined (needs human debugging)
 │
@@ -69,10 +70,12 @@ AQRL Dashboard
 │     ├── Knowledge graph
 │     └── Research questions (curiosity queue)
 │
-└── ⬤ System              ← jobs, budgets, errors
+└── ⬤ System              ← jobs, budgets, errors, live agent activity, data explorer (§7a)
 ```
 
 **Landing page is Decisions.** If there are none, it says so plainly and shows the single most concerning health item. Empty state is a feature, not a gap.
+
+**Paper and live are not top-level tabs.** They are stages on one lifecycle track, not two separate rooms — a promotion is a strategy moving along a line, not switching apps. Splitting them also hides the single most useful comparison in the whole product: how live performance decayed relative to paper, which is what calibrates the pipeline itself (§7.2).
 
 ---
 
@@ -166,7 +169,7 @@ A timeline of all 47 iterations: what changed, what happened to the score. Expan
 
 ### 4.1 Deployment list
 
-Ranked by **concern, not by return.** A strategy making money with degrading statistical behavior ranks above a healthy one in a normal drawdown.
+**Flat and ranked by concern, not by return, and it deliberately ignores the Pipeline screen's strategy/market grouping (§7.2).** A health concern can occur in paper or live, under any strategy, in any market — burying it in a tree is how you miss the one thing you needed to see first. A strategy making money with degrading statistical behavior ranks above a healthy one in a normal drawdown.
 
 ```
 🔴  Momentum Breakout v3     LIVE 4%    -12.4%    Behavior diverged — sharpe z=-2.8
@@ -247,11 +250,81 @@ Edge thickness = evidence count. Clicking an edge lists the supporting experimen
 
 ---
 
-## 7. Screen: Pipeline & System
+## 7. Screen: Pipeline
 
-**Pipeline** — the funnel as a live board: strategies in research with their current iteration and score trajectory; recently rejected with structured reasons; **quarantined** strategies that need human debugging (the only place the human does technical work).
+**The atomic unit is the deployment — `strategy × market × mode`**, not the strategy and not the market alone. A deployment is the thing that actually has trades, health, P&L and a lifecycle stage; grouping is a *view* over deployments, not a fixed tree.
 
-**System** — job queue depth, running jobs, failure rates by class, budget consumption vs caps, scheduler heartbeat. Deliberately utilitarian. Budget exhaustion is displayed as a *normal state*, not an error.
+### 7.1 Lifecycle track
+
+The primary layout is the stage the deployment sits at, not paper-vs-live:
+
+```
+Research → Awaiting review → Paper → Awaiting review → Live 1–5% → Live scaled → Retired
+```
+
+Strategies in active research show their current iteration and score trajectory; recently rejected strategies show structured reasons; **quarantined** strategies need human debugging (the only place the human does technical work in the whole product).
+
+### 7.2 Grouping toggle — strategy vs market
+
+Below the lifecycle track, deployments are grouped one of two ways. **Neither is "correct" — they answer different questions, so this is a toggle, not a decision to commit to.**
+
+**By strategy (default)** — how research and knowledge accrue: "JMA works in commodities, weak in forex" is a strategy-first statement.
+
+```
+JMA + ATR Trend   (14 trials across 3 markets — see §7.3)
+  ├── NSE Equity     LIVE 4%    🟢
+  ├── Commodities    PAPER      🟡
+  └── Crypto         PAPER      🔴
+```
+
+**By market** — the risk view. Everything in one market moves together in a crash, so aggregate exposure per market is what gets checked when things get ugly.
+
+```
+NSE Equity
+  ├── JMA + ATR Trend       LIVE 4%
+  ├── Mean Reversion        PAPER
+  └── Vol Breakout          LIVE 2%
+```
+
+### 7.3 Family trial count on group headers ★
+
+When grouped by strategy, the header shows the **family trial count**, not just the strategy name.
+
+The same strategy tried across 3 markets is not "one strategy, three markets" — it is **three trials of the same idea**, and the deflated Sharpe reads the family count exactly this way (TRD §4A.2a, Backend-Schema `strategies.family`). The dashboard must reinforce that reading, not quietly undermine it: showing "JMA+ATR (14 trials across 3 markets)" on the group header keeps the honest framing visible at the exact moment a human is deciding whether the one good result is real or just the survivor.
+
+---
+
+## 7a. Observability — ships early, not at Stage 12 ★
+
+**This is not the decision layer. It exists to debug the machine, not to approve capital.** Once a scheduler is dispatching jobs to more than one agent, grepping SQLite from a terminal to find out why something is stuck becomes real pain — so this ships as soon as the job queue exists (Implementation_Plan Stage 4–5), independent of the curated Decisions/Health/Laboratory/Knowledge screens that wait for Stage 12.
+
+nanoAQRL (Stage 0) does not need this: one agent, sequential, and `results.tsv` already answers everything. Observability earns its place only once there is concurrency to watch.
+
+Lives under **System**, as two sub-views.
+
+### 7a.1 Activity feed — which agent is doing what, right now
+
+A live job feed sourced directly from the `jobs` table:
+
+```
+🟢 A2  Quant Engineer    experiment #4821   implementing...        12s
+🟢 A3  Research Reviewer experiment #4819   reviewing...            3s
+⚪ A1  Research Scientist   —                idle
+✅ A4  Promotion         experiment #4802   done   (47s, $0.08)
+❌ A2  Quant Engineer    experiment #4818   FAILED — compile error
+```
+
+Every row is agent, target strategy/experiment, status, duration, and cost — and every row deep-links into the data explorer below (§7a.2), so "why is this stuck" is one click from "what actually happened."
+
+### 7a.2 Data explorer — opening the database without opening a terminal
+
+A read-only browser over the SQLite tables: a table list, a row viewer with filter and sort, and rows that link to each other (a job row links to its experiment, which links to its evaluation) instead of the human writing joins by hand.
+
+Because this is local, single-user, and strictly read-only, it also includes a **raw SQL query box** — there is no audience of more than one to protect against, so a query builder would be wasted effort. No write path exists anywhere in this view, ever.
+
+### 7a.3 The one deliberate exception to "no polling"
+
+`UI-UX-Brief.md` §11 sets manual-refresh-only as the default, specifically so the product stays calm rather than casino-like. **The activity feed is the one exception.** A live "what's running" view that is twenty seconds stale defeats its own purpose. Every other screen — including the data explorer — stays manual-refresh; only §7a.1 auto-refreshes.
 
 ---
 
@@ -333,19 +406,21 @@ Deliberately sparse. The system should be quiet enough that a notification means
 | Rendering | Server-rendered pages; minimal client JS |
 | Charts | Static/lightweight — no heavy dashboarding framework |
 | Auth | None in v1 (localhost); added when hosted |
-| Refresh | Manual + on-navigation. No polling |
+| Refresh | Manual + on-navigation, everywhere **except the Activity feed (§7a.1)**, which auto-refreshes — the one named exception to no-polling |
 
-The dashboard is the **last thing built**, not the first. A CLI that lists pending decisions is sufficient to validate the loop; the UI comes once the pipeline reliably produces candidates worth reviewing.
+**The decision layer is the last thing built, not the first.** A CLI that lists pending decisions is sufficient to validate the loop; the curated Decisions/Health/Laboratory/Knowledge screens come once the pipeline reliably produces candidates worth reviewing. **Observability (§7a) ships much earlier** — as soon as multiple agents can be running concurrently, because at that point a terminal alone is no longer enough to tell what the machine is doing.
 
 ---
 
 ## 12. Open UX Questions
 
 - [ ] Should the review screen hide A4's recommendation until the human has read the evidence, to avoid anchoring?
-- [ ] How is a multi-strategy portfolio view presented once several strategies are live simultaneously?
+- [x] ~~How is a multi-strategy portfolio view presented once several strategies are live simultaneously?~~ — **resolved: the Pipeline screen's strategy/market grouping toggle (§7.2)**
 - [ ] Mobile: read-only health monitoring, or approvals too? (Leaning read-only — capital decisions deserve a full screen.)
 - [ ] How much of the 47-iteration history is shown by default before it becomes noise?
 - [ ] Should rejected strategies remain browsable indefinitely, or be archived out of the main views after N days?
+- [ ] Does the data explorer (§7a.2) need row-level access control before it is ever exposed beyond localhost, given the raw SQL box?
+- [ ] Retention on the Activity feed (§7a.1) — how far back does job history stay live-browsable before it rolls into the plain experiment tables?
 
 ---
 
@@ -355,3 +430,4 @@ The dashboard is the **last thing built**, not the first. A CLI that lists pendi
 |---|---|
 | 2026-07-27 | Initial brief. "Make it easy to reject" premise, case-against-first review layout, health-not-profit color semantics, laboratory self-measurement screen, sparse notification policy. |
 | 2026-07-27 | Added §0 — v1 has no dashboard; `results.tsv` plus a review CLI is the interface until Stage 12. Added the null-world false discovery rate panel to the Laboratory screen. |
+| 2026-07-27 | Restructured navigation: paper/live are no longer top-level tabs — replaced with a single lifecycle-track Pipeline screen (§7) using deployment (`strategy×market×mode`) as the atomic unit and a strategy/market grouping toggle, with family trial count surfaced on group headers (§7.3) so cross-market re-runs of one idea are never mistaken for independent discoveries. Health stays flat and concern-ranked, deliberately ignoring the new grouping. Added **§7a Observability** — a live agent activity feed and a read-only data explorer with a raw SQL box, both shipped as soon as the job queue exists rather than waiting for Stage 12, with the activity feed carved out as the one named exception to the no-polling rule. |

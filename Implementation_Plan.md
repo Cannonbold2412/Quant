@@ -34,6 +34,9 @@ Stage 1  Foundations (config, DB, profiles, data layer)
     ├──► Stage 4  Job queue + scheduler
     │        │
     │        ▼
+    │    Stage 4a  Observability (activity feed + data explorer) ★
+    │        │
+    │        ▼
     │    Stage 5  A2 Quant Engineer  ──┐
     │        │                         │  the inner loop
     │        ▼                         │
@@ -75,7 +78,7 @@ Stages 1–13 remain the destination. None of them begin until Stage 0 has run f
 
 | # | Task | Why this order |
 |---|---|---|
-| **0.1** | **Implement the honest score** — `SR_oos − 2·SE(SR) − SR*(N_trials)` (TRD §4A, ✔ resolved) | **Rolling** walk-forward, 1-year test windows, purged, embargo ≥ holding period, 2× costs. All folds **concatenated** into one OOS series. Returns one float |
+| **0.1** | **Implement the honest score** — `SR_oos − 2·SE(SR) − SR*(N_trials)` (TRD §4A, ✔ resolved) | **Rolling** walk-forward, test window fixed at 1 year, train window fixed at 1/2/3 years chosen once before the campaign (default 1), purged, embargo ≥ holding period, 2× costs. All folds **concatenated** into one OOS series. Returns one float |
 | **0.2** | **Build `evaluate.py`** around that score, with the **hard bar enforced inside it** | Structurally isolated: the agent can neither read nor edit it. The bar gates before any score is computed |
 | **0.3** | **Run the null-world test** (TRD §8A.3) | Prove the scorer does not invent discoveries in pure noise. Fix and re-run until FDR is low |
 | **0.4** | **Build the vault** (TRD §8A.2) | Lock the holdout *before* the loop ever touches real data |
@@ -231,6 +234,22 @@ Before trusting it, `evaluate.py` must be tested against **known-answer cases**:
 
 ---
 
+## 5A. Stage 4a — Observability ★
+
+**Goal:** watch the machine work, without a terminal. Distinct from the Stage 12 dashboard — this exists to debug the system, not to make decisions, and it ships the moment there's concurrency worth watching rather than waiting for candidates worth reviewing.
+
+| Deliverable | Notes |
+|---|---|
+| Activity feed | Live view over the `jobs` table: agent, target strategy/experiment, status, duration, cost (UI-UX-Brief §7a.1) |
+| Data explorer | Read-only table browser + row viewer with drill-down links + raw SQL box (UI-UX-Brief §7a.2). No write path, ever |
+| Polling exception | Only the activity feed auto-refreshes; everything else in the product stays manual-refresh (UI-UX-Brief §7a.3) |
+
+**Done when:** a human can tell what every agent is doing right now, and inspect any row in the database, without opening a SQLite client or grepping logs.
+
+**Why here and not Stage 12:** once the scheduler dispatches to more than one agent, a terminal alone is no longer sufficient to answer "why is this stuck" — that pain is felt at Stage 4–5, not after strategies start reaching human review.
+
+---
+
 ## 6. Stage 5 — A2 Quant Engineer
 
 **Goal:** spec → working code.
@@ -365,9 +384,9 @@ Before trusting it, `evaluate.py` must be tested against **known-answer cases**:
 
 ## 13. Stage 12 — Dashboard
 
-Built to `UI-UX-Brief.md`. Order: Decisions → Health → Laboratory → Knowledge → Pipeline → System.
+Built to `UI-UX-Brief.md`. Order: Decisions → Health → Pipeline → Laboratory → Knowledge.
 
-Deliberately last. It is a **read-only view plus two decision buttons**; building it earlier would be decorating a lab that cannot yet run an experiment.
+**Observability (activity feed, data explorer) is not part of this stage** — it shipped at Stage 4a, well before this point. Stage 12 is the *decision* layer only: it is a **read-only view plus two decision buttons**; building it earlier would be decorating a lab that cannot yet run an experiment. By Stage 12 the human has already been watching agents work and browsing the database for several stages — this stage adds only what's needed to approve or reject.
 
 ---
 
@@ -491,3 +510,4 @@ Not in the one-shot build:
 | 2026-07-27 | Added **Stage 0 (nanoAQRL)** as the real starting point and **M0 (null-world FDR)** as the gating milestone. Added reward-hacking and selection-bias risks. Prototype code removed from the tree; reuse mapping now points at git history `d08e812`. |
 | 2026-07-27 | Added Stage 0.5a (profile then parallelise), two mandatory known-answer tests (leaky *vectorised* strategy; parallel vs single-threaded bit-identity), and three performance/correctness risks. |
 | 2026-07-27 | Stage 0.1 changed from "decide the honest score" to "implement" it — resolved in TRD §4A. Stage 0.2 now enforces the hard bar inside `evaluate.py`. Remaining Stage 0 unknowns are numeric choices owned by the human. |
+| 2026-07-27 | Added **Stage 4a — Observability**, pulled out of Stage 12 and placed immediately after the job queue exists: live agent activity feed and a read-only database explorer, built to debug the system rather than to make decisions. Stage 12 is now decision-layer only. Stage 0.1 updated to name the configurable train window (TRD §4A.2f-a). |

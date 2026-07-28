@@ -190,14 +190,15 @@ Join table making operator usage queryable — "which experiments ever used a Ka
 | eval_engine_version | TEXT | |
 | market_profile_hash | TEXT | |
 | timeframe_profile_hash | TEXT | |
+| **wf_config_hash** | TEXT | Content hash of `{scheme, train_years, test_years}` (TRD §4A.2f/g). Train window length is subject to the same hidden-multiple-testing risk as scheme choice — hashed for the same reason |
 | operator_library_version | TEXT | |
 | data_snapshot_id | FK → data_snapshots | |
 | random_seed | INTEGER | |
-| comparable | INTEGER (bool) | Set false when engine/profile changes invalidate comparison |
+| comparable | INTEGER (bool) | Set false when engine/profile/wf-config changes invalidate comparison |
 | tokens_spent, compute_seconds | INTEGER | |
 | created_at, completed_at | | |
 
-> **Index on `(strategy_id, iteration)`, `(eval_engine_version, market_profile_hash, timeframe_profile_hash)`.**
+> **Index on `(strategy_id, iteration)`, `(eval_engine_version, market_profile_hash, timeframe_profile_hash, wf_config_hash)`.**
 > The second index answers "which stored results are still comparable?" instantly.
 
 ### `code_versions`
@@ -238,8 +239,10 @@ One row per phase run of `evaluate.py`.
 | n_trials_used | INTEGER | The family trial count fed into the haircut |
 | oos_skew, oos_kurtosis, oos_n_obs | REAL/INT | Inputs to `se_sr`, stored for audit |
 | embargo_bars, holding_period_bars | INTEGER | Embargo must be ≥ holding period or trades leak across the split |
-| **wf_scheme** | TEXT | `rolling` \| `anchored` \| `holdout` \| `cpcv`. **Hashed into provenance** — changing it invalidates comparability (TRD §4A.2g) |
-| wf_train_bars, wf_test_bars | INTEGER | Window sizes |
+| **wf_scheme** | TEXT | `rolling` \| `anchored` \| `holdout` \| `cpcv`. Part of `wf_config_hash` above — changing it invalidates comparability (TRD §4A.2g) |
+| wf_train_years | INTEGER | **1, 2, or 3.** Chosen once per family before the campaign, never swept for a better score (TRD §4A.2f-a). Also part of `wf_config_hash` |
+| wf_test_years | INTEGER | **Always 1.** Fixed regardless of `wf_train_years` — it represents re-fit cadence, not a search parameter |
+| wf_train_bars, wf_test_bars | INTEGER | Bar-count equivalents of the above, resolved per timeframe profile |
 | n_folds | INTEGER | |
 | folds_profitable | INTEGER | How many test windows made money — the consistency diagnostic concatenation hides |
 | fold_metrics | TEXT (JSON) | Per-fold score, trades, drawdown. **Stored for diagnosis; does not drive keep/discard** |
@@ -775,4 +778,5 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 | 2026-07-27 | Added §0A (build 3 tables first, not 15; code stays in git with `code_commit` linking) and §15 integrity tables — `vault_access_log`, `null_world_runs`, `acceptance_bars`. |
 | 2026-07-27 | Added timing columns to `evaluations` — wall clock vs CPU seconds, worker count, and `timed_out` for experiments killed by the per-experiment budget. |
 | 2026-07-27 | Added walk-forward columns to `evaluations` — `wf_scheme` (hashed into provenance), window sizes, `n_folds`, `folds_profitable`, per-fold `fold_metrics` stored but non-gating, and `params_refit_per_fold`. |
+| 2026-07-27 | Added `wf_config_hash` to `experiments` provenance and to the comparability index — hashes `{scheme, train_years, test_years}` together, since train window length carries the same hidden-multiple-testing risk as scheme choice. Split `wf_train_bars`/`wf_test_bars` into explicit `wf_train_years` (configurable 1/2/3) and `wf_test_years` (always 1) on `evaluations`. |
 | 2026-07-27 | Added the honest-score column group to `evaluations` — `honest_score` plus every input to it (`sr_oos`, `se_sr`, `z_multiplier`, `trials_haircut`, skew/kurtosis/n, embargo vs holding period) and the `bar_result` gate columns. Added `min_breadth` and `z_multiplier` to `acceptance_bars`. |

@@ -43,7 +43,7 @@ score = SR_oos − 2·SE(SR) − SR*(N_trials)
 
 The deflated lower bound on out-of-sample Sharpe. *What Sharpe can we be confident is real, after accounting for how few trades we have, how ugly the tails are, and how many things we already tried?* Every other metric is computed and stored, but none of them drive the loop. → TRD §4A
 
-**Walk-forward** — rolling window, 1-year test periods, purged with embargo ≥ holding period. All folds concatenated into one out-of-sample series. The scheme is fixed per campaign and hashed into provenance, because *trying several schemes and reporting the best is a multiple-testing channel the deflated Sharpe cannot see.* → TRD §4A.2f–2i
+**Walk-forward** — rolling window, test period fixed at 1 year, train period configurable at 1/2/3 years (chosen once per family, default 1). All folds concatenated into one out-of-sample series. Both the scheme and the train length are fixed per campaign and hashed into provenance as `wf_config_hash`, because *trying several schemes or train lengths and reporting the best is a multiple-testing channel the deflated Sharpe cannot see* — and since `evaluate.py` is off-limits to the agent, this can never be an iteration lever in the first place. → TRD §4A.2f–2i
 
 **The bar and the score are separate.** A pass/fail bar — minimum trades, maximum drawdown, breadth, 2× cost survival, complexity cap — runs before any score is computed. Drawdown gates but does not rank; a worst-moment statistic is too noisy to rank on. → TRD §4A.3a
 
@@ -107,6 +107,16 @@ Steps 1–4 are the real work. Step 5 is small. **That ratio is the point.**
 7. **Improve `program.md`** from what you saw. Repeat for weeks
 
 → Implementation_Plan §1A
+
+---
+
+## The dashboard, and what ships before it
+
+**The decision layer — Decisions, Health, Pipeline, Laboratory, Knowledge — is built last, at Stage 12,** once the pipeline reliably produces candidates worth reviewing.
+
+**Observability ships much earlier, at Stage 4a** — a live feed of which agent is doing what, and a read-only browser over the database — because once a scheduler is dispatching to more than one agent, a terminal alone stops being enough to see what's happening. It exists to debug the machine, not to approve capital, and it stays structurally separate from the decision screens.
+
+The Pipeline screen itself uses **deployment** (`strategy × market × mode`) as its atomic unit, grouped by strategy or by market via a toggle — not a fixed hierarchy, since the two answer different questions (how research accrues, vs. where risk concentrates). Paper and live are stages on that one lifecycle track, not separate tabs. → UI-UX-Brief §7, §7a
 
 ---
 
