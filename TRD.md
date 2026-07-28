@@ -930,6 +930,38 @@ Adjustment is only as good as the corporate-actions data behind it, and that dat
 
 > **Cheaper alternative worth weighing:** sourcing an already-adjusted series (or a vendor-supplied corporate-actions feed) is usually far less work than building and validating this pipeline — because the hard part is not the arithmetic, it is obtaining complete and correct corporate-action history. Build this only if adjusted data genuinely is not obtainable.
 
+### 13.3 Point-in-time universe resolution ★
+
+**Decision: historical index membership.** The universe is not "today's NIFTY-50 projected backwards" — it is *whichever 50 stocks were actually in the index on each bar's date.*
+
+#### 13.3a The data this requires
+
+Two things, and the second is the one people miss:
+
+1. **Index membership history** — for each constituent, when it entered and when it left. NSE publishes index reconstitution: semi-annual reviews plus ad-hoc changes for mergers, demergers and delistings. Roughly 2–5 changes per year.
+
+2. **Price history for every stock that was *ever* a member** — not just current members. Over 2000–2025 that union is approximately **100–150 unique tickers, not 50.**
+
+> The second requirement is the whole point. The companies that *left* the index are exactly the ones whose poor performance is currently invisible — collecting only today's 50 reproduces the original bias with extra steps.
+
+Delisted and merged entities are the hardest to source and the most important to have. Where a member was absorbed by a merger (e.g. an entity folding into another listed company), the membership record must capture the transition rather than the ticker simply vanishing.
+
+#### 13.3b How resolution works
+
+Universe membership is resolved **at load time inside `data.py`** — which the agent can read but never edit (§2.1), so the universe cannot be quietly widened by a strategy:
+
+```
+for each bar date t:
+    universe(t) = { instrument : effective_from ≤ t < effective_to }
+```
+
+A strategy never selects its own universe from a static list. It receives, per bar, the set of instruments that genuinely existed in the index at that moment.
+
+#### 13.3c Enforcement
+
+- **P0 rejects any snapshot whose universe was not point-in-time resolved** (`data_snapshots.point_in_time_membership = false`).
+- The number of distinct instruments seen across a backtest should exceed the index size — a 25-year NIFTY-50 backtest touching exactly 50 tickers is a **symptom of the bias, not a sign of tidy data**, and the validator flags it.
+
 ---
 
 ## 14. Adversarial Integrity & Self-Calibration ★
@@ -1087,11 +1119,20 @@ Deliberately boring. **The novelty budget is spent on the research loop, not the
 - [ ] At what branch count does one-branch-per-strategy need a lighter ref namespace?
 - [ ] Sub-minute fidelity — at what timeframe do we stop trusting bar-based fills entirely (§6.4)?
 
-### 20.1 Known bias, currently unmitigated ⚠️
+### 20.1 NIFTY-50 survivorship — mitigation chosen, data pending ⚠️
 
-**NIFTY-50 survivorship.** The universe is the NIFTY-50 and no delisted-stock or point-in-time membership dataset exists yet. Backtesting today's constituents over 2000–2025 implicitly assumes foreknowledge of which companies would still be index-worthy in 2026 — index membership turns over roughly 2–5 names per year, and every dropped company is invisible.
+**The bias:** backtesting today's constituents over 2000–2025 implicitly assumes foreknowledge of which companies would still be index-worthy in 2026. Membership turns over ~2–5 names per year, so every dropped company — precisely the poor performers — is invisible. This inflates every Indian equity backtest and is exactly the self-deception P0 and the null-world calibration exist to prevent.
 
-This inflates every Indian equity backtest, and it is precisely the class of self-deception P0's survivorship check and the null-world calibration exist to prevent. **Until resolved, Indian equity results must be treated as optimistic and must not be promoted to live capital.** Index-level research (NIFTY futures/ETF) is unaffected and can proceed.
+**Decision: point-in-time index membership** (§13.3). Not "trade the index instead," and not "accept and document."
+
+**Status: blocked on data collection**, in two parts:
+
+| Needed | Difficulty |
+|---|---|
+| NIFTY-50 membership history — entry and exit dates per constituent | Moderate. NSE publishes index reconstitution |
+| **Price history for all ~100–150 stocks that were ever members**, including those since delisted or merged | **The hard part.** Delisted-entity prices are the least available and the most important |
+
+**Until both exist, Indian equity results remain optimistic and must not be promoted to live capital.** Index-level research (NIFTY futures/ETF) is structurally unaffected and can proceed in parallel — it is the sensible thing to run while the equity data is assembled.
 
 ---
 
@@ -1106,3 +1147,4 @@ This inflates every Indian equity backtest, and it is precisely the class of sel
 | 2026-07-28 | **Full rewrite for clarity and consistency.** Collapsed the patched §2A/§4A/§4B/§8A numbering into sequential sections 1–20; merged all superseded rules into their final form; removed duplicated material between the honest score, walk-forward and validation sections; consolidated the changelog. No decisions changed in this pass. |
 | 2026-07-28 | **Design decisions locked in.** `z` = 1.65; bar values set (min score 0.50, max DD 15% / 20% crypto, min trades 100). Walk-forward now evaluates **all three train windows and reports the best**, with `N_trials` ×3 so the deflated Sharpe absorbs the selection (§8.2). Parameter tuning enabled, with §8.6 defining precisely what does and does not count as a trial — train-only tuning does not inflate the haircut, but raises internal fold overfitting instead. Cost models re-keyed on `(market, asset_class)` with NSE delivery costs derived (§6.3a). Timeframe range set to 1 second–1 month with an explicit fidelity warning below 1 minute. Added §4.5 continuous operation and the idle-by-design vs idle-by-bug distinction, and §20.1 recording the unmitigated NIFTY-50 survivorship bias. |
 | 2026-07-28 | **Corporate-action adjustment added (§13.2).** Source prices are unadjusted, so splits and bonuses appear as phantom ±50% moves that corrupt every price-based indicator. Design: raw prices stay immutable, corporate actions live in their own append-only versioned table, and adjustment is applied **at load time** — so a new split bumps the actions version rather than rewriting history and invalidating the whole archive. Volume adjusts inversely. Documented the back-adjustment look-ahead caveat: adjusted series preserve ratios exactly but distort absolute price levels, so absolute price thresholds are now forbidden and checked at P0. Added the unexplained-jump validator as the safety net for *missing* actions. |
+| 2026-07-28 | **Survivorship resolved to point-in-time index membership (§13.3).** Universe is now whichever stocks were actually in the index on each bar's date, resolved at load time inside `data.py` so a strategy cannot widen its own universe. Documented the requirement people miss: this needs price history for **all ~100–150 stocks ever in NIFTY-50**, not today's 50 — the ones that left are exactly the invisible losses. Added the `universe_too_narrow` check, since a 25-year backtest touching exactly 50 tickers is a symptom of the bias rather than tidy data. §20.1 updated from unmitigated to blocked-on-data. |

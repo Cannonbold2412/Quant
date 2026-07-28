@@ -483,10 +483,10 @@ Market data is supplied manually as offline Parquet. Two quality problems affect
 
 | Gap | Status | Consequence |
 |---|---|---|
-| **No point-in-time NIFTY-50 membership** | ⚠️ **Unresolved** | Survivorship bias — backtesting today's constituents from 2000 assumes foreknowledge of index survival. **Blocks live capital on Indian equities** (TRD §20.1) |
+| **No point-in-time NIFTY-50 membership** | ⚠️ **Fix chosen, blocked on data** | Survivorship bias. Resolved by collecting historical index membership **plus price history for all ~100–150 ever-members** — the companies that left are the invisible losses. **Blocks live capital on Indian equities until both exist** (TRD §13.3, §20.1) |
 | **Source prices are unadjusted** | ✅ **Mitigated by design** | Splits and bonuses read as phantom ±50% moves. Handled by the Stage 1 corporate-action pipeline plus an unexplained-jump validator (TRD §13.2) |
 
-Index-level research (NIFTY futures, ETFs) is unaffected by both and can proceed without either fix.
+Index-level research (NIFTY futures, ETFs) is structurally unaffected by both — it should run while the equity data is assembled, so the lab is never blocked.
 
 Seed knowledge for the internal and external stores is hand-written by the Research Director, which resolves the cold-start problem for A1.
 
@@ -559,3 +559,4 @@ Owner marked where the decision is the human's to make.
 | 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential section numbering throughout; all superseded rules resolved into their final form rather than layered as amendments; internal knowledge documented as two layers (automatic raw record + A5 synthesis); changelog consolidated. No decisions changed in this pass. |
 | 2026-07-28 | **Design decisions locked in.** Bar values set (min score 0.50, max DD 15% / 20% crypto, min trades 100, z = 1.65). §10.1 rewritten: the lab runs continuously and never stops on success — Phase B layers onto Phase A rather than replacing it. §12 rewritten with the final market and instrument list (Indian equities/indices, US indices, forex, commodities, crypto via CFDs, ETFs, futures, spot and perpetuals), the 1s–1month timeframe range, ₹10 lakh initial live capital, and the NIFTY-50 survivorship gap. |
 | 2026-07-28 | §12.4 rewritten as two compounding data gaps — unresolved NIFTY-50 survivorship (blocks live equity capital) and unadjusted source prices (mitigated by the Stage 1 adjustment pipeline). Index-level research is unaffected by both. |
+| 2026-07-28 | §12.4 updated — survivorship fix chosen (point-in-time membership), now blocked on collecting membership history plus price data for all ever-members. Index research runs in parallel so the lab is never blocked. |

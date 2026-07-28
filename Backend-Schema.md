@@ -706,6 +706,26 @@ Splits, bonuses and dividends. **Append-only and versioned** — this table exis
 
 > **Why this is separate from the price files:** back-adjusting in place rewrites all historical prices, so a single new split would change every snapshot hash and mark the entire archive `comparable = 0`. Keeping actions in their own versioned table means adjustment is applied **at load time** and only the actions version changes.
 
+### `index_membership` ★
+Point-in-time index constituents (TRD §13.3). Resolves *"which stocks were actually in NIFTY-50 on this date?"* — without it, every equity backtest carries survivorship bias.
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| index_name | TEXT | `NIFTY50`, `NIFTYNEXT50`, … |
+| instrument | TEXT | |
+| **effective_from** | TEXT | Date the instrument entered the index |
+| **effective_to** | TEXT | Date it left. **NULL = still a member** |
+| reason_added | TEXT | `periodic_review` \| `ipo_inclusion` \| `replacement` |
+| reason_removed | TEXT | `periodic_review` \| `merger` \| `demerger` \| `delisting` \| null |
+| successor_instrument | TEXT | For mergers — where the entity went, so the transition is traceable rather than the ticker simply vanishing |
+| source | TEXT | Exchange filing, vendor feed, manual |
+| verified_by | TEXT | `human` or null |
+
+> **The union of all rows is ~100–150 tickers over 2000–2025, not 50.** Price history is required for *every* one of them — the companies that left are exactly the ones whose losses are currently invisible.
+
+> Resolution happens at load time inside `data.py`, which the agent may read but never edit, so a strategy cannot quietly widen its own universe.
+
 ### `data_validation_flags`
 Unexplained price jumps caught at ingest (TRD §13.2d) — the safety net for *missing* corporate actions, which the adjustment pipeline cannot detect on its own.
 
@@ -714,7 +734,7 @@ Unexplained price jumps caught at ingest (TRD §13.2d) — the safety net for *m
 | id, uid | | |
 | snapshot_id | FK → data_snapshots | |
 | instrument, bar_date | TEXT | |
-| flag_type | TEXT | `unexplained_jump` \| `zero_volume` \| `stale_price` \| `gap` |
+| flag_type | TEXT | `unexplained_jump` \| `zero_volume` \| `stale_price` \| `gap` \| `universe_too_narrow` (distinct instruments across the backtest ≈ index size, a symptom of survivorship bias — TRD §13.3c) |
 | observed_value | REAL | e.g. the −49.8% single-bar return |
 | threshold | REAL | |
 | resolution | TEXT | `pending` \| `genuine_move` \| `missing_action_added` \| `data_error` |
@@ -870,3 +890,4 @@ Each must be a simple indexed query, not a scan. These drove the design.
 | 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential numbering (§0–§16) replacing the patched §0A/§15 scheme; internal and external knowledge separated into clearly-labelled trust tiers; all cross-references updated to the renumbered TRD, PRD and App-Flow; `in_vault` added to `data_snapshots`; changelog consolidated. No schema decisions changed in this pass. |
 | 2026-07-28 | **Design decisions locked in.** `evaluations` now stores all three train-window scores plus the winner and the spread; `n_trials_used` documented as including the ×3 selection factor; `params_grid_size` and `tuned_params_per_fold` added. `acceptance_bars` carries the concrete pre-registered values. `data_snapshots` gained `asset_class` and `point_in_time_membership`, and `survivorship_handled` now carries the warning that it is currently false for Indian equities. |
 | 2026-07-28 | Added `corporate_actions` (append-only, versioned) and `data_validation_flags`. `data_snapshots` restructured so identity is `(raw_content_hash, corporate_actions_version)` rather than a single hash over adjusted prices — a new split now bumps the actions version instead of invalidating every prior experiment. Added the `adjusted` flag, rejected at P0 when false. |
+| 2026-07-28 | Added `index_membership` for point-in-time universe resolution, including `successor_instrument` so merger transitions stay traceable. Added the `universe_too_narrow` validation flag. |
