@@ -278,10 +278,11 @@ Before trusting it, `evaluate.py` must be tested against **known-answer cases**:
 | Verdict logic | `iterate` / `plateau` / `promote` / `reject` |
 | Research plan output | **Plain-language changes, never code** (PRD §6.1) |
 | Stop-condition evaluation | Checked in Python *before* invoking Claude, so budget is never wasted |
-| Plateau detection | Tracks improvement across iterations |
+| Plateau detection | **5 consecutive iterations with no improvement beyond a noise margin** (`0.5 × se_sr`, default), not raw score comparison. A bar failure counts as non-improvement too (App-Flow §5.1a) |
+| Plateau routing | Best-so-far cleared the bar at least once → A4. Never cleared it → A5 directly, `failure_reason = plateaued_below_bar` |
 | Loop wiring | A3 → A2 → evaluate → A3 |
 
-**Done when:** a hand-written spec runs autonomously through 10+ iterations, improves measurably, and stops for a principled reason rather than a hard cap.
+**Done when:** a hand-written spec runs autonomously through 10+ iterations, improves measurably, and stops for a principled reason rather than a hard cap — **and** a deliberately-stuck spec correctly plateaus at 5 non-improving tries and routes to the right agent depending on whether it ever cleared the bar.
 
 > **This is the first real milestone.** At this point the system iterates on research without a human. Everything before it is infrastructure; everything after it is amplification.
 
@@ -515,3 +516,4 @@ Not in the one-shot build:
 | 2026-07-27 | Stage 0.1 changed from "decide the honest score" to "implement" it — resolved in TRD §4A. Stage 0.2 now enforces the hard bar inside `evaluate.py`. Remaining Stage 0 unknowns are numeric choices owned by the human. |
 | 2026-07-27 | Added **Stage 4a — Observability**, pulled out of Stage 12 and placed immediately after the job queue exists: live agent activity feed and a read-only database explorer, built to debug the system rather than to make decisions. Stage 12 is now decision-layer only. Stage 0.1 updated to name the configurable train window (TRD §4A.2f-a). |
 | 2026-07-27 | Rewrote **Stage 10** around the formalized **Librarian Agent** (PRD §6.2): a single unified ingestion pipeline for every source type, explicit chunk/per-chunk-extract/synthesize steps, one `external_knowledge` row per idea rather than per document, and trust tagging (`evidence_tier = external_claim`) so extracted claims are never confused with tested internal evidence. Dropped the earlier idea of separate code-graph tooling for GitHub sources — GitHub text flows through the same pipeline as everything else. |
+| 2026-07-28 | Resolved the plateau rule for Stage 6: default 5 consecutive non-improving iterations, defined against a noise margin rather than raw score comparison, with two-destination routing depending on whether the bar was ever cleared. Added the corresponding done-when criterion. |

@@ -260,11 +260,13 @@ Idea → Spec → Code → Backtest → Statistical Validation → Stress Testin
 **Evidence-based, not a fixed count.** Stop when *any* of:
 
 - All promotion criteria are met
-- No meaningful improvement for *N* consecutive iterations (plateau)
+- No meaningful improvement for *N* consecutive iterations (plateau) — **default N = 5**, precise definition and routing in TRD/App-Flow §5.1a
 - Iteration/compute budget exhausted
 - A3 judges further modification unlikely to produce a robust result
 
-A hard iteration cap exists as a backstop only. **Iteration count is recorded and passed to A4 as an overfitting signal** — more iterations means more multiple-testing burden, which must be reflected in the deflated Sharpe calculation.
+A hard iteration cap (default ~20–25) exists as a backstop only, for the rare case something dodges the plateau logic. **Iteration count is recorded and passed to A4 as an overfitting signal** — more iterations means more multiple-testing burden, which must be reflected in the deflated Sharpe calculation.
+
+**Plateauing at 5 with no improvement is not automatically a rejection.** It means one of two different things, and they route differently: a strategy whose best attempt already cleared the acceptance bar is a real candidate that simply stopped improving — it goes to A4. A strategy that never cleared the bar, not once, in 5 tries, actually failed — it goes straight to A5 as a lesson, skipping A4 entirely, since there is nothing bar-passing for A4 to review.
 
 ### 9.3 Paper trading promotion — trades, not calendar
 
@@ -480,4 +482,5 @@ Tracked here until resolved in a session, then moved into the body of the docs.
 | 2026-07-27 | Initial document. Vision, 5-agent architecture, promotion rules, health monitoring, portfolio allocation, success criteria captured from architecture sessions. |
 | 2026-07-27 | Reconciled against karpathy/autoresearch (§14). Added null-world false discovery rate as the headline integrity metric (§4.5), the two-phase search objective, satisficing over maximising, ranked acceptance criteria with a simplicity penalty, and the diversification-as-anti-overfitting argument (§13). |
 | 2026-07-27 | Honest score resolved (TRD §4A). §13.2 updated: the bar is stated in `program.md` and enforced in `evaluate.py`; failing it returns `discard` with no score; out-of-sample data noted as a consumable resource. |
+| 2026-07-28 | **§9.2 resolved.** Plateau count set to a default of 5 consecutive non-improving iterations, with the precise noise-margin definition and two-destination routing (A4 if the bar was ever cleared, A5 if not) moved to App-Flow §5.1a. Hard iteration cap default set to ~20–25. |
 | 2026-07-27 | Added **§6.2 — the Librarian**, a sixth role formalizing external-knowledge extraction, explicitly kept outside the five-agent research loop. §8.2 rewritten: one paper yields several structured ideas, not one blob; and a claim from a paper is never a fact — only internal, tested evidence is. |

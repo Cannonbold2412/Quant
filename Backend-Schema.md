@@ -110,7 +110,7 @@ The durable identity of a research thread. One strategy has many experiments (it
 | iteration_count | INTEGER | **Feeds the multiple-testing correction** |
 | total_trials | INTEGER | Iterations + parameter combinations swept |
 | best_score | REAL | Primary composite score |
-| plateau_counter | INTEGER | Consecutive iterations with no meaningful gain |
+| plateau_counter | INTEGER | Consecutive iterations with no gain beyond noise (App-Flow §5.1a). Resets to 0 only when `new_honest_score > best_score_so_far + margin`; a bar failure also increments it |
 | tokens_spent, compute_seconds | INTEGER | Cost accounting |
 | quarantined | INTEGER (bool) | Poison-pill protection (TRD §3.3) |
 | quarantine_reason | TEXT | |
@@ -693,7 +693,7 @@ Structured so A5 can aggregate. Free text is not acceptable here.
 no_signal · negative_expectancy · costs_exceed_edge · overfit_in_sample
 walk_forward_unstable · regime_dependent · pbo_too_high · deflated_sharpe_insufficient
 insufficient_trades · monte_carlo_ruin_risk · parameter_sensitive
-correlated_with_existing · capacity_constrained
+correlated_with_existing · capacity_constrained · plateaued_below_bar
 code_error · look_ahead_detected · data_leakage_detected
 ```
 
@@ -787,6 +787,9 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 | min_score, max_drawdown, min_trades, min_breadth, max_complexity | REAL/INTEGER |
 | cost_stress_multiple | REAL |
 | z_multiplier | REAL |
+| **plateau_patience** | INTEGER | Consecutive non-improving iterations before a PLATEAU verdict. **Default 5** (App-Flow §5.1a) |
+| **plateau_margin_factor** | REAL | Fraction of `se_sr` a new score must exceed the running best by to count as real improvement. **Default 0.5** |
+| **hard_iteration_cap** | INTEGER | Outer backstop independent of plateau detection. **Default ~20–25** |
 | locked_at | TEXT |
 | locked_by | TEXT |
 | superseded_by | FK |
@@ -805,5 +808,6 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 | 2026-07-27 | Added walk-forward columns to `evaluations` — `wf_scheme` (hashed into provenance), window sizes, `n_folds`, `folds_profitable`, per-fold `fold_metrics` stored but non-gating, and `params_refit_per_fold`. |
 | 2026-07-27 | Added `wf_config_hash` to `experiments` provenance and to the comparability index — hashes `{scheme, train_years, test_years}` together, since train window length carries the same hidden-multiple-testing risk as scheme choice. Split `wf_train_bars`/`wf_test_bars` into explicit `wf_train_years` (configurable 1/2/3) and `wf_test_years` (always 1) on `evaluations`. |
 | 2026-07-27 | Added the honest-score column group to `evaluations` — `honest_score` plus every input to it (`sr_oos`, `se_sr`, `z_multiplier`, `trials_haircut`, skew/kurtosis/n, embargo vs holding period) and the `bar_result` gate columns. Added `min_breadth` and `z_multiplier` to `acceptance_bars`. |
+| 2026-07-28 | Defined the plateau rule precisely: `plateau_counter` only resets on an improvement exceeding a noise margin (`plateau_margin_factor × se_sr`), and a bar failure also counts as non-improvement. Added `plateau_patience` (default 5), `plateau_margin_factor` (default 0.5), and `hard_iteration_cap` (default ~20-25) to `acceptance_bars`. Added `plateaued_below_bar` to the `failure_reason` enum, for strategies that plateau without ever having cleared the bar (App-Flow §5.1a). |
 | 2026-07-27 | Split `strategy_specs.source_knowledge_ids` into `source_external_knowledge_ids` and `source_internal_knowledge_ids`, matching the two-trust-tier distinction — a spec can now be traced separately back to the untested candidate ideas it drew on and the tested lessons it respected or overrode (App-Flow §2.2). |
 | 2026-07-27 | Added **`document_chunks`** table and rewrote `external_knowledge` as the Librarian Agent's formal output schema: `source_chunk_ids` for exact-passage traceability, one row per idea rather than per document, `extraction_confidence` renamed and clarified to mean reading accuracy (not truth of the claim), and a new `evidence_tier` column fixed to `external_claim` so this table can never be mistaken for tested, internal evidence. `external_documents` gained `chunk_count` and a `chunked` extraction status. |

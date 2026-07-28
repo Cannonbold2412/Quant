@@ -320,8 +320,13 @@ Verdict:
    ├── ITERATE  → research_plan with ordered proposed_changes
    │              → enqueue IMPLEMENT (iteration n+1)
    │
-   ├── PLATEAU  → no meaningful gain for N iterations
-   │              → enqueue PROMOTE (A4 decides if it's still worth anything)
+   ├── PLATEAU  → 5 consecutive tries with no real improvement (§5.1a)
+   │              │
+   │              ├── best-so-far ever cleared the bar? ──► enqueue PROMOTE
+   │              │                                          (A4 reviews the best passing iteration)
+   │              │
+   │              └── bar never cleared, not once ──────────► enqueue ARCHIVE (A5) directly, skip A4
+   │                                                           (failure_reason = plateaued_below_bar)
    │
    ├── PROMOTE  → criteria met
    │              → enqueue PROMOTE
@@ -337,10 +342,41 @@ Checked by the worker *before* invoking Claude, so budget is never wasted:
 | Condition | Action |
 |---|---|
 | All promotion criteria met | → A4 |
-| No meaningful improvement for N iterations | → plateau → A4 |
-| Iteration/token/compute budget exhausted | → A4 with best-so-far |
+| **Plateau: 5 consecutive iterations with no real improvement** | → §5.1a decides A4 vs A5 |
+| Iteration/token/compute budget exhausted | → A4 with best-so-far, **only if** it ever cleared the bar; otherwise → A5 |
 | A3 judges further modification futile | → reject → A5 |
-| Hard iteration cap (backstop) | → forced plateau |
+| Hard iteration cap (backstop, default ~20–25) | → forced plateau |
+
+### 5.1a Plateau, precisely — the 2026-07-28 rule ★
+
+**Two problems with "stop after 5 tries with no improvement" as a literal rule, both fixed here.**
+
+**Problem 1 — `honest_score` is noisy, so comparing raw floats is wrong.** The score already carries its own error bar (`se_sr`, TRD §4A). Iteration 4 scoring 0.39 after iteration 3 scored 0.41 is not necessarily "worse" — it can just be noise. So "improvement" is defined against that noise, not against the raw number:
+
+```
+counts as a REAL improvement, resets plateau_counter to 0:
+    new_honest_score  >  best_score_so_far + margin
+    margin = 0.5 × se_sr          (half the measured noise band — configurable)
+
+otherwise:
+    plateau_counter += 1
+```
+
+A **bar failure** (`bar_result = fail`, no score computed at all) also increments `plateau_counter` — it is strictly not an improvement, and must count.
+
+**5 consecutive increments → PLATEAU verdict**, checked by the worker before invoking Claude, same as every other stop condition.
+
+**Problem 2 — "stop" is not one destination.** What plateauing means depends entirely on whether the strategy ever actually worked:
+
+| | Best-so-far cleared the acceptance bar at least once | Never cleared the bar |
+|---|---|---|
+| **What it means** | A working strategy that stopped getting better — not a failure | Never actually succeeded |
+| **Routes to** | **A4**, with the best passing iteration, as a real promotion candidate | **A5** directly, skipping A4 — nothing bar-passing exists for A4 to review |
+| **failure_reason** | n/a — this is a candidate, not a rejection | `plateaued_below_bar` |
+
+Same trigger, two different destinations. Sending a never-passing strategy to A4 anyway would waste a review on a candidate that structurally cannot exist yet.
+
+**The count is configurable per campaign** (`acceptance_bars.plateau_patience`, Backend-Schema §15) — 5 is the default, not a universal constant. The hard iteration cap (§9.2 of the PRD) remains as an outer backstop in case something dodges the noise-margin check.
 
 ### 5.2 The research plan is not code
 
@@ -755,6 +791,7 @@ Check vault budget for this FAMILY (not this strategy)
 |---|---|
 | 2026-07-27 | Initial document. All 11 flows mapped, evidence-based stop conditions, trial counting, curiosity loop closure, two human gates, error/edge cases, traceability chain. |
 | 2026-07-27 | Added §1A Flow 0 (the nanoAQRL loop that actually runs first), §15 null-world calibration, §16 vault access. |
+| 2026-07-28 | Added **§5.1a — the plateau rule, precisely.** Default 5 consecutive non-improving iterations; "improving" defined against a noise margin (`0.5 × se_sr`) rather than raw score comparison; a bar failure counts as non-improvement. Plateau now routes to A4 (candidate, best-so-far cleared the bar) or straight to A5 (never cleared it, `failure_reason = plateaued_below_bar`) instead of a single ambiguous destination. Patience, margin factor, and the hard cap are now configurable per campaign via `acceptance_bars`. |
 | 2026-07-27 | Flow 0 now points at TRD §2A.3a for the required contents of `program.md`. |
 | 2026-07-27 | Rewrote **Flow 2** with the same treatment as Flow 1: named the **Implementation Brief**, made explicit that a job only ever begins because the scheduler noticed a database row (never a direct call from A1 or A3), stated plainly that A2 never receives `evaluate.py`, and pulled the `code_versions` output into an explicit schema block. |
 | 2026-07-27 | Rewrote **Flow 1** around the **Research Brief**: made explicit that A1 is stateless and performs a fresh relevance search over the whole combined knowledge pool on every run rather than tracking "new vs old"; added the high-novelty push trigger so a standout new idea doesn't wait for the nightly batch; clarified that combining external (candidate) and internal (tested) knowledge happens in A1's own reasoning, not a database join, with a worked example; split A1's output traceability into `source_external_knowledge_ids` and `source_internal_knowledge_ids`. |
