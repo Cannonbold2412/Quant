@@ -64,6 +64,7 @@ AQRL
 ├── ⬤ Pipeline      ← the lifecycle view: everything, and where it sits
 │     ├── Research → Review → Paper → Review → Live 1–5% → Live scaled → Retired
 │     ├── Group by: Strategy (default) | Market — a toggle, not a fixed tree
+│     ├── Data-quality queue — unresolved flags block their snapshot
 │     ├── Recently rejected, with structured reasons
 │     └── Quarantined (needs human debugging)
 │
@@ -141,7 +142,7 @@ A compact test matrix, not a wall of numbers:
 
 ```
 Walk-forward       ████████░░  8/10 folds profitable     PASS
-Honest score       0.62  (bar: 0.40)                     PASS
+Honest score       0.62  (bar: 0.50)                     PASS
 Deflated Sharpe    0.94  (156 family trials)             PASS
 PBO                0.21  (threshold 0.35)                PASS
 White's RC         p=0.03                                PASS
@@ -248,7 +249,23 @@ NSE Equity
   └── Vol Breakout          LIVE 2%
 ```
 
-### 5.3 Family trial count on group headers ★
+### 5.3 Data-quality queue ★
+
+**The one recurring human task besides the two gates.** Unresolved `data_validation_flags` block their snapshot, and the scheduler will not dispatch experiments against a blocked snapshot (TRD §14.4) — so this queue directly gates throughput.
+
+```
+⚠ RELIANCE  2019-09-20   −49.8%  single bar, no matching corporate action
+   [ genuine move ]  [ add missing action ]  [ data error ]
+
+⚠ NIFTY-50 snapshot v3   universe_too_narrow — 51 distinct instruments
+   across 25 years. Expected ~100–150 (TRD §14.3c)
+```
+
+Each flag is **either a real market event or a data error, and only a human can say which.** Resolution is one click plus, where a corporate action was missing, the action's terms.
+
+Shown here rather than under System because it is a *research-blocking* decision, not a debugging view — but it is deliberately the only routine work in the product, and its queue length is worth watching: a growing backlog means the lab is throttled on data, not on ideas.
+
+### 5.4 Family trial count on group headers ★
 
 When grouped by strategy, the header shows the **family trial count**, not just the name.
 
@@ -433,6 +450,6 @@ Deliberately sparse. The system should be quiet enough that a notification means
 | Date | Change |
 |---|---|
 | 2026-07-27 | Initial brief — "make it easy to reject" premise, case-against-first review layout, health-not-profit colour semantics, laboratory self-measurement screen, sparse notification policy. |
-| 2026-07-27 | Added the null-world FDR panel and the note that v1 has no dashboard at all. |
-| 2026-07-28 | Restructured navigation: paper/live replaced by a lifecycle-track Pipeline screen with deployment as the atomic unit and a strategy/market grouping toggle; family trial count surfaced on group headers. Added Observability, shipped early and kept structurally separate from the decision layer. Clarified that portfolio correlation is dashboard-computed, not sourced from A4. |
-| 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential numbering (§0–§13) replacing the patched §7a scheme; the two build waves stated explicitly up front; Knowledge screen now separates the two trust tiers; all cross-references updated to the renumbered TRD, PRD and App-Flow. No design decisions changed in this pass. |
+| 2026-07-28 | Restructured navigation: paper/live replaced by a lifecycle-track Pipeline screen with deployment as the atomic unit and a strategy/market grouping toggle; family trial count on group headers. Added Observability, shipped early and kept structurally separate from the decision layer. |
+| 2026-07-28 | **Full rewrite.** Sequential numbering §0–§13; the two build waves stated up front; Knowledge screen separates the two trust tiers. |
+| 2026-07-28 | Added the **data-quality queue** (§5.5) — unresolved validation flags block their snapshot, so resolving them is a real human task the dashboard must surface. Cross-references updated to the renumbered TRD. |

@@ -347,7 +347,7 @@ Monitored dimensions: performance, statistical behaviour (win rate, average trad
 
 **Regime context prevents the most common bad decision.** A drawdown occurring in a regime where the strategy historically struggled is *expected behaviour*, not evidence of death.
 
-A 20% drawdown may be perfectly acceptable if validation showed a 15–25% range. A 100% drawdown means risk limits and kill switches failed long before — **hard limits must make that state structurally unreachable** (TRD §17).
+A 20% drawdown may be perfectly acceptable if validation showed a 15–25% range. A 100% drawdown means risk limits and kill switches failed long before — **hard limits must make that state structurally unreachable** (TRD §18).
 
 ---
 
@@ -462,7 +462,7 @@ The test is not whether it *feels* different — it is whether the return series
 | **Commodities** | Futures, CFDs | Contract-roll handling required |
 | **Crypto** | Spot, perpetuals | 24/7; funding rates on perps; 20% drawdown limit vs 15% elsewhere |
 
-Cash indices are not directly tradeable — every index exposure is via a future, ETF or CFD, and the **cost model is keyed on `(market, asset_class)`**, not market alone (TRD §6.3a).
+Cash indices are not directly tradeable — every index exposure is via a future, ETF or CFD, and the **cost model is keyed on `(market, asset_class)`**, not market alone (TRD §6.3).
 
 ### 12.2 Timeframes
 
@@ -475,7 +475,7 @@ Cash indices are not directly tradeable — every index exposure is via a future
 | Paper trading | Unconstrained — any notional |
 | **Initial live** | **₹10 lakh** (~US$12,000) |
 
-At ₹10 lakh, a full 50-stock basket is thin — roughly ₹20,000 per position. Concentrated baskets (10–20 names) or index instruments are the more realistic starting shape. Capacity is not a binding constraint at this size, but **transaction costs are**: at ~30 bps round trip (TRD §6.3a), small positions are disproportionately eroded.
+At ₹10 lakh, a full 50-stock basket is thin — roughly ₹20,000 per position. Concentrated baskets (10–20 names) or index instruments are the more realistic starting shape. Capacity is not a binding constraint at this size, but **transaction costs are**: at ~30 bps round trip (TRD §6.3), small positions are disproportionately eroded.
 
 ### 12.4 Known data gaps ⚠️
 
@@ -483,8 +483,8 @@ Market data is supplied manually as offline Parquet. Two quality problems affect
 
 | Gap | Status | Consequence |
 |---|---|---|
-| **No point-in-time NIFTY-50 membership** | ⚠️ **Fix chosen, blocked on data** | Survivorship bias. Resolved by collecting historical index membership **plus price history for all ~100–150 ever-members** — the companies that left are the invisible losses. **Blocks live capital on Indian equities until both exist** (TRD §13.3, §20.1) |
-| **Source prices are unadjusted** | ✅ **Mitigated by design** | Splits and bonuses read as phantom ±50% moves. Handled by the Stage 1 corporate-action pipeline plus an unexplained-jump validator (TRD §13.2) |
+| **No point-in-time NIFTY-50 membership** | ⚠️ **Fix chosen, blocked on data** | Survivorship bias. Resolved by collecting historical index membership **plus price history for all ~100–150 ever-members** — the companies that left are the invisible losses. **Blocks live capital on Indian equities until both exist** (TRD §14.3, §20.1) |
+| **Source prices are unadjusted** | ✅ **Mitigated by design** | Splits and bonuses read as phantom ±50% moves. Handled by the Stage 1 corporate-action pipeline plus an unexplained-jump validator (TRD §15.2) |
 
 Index-level research (NIFTY futures, ETFs) is structurally unaffected by both — it should run while the equity data is assembled, so the lab is never blocked.
 
@@ -517,7 +517,7 @@ A prior prototype exists in git history at `d08e812`, mapped to the stages that 
 
 So the reference's encouragement toward high throughput and keep-if-improved makes our integrity machinery **more** necessary, not less:
 
-- **The vault** (TRD §14.2) — data the loop physically cannot read
+- **The vault** (TRD §15.2) — data the loop physically cannot read
 - **Null-world calibration** (§4.2) — measuring how often we invent discoveries
 - **Satisficing** (§10.2) — stopping early rather than searching for the maximum
 
@@ -553,10 +553,7 @@ Owner marked where the decision is the human's to make.
 | Date | Change |
 |---|---|
 | 2026-07-27 | Initial document — vision, agent architecture, promotion rules, health monitoring, portfolio allocation, success criteria. |
-| 2026-07-27 | Reconciled against karpathy/autoresearch. Added null-world FDR as the headline integrity metric, the two-phase search objective, satisficing over maximising, ranked acceptance criteria, and the diversification-as-anti-overfitting argument. |
-| 2026-07-27 | Honest score resolved (TRD §7). Added the Librarian as a sixth role outside the loop, and the two-trust-tier knowledge distinction. |
-| 2026-07-28 | Clearing the acceptance bar became an immediate, unconditional stop. Plateau became purely a below-the-bar concept, always routing to A5. Portfolio-correlation checks removed from A4 and added to non-goals. |
-| 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential section numbering throughout; all superseded rules resolved into their final form rather than layered as amendments; internal knowledge documented as two layers (automatic raw record + A5 synthesis); changelog consolidated. No decisions changed in this pass. |
-| 2026-07-28 | **Design decisions locked in.** Bar values set (min score 0.50, max DD 15% / 20% crypto, min trades 100, z = 1.65). §10.1 rewritten: the lab runs continuously and never stops on success — Phase B layers onto Phase A rather than replacing it. §12 rewritten with the final market and instrument list (Indian equities/indices, US indices, forex, commodities, crypto via CFDs, ETFs, futures, spot and perpetuals), the 1s–1month timeframe range, ₹10 lakh initial live capital, and the NIFTY-50 survivorship gap. |
-| 2026-07-28 | §12.4 rewritten as two compounding data gaps — unresolved NIFTY-50 survivorship (blocks live equity capital) and unadjusted source prices (mitigated by the Stage 1 adjustment pipeline). Index-level research is unaffected by both. |
-| 2026-07-28 | §12.4 updated — survivorship fix chosen (point-in-time membership), now blocked on collecting membership history plus price data for all ever-members. Index research runs in parallel so the lab is never blocked. |
+| 2026-07-27 | Reconciled against karpathy/autoresearch. Added null-world FDR as the headline integrity metric, the two-phase search objective, satisficing over maximising, and the diversification-as-anti-overfitting argument. Added the Librarian and the two-trust-tier knowledge distinction. |
+| 2026-07-28 | Clearing the bar became an immediate stop; portfolio-correlation checks removed from A4 and added to non-goals. |
+| 2026-07-28 | **Design decisions locked in** — bar values (min score 0.50, max DD 15% / 20% crypto, min trades 100, z = 1.65), continuous 24/7 operation with Phase B layering onto Phase A rather than replacing it, the final market and instrument list, 1s–1month timeframes, ₹10 lakh initial live capital, and the two Indian-equity data gaps. |
+| 2026-07-28 | **Full rewrite.** Integrated the locked-in decisions into the body rather than as appended edits; §12.4 restated as two compounding data gaps with survivorship now fix-chosen-blocked-on-data; cross-references updated to the renumbered TRD; changelog consolidated. No decisions changed. |

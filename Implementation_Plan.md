@@ -80,8 +80,8 @@ Stages 1–13 remain the destination. None of them begin until Stage 0 has run f
 |---|---|---|
 | **0.1** | **Implement the honest score** — `SR_oos − 1.65·SE(SR) − SR*(N_trials)` (TRD §7) | Rolling walk-forward, test window fixed at 1 year, **all three train windows (1/2/3 yr) evaluated with the best reported and `N_trials` ×3**, purged, embargo ≥ holding period, 2× costs, per-fold parameter tuning on training data only. All folds **concatenated** into one OOS series. Returns one float |
 | **0.2** | **Build `evaluate.py`** around it, with the **hard bar enforced inside it** | Structurally isolated: the agent can neither read nor edit it. The bar gates before any score is computed |
-| **0.3** | **Run the null-world test** (TRD §14.3) | Prove the scorer does not invent discoveries in pure noise. Fix and re-run until FDR is low |
-| **0.4** | **Build the vault** (TRD §14.2) | Lock the holdout *before* the loop ever touches real data |
+| **0.3** | **Run the null-world test** (TRD §15.3) | Prove the scorer does not invent discoveries in pure noise. Fix and re-run until FDR is low |
+| **0.4** | **Build the vault** (TRD §15.2) | Lock the holdout *before* the loop ever touches real data |
 | **0.5** | Write `program.md` (contents in TRD §2.4) and `strategy.py`; wire the keep/stop loop | Small, once 0.1–0.4 exist. `program.md` carries the anti-look-ahead rules and the bar's *dimensions*, never the scoring formula or its numbers |
 | **0.6** | **Profile, then parallelise across folds** (TRD §9) | Vectorised maths, Numba for path-dependent logic, **processes not threads**. Verify bit-identical determinism before trusting any parallel result |
 | **0.7** | **Run it one night. Read every row of `results.tsv` by hand** | The only way to learn what the agent actually does |
@@ -120,15 +120,15 @@ Plus three SQLite tables (`strategies`, `experiments`, `evaluations`) with `expe
 | Project skeleton | `aqrl/` package |
 | Config system | Env + file, no secrets in code |
 | SQLite schema | Per `Backend-Schema.md`, with migrations from day one |
-| DB access layer | Thin repository pattern; **no SQLite-specific SQL** (TRD §19) |
+| DB access layer | Thin repository pattern; **no SQLite-specific SQL** (TRD §20) |
 | `MarketProfile` / `TimeframeProfile` loaders | YAML → validated object → content hash |
-| **Cost models keyed on `(market, asset_class)`** | Not market alone — NSE charges cash equity, ETFs and futures differently (TRD §6.3a). Asset classes: cash equity, ETF, future, CFD, spot crypto, perpetual |
+| **Cost models keyed on `(market, asset_class)`** | Not market alone — NSE charges cash equity, ETFs and futures differently (TRD §6.3). Asset classes: cash equity, ETF, future, CFD, spot crypto, perpetual |
 | Timeframe range | Profiles must span **1 second → 1 month**; no hardcoded annualisation anywhere |
 | First profiles | Market/timeframe is **not** fixed to one pilot — all six markets are in scope from the start, so profile loading must be generic before any single profile is filled in |
 | Data snapshot manager | Ingest Parquet → immutable **raw** snapshot + content hash. Raw is never rewritten |
-| **Corporate-action adjustment pipeline** ★ | Source data is **unadjusted** (TRD §13.2). Build: the `corporate_actions` table, back-adjustment applied **at load time** (not persisted), and volume adjusted inversely. Without this every Indian equity backtest is meaningless — a 1:2 split reads as a −50% move |
-| **Unexplained-jump validator** | Flag any \|return\| > ~20% with no matching corporate action; a human resolves each before the snapshot is valid (TRD §13.2d). This is the only thing that catches *missing* actions |
-| **Point-in-time universe resolution** ★ | `index_membership` table + resolution inside `data.py` (TRD §13.3). Requires price history for **all ~100–150 stocks ever in NIFTY-50**, not today's 50 — the ones that left are the invisible losses. **Blocked on data collection**; index-level research proceeds meanwhile |
+| **Corporate-action adjustment pipeline** ★ | Source data is **unadjusted** (TRD §15.2). Build: the `corporate_actions` table, back-adjustment applied **at load time** (not persisted), and volume adjusted inversely. Without this every Indian equity backtest is meaningless — a 1:2 split reads as a −50% move |
+| **Unexplained-jump validator** | Flag any \|return\| > ~20% with no matching corporate action; a human resolves each before the snapshot is valid (TRD §15.4). This is the only thing that catches *missing* actions |
+| **Point-in-time universe resolution** ★ | `index_membership` table + resolution inside `data.py` (TRD §15.3). Requires price history for **all ~100–150 stocks ever in NIFTY-50**, not today's 50 — the ones that left are the invisible losses. **Blocked on data collection**; index-level research proceeds meanwhile |
 | Per-market data validators | Run **at ingest**, not at experiment time |
 | Structured logging | Correlation IDs threading `strategy → experiment → job` |
 
@@ -251,7 +251,7 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 | Context assembler | **Python builds the brief** — spec, research plan, prior code + diff, prior evaluation, operator catalog |
 | Branch creation | On a strategy's first `IMPLEMENT` job: create `strategy/<strategy_id>` (TRD §5.2) |
 | Code generation | Emits a strategy module composed from operators |
-| Sandboxed execution | No network, no credentials (TRD §17) |
+| Sandboxed execution | No network, no credentials (TRD §18) |
 | Static check pipeline | Compile, lint, look-ahead scan — before evaluation is even queued |
 | `FIX_CODE` path | Deterministic failures return with diagnostics attached |
 | Prompt versioning | Recorded on every output |
@@ -335,7 +335,7 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 | Structured rejection reasons | Flow into A5 as knowledge |
 | Deployment record creation | Baseline `expected_*` copied from validation |
 | **Merge-on-approve** | Approval merges `strategy/<id>` into `deploy/paper` or `deploy/live`; the merge commit references `promotions.uid` (TRD §5.3) |
-| Vault access gate | Opening the vault is logged and decrements the family budget (TRD §14.2) |
+| Vault access gate | Opening the vault is logged and decrements the family budget (TRD §15.2) |
 
 **Done when:** a human can make a fully-informed gate decision from the terminal. The dashboard is deferred — a CLI is sufficient to validate the loop.
 
@@ -427,7 +427,7 @@ Only after the loop is proven and producing candidates.
 | Risk | Severity | Mitigation |
 |---|---|---|
 | **`evaluate.py` is subtly wrong** | 🔴 Critical | Known-answer suite **and** null-world calibration (M0) before trusting any result. Everything downstream inherits its errors |
-| **Reward hacking — the agent optimises the scorer, not the market** | 🔴 Critical | `evaluate.py` unreadable and unwritable; `data.py` read-only; too-good-to-be-true tripwire; periodic red-teaming (TRD §14.1) |
+| **Reward hacking — the agent optimises the scorer, not the market** | 🔴 Critical | `evaluate.py` unreadable and unwritable; `data.py` read-only; too-good-to-be-true tripwire; periodic red-teaming (TRD §15.1) |
 | **Best-of-N selection bias** | 🔴 Critical | Satisficing against a pre-set bar + immediate stop on clearing it + the vault. "Best after 500 tries" is the luckiest, not the best |
 | **Look-ahead bias in generated code** | 🔴 Critical | P0 static checks as a hard gate; failures classified as bugs, not findings |
 | **Vectorisation introduces look-ahead** | 🔴 Critical | The fastest code leaks most easily. P0 plus a mandatory leaky-vectorised known-answer test (TRD §9.4) |
@@ -440,8 +440,8 @@ Only after the loop is proven and producing candidates.
 | **Token cost outruns value** | 🟠 High | Budgets with hard back-pressure; cost-per-discovery on the Laboratory screen |
 | **Human rubber-stamps approvals** | 🟠 High | Case-against-first UI; mandatory typed justification |
 | **Scaling requires a rewrite** | 🟡 Medium | No SQLite-specific SQL; lease-based queue from day one |
-| **NIFTY-50 survivorship bias** ⚠️ | 🔴 Critical — **mitigation chosen, blocked on data** | Fix is point-in-time index membership (TRD §13.3). Needs membership history *and* price data for all ~100–150 ever-members. **Indian equity results must not reach live capital until both exist.** Index-level research is structurally unaffected and should run in the meantime |
-| **Unadjusted source data** ⚠️ | 🔴 Critical | Splits and bonuses appear as phantom ±50% moves, corrupting every price-based indicator. Mitigated by the Stage 1 adjustment pipeline (TRD §13.2) — but that pipeline is only as complete as the corporate-actions data behind it, hence the unexplained-jump validator as a second line of defence |
+| **NIFTY-50 survivorship bias** ⚠️ | 🔴 Critical — **mitigation chosen, blocked on data** | Fix is point-in-time index membership (TRD §15.3). Needs membership history *and* price data for all ~100–150 ever-members. **Indian equity results must not reach live capital until both exist.** Index-level research is structurally unaffected and should run in the meantime |
+| **Unadjusted source data** ⚠️ | 🔴 Critical | Splits and bonuses appear as phantom ±50% moves, corrupting every price-based indicator. Mitigated by the Stage 1 adjustment pipeline (TRD §15.2) — but that pipeline is only as complete as the corporate-actions data behind it, hence the unexplained-jump validator as a second line of defence |
 | **Incomplete corporate-actions history** | 🟠 High | A missing split silently corrupts one instrument's entire series. The jump validator catches large ones; small bonuses may slip through. Prefer vendor-adjusted data if obtainable |
 | **Cost model sourced from public rates, not contract notes** | 🟠 High | ~22 bps statutory on NSE delivery is a *starting default*. Re-derive from a real broker contract note before live capital — stale rates are a silent systematic bias in every backtest |
 | **Sub-minute backtest fidelity** | 🟠 High | Below ~1 minute, fills depend on queue position and latency that bar data cannot represent. Supported ≠ trustworthy (TRD §6.4) |
@@ -509,10 +509,8 @@ Not in the v1 build:
 | Date | Change |
 |---|---|
 | 2026-07-27 | Initial plan — 13 stages, validation-engine-first ordering, A2/A3 before A1, milestones, risk register, reuse mapping. |
-| 2026-07-27 | Added Stage 0 (nanoAQRL) as the real starting point and M0 (null-world FDR) as the gating milestone. Added reward-hacking, selection-bias and performance risks. |
-| 2026-07-28 | Added Stage 4a (Observability), pulled out of the Stage 12 dashboard and placed immediately after the job queue. Rewrote Stage 10 around the Librarian. |
-| 2026-07-28 | Stage 6 gained the bar-clear short-circuit and lost A3's `promote` verdict; Stage 8's A4 lost the portfolio-correlation deliverable; Stage 5 and 9 gained the git branch and merge-on-approve steps. |
-| 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential section numbering; Stage 0 expanded with the parallelisation step in its proper order; all cross-references updated to the renumbered TRD, PRD and App-Flow; changelog consolidated. No plan decisions changed in this pass. |
-| 2026-07-28 | **Design decisions locked in.** Stage 0.1 now specifies best-of-three train windows with the ×3 trial count and per-fold tuning. Stage 1 gained per-`(market, asset_class)` cost models and the 1s–1month profile range, and no longer pilots a single market. Added three risks: NIFTY-50 survivorship (critical, unmitigated), cost models sourced from public rates rather than contract notes, and sub-minute backtest fidelity. |
-| 2026-07-28 | Stage 1 gained the corporate-action adjustment pipeline and the unexplained-jump validator. Added two risks: unadjusted source data (critical, mitigated by the pipeline) and incomplete corporate-actions history (high — the pipeline is only as good as the action data behind it). |
-| 2026-07-28 | Stage 1 gained point-in-time universe resolution. Survivorship risk moved from unmitigated to mitigation-chosen-blocked-on-data, with the ~100–150 ticker requirement stated explicitly. |
+| 2026-07-27 | Added Stage 0 (nanoAQRL) as the real starting point and M0 (null-world FDR) as the gating milestone. Added Stage 4a (Observability), pulled out of the Stage 12 dashboard. |
+| 2026-07-28 | Stage 6 gained the bar-clear short-circuit; Stage 8's A4 lost portfolio correlation; Stages 5 and 9 gained the git branch and merge-on-approve steps. |
+| 2026-07-28 | **Design decisions locked in** — Stage 0.1 specifies best-of-three train windows with the ×3 trial count and per-fold tuning; Stage 1 gained per-`(market, asset_class)` cost models and the 1s–1month profile range. |
+| 2026-07-28 | **Data integrity added to Stage 1** — the corporate-action adjustment pipeline, the unexplained-jump validator, and point-in-time universe resolution. Added the survivorship, unadjusted-data and incomplete-actions risks. |
+| 2026-07-28 | **Full rewrite.** Cross-references updated to the renumbered TRD; changelog consolidated. No plan decisions changed. |

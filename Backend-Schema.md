@@ -12,7 +12,7 @@
 - Every table has `id INTEGER PRIMARY KEY` plus a `uid TEXT UNIQUE` (UUID) for cross-system references.
 - Timestamps are `TEXT` ISO-8601 **UTC**. Local time is a display concern only.
 - JSON blobs are `TEXT` with a documented shape. Anything queried or filtered gets a real column.
-- Enums are `TEXT` with a `CHECK` constraint, listed in §13.
+- Enums are `TEXT` with a `CHECK` constraint, listed in §14.
 - **Nothing is hard-deleted.** Use status transitions and `archived_at`.
 - Money is stored as integer minor units with an explicit `currency`. **Never float.**
 - Foreign keys are enforced.
@@ -21,7 +21,7 @@
 
 ## 1. What to Build First ★
 
-**This document describes the destination, not the starting point.** Building 15 tables before running one experiment is designing the archive before doing the science.
+**This document describes the destination, not the starting point.** Building 20+ tables before running one experiment is designing the archive before doing the science.
 
 **v1 (nanoAQRL, TRD §2) uses three tables:**
 
@@ -31,7 +31,7 @@
 | `experiments` | One row per attempt: provenance, `code_commit`, status |
 | `evaluations` | The metrics produced by `evaluate.py` |
 
-Add `jobs` when the scheduler arrives. Add the integrity tables (§11) alongside the integrity work, which precedes any real-data result. Everything else is added on **felt need** — when a question arrives that the existing tables cannot answer. The designs already exist here, so later addition is cheap.
+Add `jobs` when the scheduler arrives. Add the integrity tables (§11) and data-integrity tables (§12) alongside the integrity work, which precedes any real-data result. Everything else is added on **felt need** — when a question arrives that the existing tables cannot answer. The designs already exist here, so later addition is cheap.
 
 ### 1.1 Code lives in git, not in the database
 
@@ -66,8 +66,10 @@ knowledge_entries ──► knowledge_edges                        internal, tes
 research_questions
 external_documents ──► document_chunks ──► external_knowledge   external, untested
 
-vault_access_log · null_world_runs · acceptance_bars              integrity
-jobs · budgets · audit_log · data_snapshots · market_profiles · timeframe_profiles
+vault_access_log · null_world_runs · acceptance_bars           research integrity
+data_snapshots ──► corporate_actions · index_membership          data integrity
+               └─► data_validation_flags
+jobs · budgets · audit_log · market_profiles · timeframe_profiles   infrastructure
 ```
 
 ---
@@ -106,7 +108,7 @@ The durable identity of a research thread. One strategy has many experiments (it
 | **family** | TEXT | e.g. `jma_atr_trend` — **critical for trial counting** (TRD §10.2). The same idea tried in 3 markets is 3 trials in one family, not 3 independent results |
 | goal_id | FK → research_goals | |
 | market, timeframe | TEXT | |
-| status | TEXT | See §13.1 |
+| status | TEXT | See §14.1 |
 | **git_branch** | TEXT | `strategy/<strategy_id>`. Created on the first `IMPLEMENT` job (TRD §5.2). **Never deleted**, including on rejection — git's GC only protects commits reachable from a branch |
 | **code_path** | TEXT | `strategies/<strategy_id>/strategy.py` — its own path, so many strategies merge into one deploy branch conflict-free |
 | current_experiment_id | FK → experiments | Latest iteration |
@@ -183,10 +185,10 @@ Join table making operator usage queryable — *"which experiments ever used a K
 | parent_experiment_id | FK → experiments | Lineage across iterations |
 | research_plan_id | FK → research_plans | The plan that produced this iteration (null for iteration 1) |
 | code_version_id | FK → code_versions | |
-| status | TEXT | See §13.2 |
+| status | TEXT | See §14.2 |
 | phase_reached | TEXT | `bar` \| `P0` … `P4` |
 | outcome | TEXT | `passed` \| `failed` \| `error` \| `plateaued` |
-| failure_reason | TEXT | Structured category, §13.5 |
+| failure_reason | TEXT | Structured category, §14.5 |
 | **Provenance (TRD §6.6)** | | |
 | eval_engine_version | TEXT | |
 | market_profile_hash | TEXT | |
@@ -306,7 +308,7 @@ Per-regime breakdown. Feeds promotion checks, health monitoring, and the knowled
 | Column | Type |
 |---|---|
 | evaluation_id | FK |
-| regime | TEXT (§13.4) |
+| regime | TEXT (§14.4) |
 | sharpe, cagr, max_drawdown, trade_count | REAL/INT |
 | period_start, period_end | TEXT |
 
@@ -629,7 +631,7 @@ The satisficing bar (PRD §10.2), recorded **before** a campaign begins so it ca
 | min_score | REAL | **0.50** |
 | max_drawdown | REAL | **0.15** — **0.20 for crypto** (per-market override) |
 | min_trades | INTEGER | **100** |
-| min_breadth, max_complexity | REAL/INTEGER | Definitions still open (TRD §20) |
+| min_breadth, max_complexity | REAL/INTEGER | Definitions still open (TRD §21) |
 | cost_stress_multiple | REAL | **2.0** |
 | z_multiplier | REAL | **1.65** (~95% one-sided) |
 | **plateau_patience** | INTEGER | Consecutive **bar failures** before a PLATEAU verdict — never a score comparison, since clearing the bar stops the loop immediately. **Default 5** |
@@ -642,7 +644,85 @@ The satisficing bar (PRD §10.2), recorded **before** a campaign begins so it ca
 
 ---
 
-## 12. Infrastructure
+## 12. Data Integrity ★
+
+The tables that keep the **inputs** honest. §11 keeps the *research process* honest; these keep the *data* honest — and they are separate defences because null-world calibration cannot detect a corrupted input (TRD §14.1).
+
+### `data_snapshots`
+Immutable dataset versions. An experiment references a snapshot, never "the files on disk."
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| market, timeframe | TEXT | |
+| asset_class | TEXT | `cash_equity` \| `etf` \| `future` \| `cfd` \| `spot_crypto` \| `perpetual` — keys the cost model together with `market` (TRD §6.3) |
+| period_start, period_end | TEXT | |
+| instrument_count, bar_count | INTEGER | |
+| storage_path | TEXT | Path to the **raw, unadjusted** OHLCV — never rewritten (TRD §14.2a) |
+| **raw_content_hash** | TEXT | Hash of the raw files alone |
+| **corporate_actions_version** | TEXT | The actions-table version this snapshot resolves against. **Together with `raw_content_hash` this is the snapshot's true identity** — a new split bumps *this*, not the price hash, so one corporate action does not invalidate the archive |
+| adjustment_method | TEXT | `back_ratio_price` \| `back_ratio_total_return` \| `none`. Versioned, since the choice changes results |
+| **adjusted** | INTEGER (bool) | ⚠️ `false` is **rejected at P0**, not merely warned about |
+| **point_in_time_membership** | INTEGER (bool) | ⚠️ `false` is **rejected at P0**. Whether index constituents are historically accurate rather than today's list projected backwards |
+| survivorship_handled | INTEGER (bool) | Currently **false** for Indian equities — blocked on data collection (TRD §14.5) |
+| in_vault | INTEGER (bool) | If true, the research loop has **no read path** (TRD §15.2) |
+| validation_status, validation_report | TEXT | Cannot be `valid` while any `data_validation_flags` row is `pending` |
+| created_at | TEXT | |
+
+### `corporate_actions`
+Splits, bonuses and dividends. **Append-only and versioned** — this table exists so raw price history never has to be rewritten (TRD §14.2a).
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| instrument, market | TEXT | |
+| action_type | TEXT | `split` \| `bonus` \| `dividend` \| `consolidation` |
+| ex_date | TEXT | The date from which the adjustment applies backwards |
+| ratio | REAL | Split 1:N → `1/N`. Bonus a:b → `b/(a+b)`. Dividend D at price P → `(P−D)/P` |
+| raw_terms | TEXT | As published, e.g. `"1:2"` — kept so the ratio stays auditable |
+| source | TEXT | Exchange filing, vendor feed, manual |
+| verified_by | TEXT | `human` or null — unverified actions must not silently affect prices |
+| created_at | | |
+
+> **Why separate from the price files:** back-adjusting in place rewrites all historical prices, so a single new split would change every snapshot hash and mark the entire archive `comparable = 0`. Keeping actions in their own versioned table means adjustment applies **at load time** and only the actions version changes.
+
+### `index_membership`
+Point-in-time index constituents (TRD §14.3). Resolves *"which stocks were actually in NIFTY-50 on this date?"* — without it, every equity backtest carries survivorship bias.
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| index_name | TEXT | `NIFTY50`, `NIFTYNEXT50`, … |
+| instrument | TEXT | |
+| **effective_from** | TEXT | Date the instrument entered the index |
+| **effective_to** | TEXT | Date it left. **NULL = still a member** |
+| reason_added | TEXT | `periodic_review` \| `ipo_inclusion` \| `replacement` |
+| reason_removed | TEXT | `periodic_review` \| `merger` \| `demerger` \| `delisting` \| null |
+| successor_instrument | TEXT | For mergers — where the entity went, so the transition stays traceable rather than the ticker simply vanishing |
+| source, verified_by | TEXT | |
+
+> **The union of all rows is ~100–150 tickers over 2000–2025, not 50.** Price history is required for *every* one — the companies that left are exactly the ones whose losses are currently invisible. Collecting only today's 50 reproduces the bias with extra steps.
+
+> Resolution happens at load time inside `data.py`, readable by the agent but never editable, so a strategy cannot quietly widen its own universe.
+
+### `data_validation_flags`
+The safety net for what adjustment **cannot** catch — a missing corporate action is invisible to the adjustment pipeline itself (TRD §14.4).
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| snapshot_id | FK → data_snapshots | |
+| instrument, bar_date | TEXT | |
+| flag_type | TEXT | `unexplained_jump` \| `universe_too_narrow` \| `zero_volume` \| `stale_price` \| `gap` |
+| observed_value, threshold | REAL | e.g. the −49.8% single-bar return against a 20% threshold |
+| resolution | TEXT | `pending` \| `genuine_move` \| `missing_action_added` \| `data_error` |
+| resolved_by, resolved_at | TEXT | |
+
+> **A snapshot with `pending` flags cannot be marked valid**, and the scheduler will not dispatch experiments against it. Every flag is either a real market event or a data error, and a human must say which.
+
+---
+
+## 13. Infrastructure
 
 ### `jobs`
 The queue. **Lease-based claiming**, so the v1→v3 migration is a backend swap (TRD §3.2).
@@ -650,7 +730,7 @@ The queue. **Lease-based claiming**, so the v1→v3 migration is a backend swap 
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
-| job_type | TEXT | §13.3 |
+| job_type | TEXT | §14.3 |
 | payload | TEXT (JSON) | |
 | strategy_id, experiment_id | FK | Nullable |
 | status | TEXT | `pending` \| `claimed` \| `running` \| `succeeded` \| `failed` \| `timed_out` \| `cancelled` |
@@ -666,81 +746,6 @@ The queue. **Lease-based claiming**, so the v1→v3 migration is a backend swap 
 
 > Index on `(status, priority, scheduled_for)` — the scheduler's hot path.
 > This table also backs the live activity feed (UI-UX-Brief §8.1).
-
-### `data_snapshots`
-Immutable dataset versions. An experiment references a snapshot, never "the files on disk."
-
-| Column | Type |
-|---|---|
-| id, uid | |
-| market, timeframe | TEXT |
-| asset_class | TEXT | `cash_equity` \| `etf` \| `future` \| `cfd` \| `spot_crypto` \| `perpetual` — keys the cost model with `market` (TRD §6.3a) |
-| period_start, period_end | TEXT |
-| instrument_count, bar_count | INTEGER |
-| storage_path | TEXT | Path to the **raw, unadjusted** OHLCV — never rewritten (TRD §13.2a) |
-| **raw_content_hash** | TEXT | Hash of the raw files alone |
-| **corporate_actions_version** | TEXT | The actions-table version this snapshot resolves against. Together with `raw_content_hash` this forms the snapshot's true identity — a new split bumps *this*, not the price hash |
-| adjustment_method | TEXT | `back_ratio_price` \| `back_ratio_total_return` \| `none`. Versioned, since the choice changes results |
-| **adjusted** | INTEGER (bool) | ⚠️ A snapshot with `false` is **rejected at P0**, not merely warned about |
-| **survivorship_handled** | INTEGER (bool) | ⚠️ Currently **false** for Indian equities — no point-in-time NIFTY-50 membership exists (TRD §20.1). Snapshots with this false must not back a live promotion |
-| point_in_time_membership | INTEGER (bool) | Whether index constituents are historically accurate rather than today's list projected backwards |
-| in_vault | INTEGER (bool) — if true, the research loop has no read path (TRD §14.2) |
-| validation_status, validation_report | TEXT |
-| created_at | TEXT |
-
-### `corporate_actions` ★
-Splits, bonuses and dividends. **Append-only and versioned** — this table exists so raw price history never has to be rewritten (TRD §13.2a).
-
-| Column | Type | Notes |
-|---|---|---|
-| id, uid | | |
-| instrument | TEXT | |
-| market | TEXT | |
-| action_type | TEXT | `split` \| `bonus` \| `dividend` \| `consolidation` |
-| ex_date | TEXT | The date from which the adjustment applies backwards |
-| ratio | REAL | Split 1:N → `1/N`. Bonus a:b → `b/(a+b)`. Dividend D at price P → `(P−D)/P` |
-| raw_terms | TEXT | As published, e.g. `"1:2"` — kept so the ratio is auditable |
-| source | TEXT | Where this record came from (exchange filing, vendor feed, manual) |
-| verified_by | TEXT | `human` or null — unverified actions must not silently affect prices |
-| created_at | | |
-
-> **Why this is separate from the price files:** back-adjusting in place rewrites all historical prices, so a single new split would change every snapshot hash and mark the entire archive `comparable = 0`. Keeping actions in their own versioned table means adjustment is applied **at load time** and only the actions version changes.
-
-### `index_membership` ★
-Point-in-time index constituents (TRD §13.3). Resolves *"which stocks were actually in NIFTY-50 on this date?"* — without it, every equity backtest carries survivorship bias.
-
-| Column | Type | Notes |
-|---|---|---|
-| id, uid | | |
-| index_name | TEXT | `NIFTY50`, `NIFTYNEXT50`, … |
-| instrument | TEXT | |
-| **effective_from** | TEXT | Date the instrument entered the index |
-| **effective_to** | TEXT | Date it left. **NULL = still a member** |
-| reason_added | TEXT | `periodic_review` \| `ipo_inclusion` \| `replacement` |
-| reason_removed | TEXT | `periodic_review` \| `merger` \| `demerger` \| `delisting` \| null |
-| successor_instrument | TEXT | For mergers — where the entity went, so the transition is traceable rather than the ticker simply vanishing |
-| source | TEXT | Exchange filing, vendor feed, manual |
-| verified_by | TEXT | `human` or null |
-
-> **The union of all rows is ~100–150 tickers over 2000–2025, not 50.** Price history is required for *every* one of them — the companies that left are exactly the ones whose losses are currently invisible.
-
-> Resolution happens at load time inside `data.py`, which the agent may read but never edit, so a strategy cannot quietly widen its own universe.
-
-### `data_validation_flags`
-Unexplained price jumps caught at ingest (TRD §13.2d) — the safety net for *missing* corporate actions, which the adjustment pipeline cannot detect on its own.
-
-| Column | Type | Notes |
-|---|---|---|
-| id, uid | | |
-| snapshot_id | FK → data_snapshots | |
-| instrument, bar_date | TEXT | |
-| flag_type | TEXT | `unexplained_jump` \| `zero_volume` \| `stale_price` \| `gap` \| `universe_too_narrow` (distinct instruments across the backtest ≈ index size, a symptom of survivorship bias — TRD §13.3c) |
-| observed_value | REAL | e.g. the −49.8% single-bar return |
-| threshold | REAL | |
-| resolution | TEXT | `pending` \| `genuine_move` \| `missing_action_added` \| `data_error` |
-| resolved_by, resolved_at | TEXT | |
-
-> **A snapshot with `pending` flags cannot be marked valid.** Every flag is either a real market event or a missing adjustment, and a human must say which.
 
 ### `market_profiles` / `timeframe_profiles`
 Registry of resolved profiles (TRD §6). Content-hashed so experiments can pin them.
@@ -786,9 +791,9 @@ Answers *"why did you do this?"* for every system action (PRD §11.1).
 
 ---
 
-## 13. Enumerations
+## 14. Enumerations
 
-### 13.1 `strategies.status`
+### 14.1 `strategies.status`
 ```
 draft → spec_ready → coding → evaluating → evaluated
       → iterating (loops back to coding, below the bar only)
@@ -799,13 +804,13 @@ draft → spec_ready → coding → evaluating → evaluated
       → retired | quarantined
 ```
 
-### 13.2 `experiments.status`
+### 14.2 `experiments.status`
 ```
 created → code_pending → code_ready → evaluating → evaluated → reviewed → archived
         → failed | error
 ```
 
-### 13.3 `jobs.job_type`
+### 14.3 `jobs.job_type`
 ```
 GENERATE_SPEC        (A1)
 IMPLEMENT            (A2)
@@ -822,10 +827,10 @@ NULL_WORLD_RUN       (integrity calibration)
 GENERATE_REPORT
 ```
 
-### 13.4 Regimes
+### 14.4 Regimes
 `trending` · `sideways` · `high_vol` · `low_vol` · `crisis`
 
-### 13.5 `experiments.failure_reason`
+### 14.5 `experiments.failure_reason`
 Structured so A5 can aggregate. **Free text is not acceptable here.**
 
 ```
@@ -843,7 +848,7 @@ Bugs — NOT research findings:
 
 ---
 
-## 14. Key Queries the Schema Must Answer Fast
+## 15. Key Queries the Schema Must Answer Fast
 
 Each must be a simple indexed query, not a scan. These drove the design.
 
@@ -857,10 +862,12 @@ Each must be a simple indexed query, not a scan. These drove the design.
 8. *"What is the cost per credible discovery?"* → `tokens_spent` aggregated against promoted strategies
 9. *"Reproduce experiment #12,483 exactly."* → spec + `code_commit` + `data_snapshot_id` + profile hashes + `wf_config_hash` + seed
 10. *"What is trading right now?"* → `deployments` where `status = active`, cross-checked against `git show deploy/live`
+11. *"Which stocks were in NIFTY-50 on 2014-03-11?"* → `index_membership` where `effective_from ≤ date < effective_to` — the point-in-time universe (§12)
+12. *"Is this snapshot safe to run experiments against?"* → `adjusted` + `point_in_time_membership` true, and no `pending` rows in `data_validation_flags`
 
 ---
 
-## 15. Migration Notes
+## 16. Migration Notes
 
 - SQLite first, but **no SQLite-specific SQL.** No `AUTOINCREMENT` reliance, no dynamic-typing tricks.
 - JSON columns become `JSONB` in PostgreSQL.
@@ -869,7 +876,7 @@ Each must be a simple indexed query, not a scan. These drove the design.
 
 ---
 
-## 16. Open Schema Questions
+## 17. Open Schema Questions
 
 - [ ] Do parameter sweeps get one `experiment` row each, or one row with a child `sweep_runs` table? (Affects trial counting.)
 - [ ] Should `trades` live in SQLite at all, or Parquet-only with SQLite holding aggregates?
@@ -884,10 +891,8 @@ Each must be a simple indexed query, not a scan. These drove the design.
 | Date | Change |
 |---|---|
 | 2026-07-27 | Initial schema — experiments as the central table with full provenance, trial-count support for the deflated Sharpe, spec hashing for duplicate detection, evidence-backed knowledge graph edges, lease-based job queue. |
-| 2026-07-27 | Added the build-three-tables-first guidance, the honest-score column group, walk-forward columns, timing columns, and the integrity tables. |
-| 2026-07-28 | Added `wf_config_hash` to provenance and the comparability index. Added the Librarian's output schema — `document_chunks`, and `external_knowledge` as one row per idea with `evidence_tier` and traceability back to exact passages. Added the git branch/merge columns. |
-| 2026-07-28 | Removed `promotions.correlation_with_live` (portfolio fit is out of scope for A4) and `acceptance_bars.plateau_margin_factor` (clearing the bar is an immediate stop, so score-to-score comparison no longer exists). |
-| 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential numbering (§0–§16) replacing the patched §0A/§15 scheme; internal and external knowledge separated into clearly-labelled trust tiers; all cross-references updated to the renumbered TRD, PRD and App-Flow; `in_vault` added to `data_snapshots`; changelog consolidated. No schema decisions changed in this pass. |
-| 2026-07-28 | **Design decisions locked in.** `evaluations` now stores all three train-window scores plus the winner and the spread; `n_trials_used` documented as including the ×3 selection factor; `params_grid_size` and `tuned_params_per_fold` added. `acceptance_bars` carries the concrete pre-registered values. `data_snapshots` gained `asset_class` and `point_in_time_membership`, and `survivorship_handled` now carries the warning that it is currently false for Indian equities. |
-| 2026-07-28 | Added `corporate_actions` (append-only, versioned) and `data_validation_flags`. `data_snapshots` restructured so identity is `(raw_content_hash, corporate_actions_version)` rather than a single hash over adjusted prices — a new split now bumps the actions version instead of invalidating every prior experiment. Added the `adjusted` flag, rejected at P0 when false. |
-| 2026-07-28 | Added `index_membership` for point-in-time universe resolution, including `successor_instrument` so merger transitions stay traceable. Added the `universe_too_narrow` validation flag. |
+| 2026-07-27 | Added the build-three-tables-first guidance, the honest-score column group, walk-forward columns, timing columns, and the research-integrity tables. Added the Librarian's output schema — `document_chunks` and `external_knowledge` as one row per idea with `evidence_tier`. |
+| 2026-07-28 | Added git branch/merge columns. Removed `promotions.correlation_with_live` (portfolio fit is out of scope for A4) and `acceptance_bars.plateau_margin_factor` (clearing the bar is an immediate stop, so score-to-score comparison no longer exists). |
+| 2026-07-28 | **Design decisions locked in** — all three train-window scores plus winner and spread on `evaluations`; `n_trials_used` documented as including the ×3 selection factor; `params_grid_size` and `tuned_params_per_fold`; concrete pre-registered values on `acceptance_bars`. |
+| 2026-07-28 | Added `corporate_actions`, `index_membership` and `data_validation_flags`; `data_snapshots` restructured so identity is `(raw_content_hash, corporate_actions_version)`. |
+| 2026-07-28 | **Full rewrite.** Split the data-quality tables out of Infrastructure into their own **§12 Data Integrity** section, beside §11 Research Integrity — they defend against different threats (the data fooling us vs the process fooling us), and null-world calibration cannot catch the former. Renumbered §12–§17; added two data-integrity queries to §15; updated all cross-references to the renumbered TRD. No schema decisions changed in this pass. |

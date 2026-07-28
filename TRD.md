@@ -14,7 +14,7 @@ Three rules follow:
 
 1. **Claude only thinks.** Collectors, schedulers, databases, backtests and statistics are ordinary Python. Claude must never spend tokens downloading a PDF or renaming a file.
 2. **Claude is stateless.** One session per job, then destroyed. The database holds all state. This makes the system restartable, parallelisable and debuggable.
-3. **Agents know queues, not each other.** No agent calls another agent. They read and write rows; the scheduler notices and dispatches. This is what makes 1 worker and 100 workers the same code.
+3. **Agents know queues, not each other.** No agent calls another agent. They write rows; the scheduler notices and dispatches. This is what makes 1 worker and 100 workers the same code.
 
 ### 1.1 The four components
 
@@ -39,7 +39,7 @@ The reference project (PRD §13) runs a complete autonomous research loop in thr
 
 | File | Contents | Agent permission |
 |---|---|---|
-| `data.py` | Snapshots, calendars, cost models, universe definition | **read only** |
+| `data.py` | Snapshots, calendars, cost models, corporate-action adjustment, point-in-time universe | **read only** |
 | `strategy.py` | Signal logic, entries, exits, filters, sizing | **the only writable file** |
 | `evaluate.py` | The scoring harness and the hard bar | **neither readable nor writable** |
 | `program.md` | Operating instructions and the acceptance bar | **human-edited only** |
@@ -61,7 +61,7 @@ Status values are exactly three: `keep` · `discard` · `crash`. Every experimen
 
 The reference lets the agent **read** `prepare.py`; only editing is forbidden. **We forbid reading `evaluate.py` as well.**
 
-`val_bpb` survives being understood — knowing how a held-out likelihood is computed does not help you fake one. **A backtest score does not survive being understood.** An agent that can read the scorer will eventually exploit a weakness in it, not from malice but because exploiting the measurement is the cheapest path to a higher number (§14.1).
+`val_bpb` survives being understood — knowing how a held-out likelihood is computed does not help you fake one. **A backtest score does not survive being understood.** An agent that can read the scorer will eventually exploit a weakness in it, not from malice but because exploiting the measurement is the cheapest path to a higher number (§15.1).
 
 ### 2.4 What `program.md` must contain ★
 
@@ -72,7 +72,7 @@ Because the agent cannot read `evaluate.py`, `program.md` is the **only** channe
 | **Correctness rules** (below). Not gameable — hiding them only causes avoidable failures | **The scoring formula and its thresholds.** These *are* gameable — an agent that knows the exact haircut can aim at it |
 | The bar's *dimensions* (trades, drawdown, breadth, complexity exist) | The bar's *numbers* |
 
-**These instructions reduce the error rate. They enforce nothing.** The agent cannot grade its own look-ahead; P0 (§10.1) remains the enforcement layer. Both, always.
+**These instructions reduce the error rate. They enforce nothing.** The agent cannot grade its own look-ahead; P0 (§11.1) remains the enforcement layer. Both, always.
 
 #### Required — anti-look-ahead rules
 
@@ -89,6 +89,9 @@ Because the agent cannot read `evaluate.py`, `program.md` is the **only** channe
 **Missing data**
 - `bfill()` / `fillna(method='backfill')` is forbidden — it pulls the future backwards.
 - Forward-fill only, and be explicit about why it is safe.
+
+**Price levels** *(a consequence of back-adjustment — §14.2c)*
+- **No absolute price thresholds.** Rules must be expressed in ratio or percentage terms. On a back-adjusted series an absolute level is forward-looking, and it does not transfer across instruments anyway.
 
 **Resampling and joins**
 - A bar's own close is not known until that bar closes. Do not use it to decide an action inside the same bar.
@@ -109,11 +112,7 @@ Because the agent cannot read `evaluate.py`, `program.md` is the **only** channe
 
 ### 2.5 Minimum viable schema
 
-`Backend-Schema.md` defines 15+ tables. Building all of them before running one experiment is designing the archive before doing the science. v1 starts with **three**:
-
-- `strategies` — the research thread, carrying `family` for trial counting
-- `experiments` — one row per attempt: provenance, `code_commit`, status
-- `evaluations` — the metrics from `evaluate.py`
+`Backend-Schema.md` defines 20+ tables. Building all of them before running one experiment is designing the archive before doing the science. v1 starts with **three**: `strategies`, `experiments`, `evaluations`.
 
 `jobs` arrives with the scheduler. Everything else is added on felt need; the designs already exist, so later addition is cheap.
 
@@ -157,12 +156,10 @@ A single scheduler is dramatically easier to debug than six independent daemons.
 
 ### 3.3 Eventual target hardware — reference only
 
-Documented so the architecture does not preclude it:
-
-- **Control plane** (24/7): 8–16 vCPU, 32–64 GB RAM, 1 TB SSD — scheduler, Postgres, vector DB, job queue, dashboard API. No GPU.
-- **Research nodes** (CPU cluster): ~20 × (32 vCPU, 128 GB RAM, 2 TB NVMe) — backtests, walk-forward, Monte Carlo, parameter search. Embarrassingly parallel.
-- **AI nodes** (GPU): 4 × (2 L40S / 4 RTX 6000 Ada / H100) — embeddings, rerankers, OCR, local models. Claude Code itself needs no GPU.
-- **Storage**: start at ~100 TB object storage. Experiment output grows faster than intuition suggests.
+- **Control plane** (24/7): 8–16 vCPU, 32–64 GB RAM, 1 TB SSD. No GPU.
+- **Research nodes** (CPU cluster): ~20 × (32 vCPU, 128 GB RAM, 2 TB NVMe) — embarrassingly parallel.
+- **AI nodes** (GPU): embeddings, rerankers, OCR, local models. Claude Code itself needs no GPU.
+- **Storage**: ~100 TB object storage. Experiment output grows faster than intuition suggests, and 1-second bar data compounds it (§13.2).
 
 ---
 
@@ -187,9 +184,8 @@ Health check trips Red     → enqueue lifecycle action + notify dashboard
 New document ingested      → enqueue EXTRACT (the Librarian)
 High-novelty extraction    → enqueue GENERATE_SPEC directly — skip the nightly wait
 Failure pattern detected   → enqueue a research question to the curiosity queue
+Data snapshot flagged      → notify human; the snapshot cannot be used until resolved (§14.4)
 ```
-
-The system is effectively 24/7 but consumes compute only when there is work.
 
 ### 4.2 Time-driven jobs — the exceptions
 
@@ -217,28 +213,27 @@ Hard caps enforced by the scheduler, all configurable:
 - Max concurrent Claude sessions
 - Max tokens per day (global) and per strategy (lifetime)
 - Max iterations per strategy — backstop to the stop rule
-- Max wall-clock per evaluation phase (§9.6)
-- Max experiments per day — tied to measured FDR by the autonomy ratchet (§14.4)
-
-When a cap is hit the scheduler stops dispatching that class of work and logs the reason. **Budget exhaustion is a normal state, not an error.**
+- Max wall-clock per evaluation phase
+- Max experiments per day — tied to measured FDR by the autonomy ratchet (§15.4)
 
 ### 4.5 Continuous operation — and the one legitimate reason to idle ★
 
 **The laboratory runs 24/7 and never stops on success.** Clearing the bar stops *that strategy's* iteration (§7.5); it does not stop the campaign, the goal, or the lab. Research continues while candidates sit in the human queue, while strategies paper-trade, and while others run live. Multiple strategies occupy paper trading simultaneously; the pipeline is continuous, not a one-shot search.
 
-**No agent should sit idle because nothing was queued.** That is a scheduling bug — it means A1 is not generating, or the queue drained, and throughput is being wasted.
+**No agent should sit idle because nothing was queued.** That is a scheduling bug — throughput is being wasted.
 
 **Agents may idle because a safety limit was reached.** That is the system working:
 
 | Idle cause | Verdict |
 |---|---|
-| Queue empty, budget available, no limit hit | 🐛 **Bug** — investigate, the lab is wasting capacity |
-| Daily token/compute budget exhausted | ✅ **By design** (§4.4) |
-| Null-world FDR above threshold → autonomy ratchet throttling | ✅ **By design** (§14.4) |
-| A family's vault budget exhausted | ✅ **By design** (§14.2) |
-| Concurrency cap reached | ✅ **By design** |
+| Queue empty, budget available, no limit hit | 🐛 **Bug** — the lab is wasting capacity |
+| Daily token/compute budget exhausted | ✅ By design (§4.4) |
+| Null-world FDR above threshold → autonomy ratchet throttling | ✅ By design (§15.4) |
+| A family's vault budget exhausted | ✅ By design (§15.2) |
+| Concurrency cap reached | ✅ By design |
+| Blocked on unresolved data-validation flags | ✅ By design (§14.4) |
 
-The distinction matters operationally: the dashboard must show *which* of these is occurring, so "the lab is quiet" is never ambiguous between "healthy and throttled" and "broken and stalled."
+The dashboard must show *which* of these is occurring, so "the lab is quiet" is never ambiguous between "healthy and throttled" and "broken and stalled."
 
 ---
 
@@ -246,9 +241,7 @@ The distinction matters operationally: the dashboard must show *which* of these 
 
 ### 5.1 SQLite *and* git — not either/or
 
-The reference uses git as the entire experiment database. We do not, for one decisive reason: **deflated Sharpe requires a trial count**, and *"how many attempts have been made in this family?"* cannot be answered by grepping `git log`. Paper trading, health monitoring and deployment state reinforce the same conclusion.
-
-His loop is one file evolving in a straight line; ours produces many independent candidates forming no single lineage, so the keep/reset ratchet does not map cleanly.
+The reference uses git as the entire experiment database. We do not, for one decisive reason: **the deflated Sharpe requires a trial count**, and *"how many attempts in this family?"* cannot be answered by grepping `git log`. Paper trading, health monitoring and deployment state reinforce the same conclusion.
 
 | Store | Holds |
 |---|---|
@@ -260,7 +253,7 @@ Strategy code is **never** stored as a blob in the database — that loses diffs
 
 ### 5.2 One repo, one branch per strategy ★
 
-**A separate repo per hypothesis was considered and rejected.** Repos are a large, durable unit; creating one per idea — of which there will eventually be millions — means real overhead per hypothesis, no way to search across all of them at once, and an unbounded backup problem.
+**A separate repo per hypothesis was considered and rejected.** Repos are a large, durable unit; creating one per idea — of which there will eventually be millions — means real overhead per hypothesis, no way to search across them at once, and an unbounded backup problem.
 
 **Branches are the right size.** A branch is a cheap pointer to a commit chain — exactly the shape of one hypothesis's story:
 
@@ -268,24 +261,21 @@ Strategy code is **never** stored as a blob in the database — that loses diffs
 ONE repo, forever
 ├── branch: strategy/<strategy_id>      one per STRATEGY
 │      commit 1: iteration 1              (not per experiment, not per family)
-│      commit 2: iteration 2              each iteration is another commit
-│      commit 3: ...                       on the same branch
+│      commit 2: iteration 2
 ├── branch: strategy/<other_id>
 ├── branch: deploy/paper                 §5.3
 └── branch: deploy/live                  §5.3
 ```
 
-This is the reference project's "one branch per campaign" convention, scaled from one hypothesis to many running concurrently.
-
 **Why a branch is technically mandatory, not merely tidy:** git's garbage collector only protects commits reachable from a branch or tag. `experiments.code_commit` records a hash in SQLite, but **git has no knowledge of that database** — a commit with no branch pointing at it is unreferenced, and `git gc` can eventually delete it. A live branch per strategy is what guarantees a `code_commit` pointer never silently breaks.
 
-**Branches are never deleted**, including for rejected strategies. The branch *is* the permanent research record, and it is cheap to keep forever.
+**Branches are never deleted**, including for rejected strategies. The branch *is* the permanent research record.
 
-**File-layout consequence:** nanoAQRL's single `strategy.py` (§2.1) works only because exactly one hypothesis is live at a time. Once strategies coexist, each must live at its own path — `strategies/<strategy_id>/strategy.py` — so two strategies' code can be merged into one branch without touching the same file.
+**File-layout consequence:** nanoAQRL's single `strategy.py` works only because exactly one hypothesis is live at a time. Once strategies coexist, each must live at its own path — `strategies/<strategy_id>/strategy.py` — so two strategies' code can merge into one branch without touching the same file.
 
 ### 5.3 Merging — only forward, only on approval
 
-**Most branches are never merged anywhere.** Two unrelated hypotheses (an SMA crossover and a mean-reversion RSI strategy) have no shared content to combine. A rejected or plateaued strategy's branch simply stays where it is, permanently.
+**Most branches are never merged anywhere.** Two unrelated hypotheses have no shared content to combine. A rejected or plateaued strategy's branch simply stays where it is, permanently.
 
 **Merging happens at exactly one moment: when a human approves a strategy to run.**
 
@@ -294,11 +284,11 @@ Human approves research → paper   →  merge strategy/<id> into deploy/paper
 Human approves paper → live       →  merge strategy/<id> into deploy/live
 ```
 
-This gives both human gates a concrete, physical, auditable action instead of only a database row. Because each strategy lives at its own path (§5.2), merging many strategies into one deploy branch is conflict-free by construction.
+This gives both human gates a concrete, auditable action instead of only a database row. Because each strategy lives at its own path, merging many into one deploy branch is conflict-free by construction.
 
-**The merge commit doubles as an audit record.** Its message references the `promotions` row that authorised it — approver, timestamp, promotion ID — so `git show deploy/live` answers *"what is trading right now"* unambiguously, and the git history and database cross-reference each other.
+**The merge commit doubles as an audit record.** Its message references the `promotions` row that authorised it, so `git show deploy/live` answers *"what is trading right now"* unambiguously.
 
-**Retirement removes a strategy from its deploy branch, never from its research branch.** `deploy/live` reflects only what is *currently* running; `strategy/<id>` keeps the full history forever regardless.
+**Retirement removes a strategy from its deploy branch, never from its research branch.**
 
 ---
 
@@ -310,35 +300,24 @@ This gives both human gates a concrete, physical, auditable action instead of on
 
 The statistical layer — deflated Sharpe, White's Reality Check, CSCV/PBO, Monte Carlo, walk-forward — is market-agnostic mathematics and must exist exactly once.
 
-The reason is not code hygiene, it is **scientific validity.** The value of the Research Memory depends on A5 being able to compare experiment #6,201 in crypto against #12,483 in Indian equities. That comparison is only meaningful if both were scored by identical code. Fork `evaluate.py` six ways and within a year you have six subtly divergent PBO implementations, a Sharpe of 1.4 no longer means the same thing in two rows of the same table, and every cross-market lesson the knowledge graph produces is noise — **silently.**
+The reason is not code hygiene, it is **scientific validity.** The Research Memory depends on A5 comparing experiment #6,201 in crypto against #12,483 in Indian equities. That comparison is only meaningful if both were scored by identical code. Fork `evaluate.py` six ways and within a year you have six subtly divergent PBO implementations, a Sharpe of 1.4 no longer means the same thing in two rows of the same table, and every cross-market lesson is noise — **silently.**
 
 ### 6.2 The factoring
 
 ```
 evaluate.py                 # one engine: phases, statistics, the hard bar
-  ├── MarketProfile         # calendar, costs, constraints, benchmark, risk-free, currency
+  ├── MarketProfile         # calendar, constraints, universe, benchmark, currency
+  ├── CostModel             # keyed on (market, asset_class) — §6.3
   ├── TimeframeProfile      # annualisation, fill model, cost sweep, WF windows, min-N
-  ├── validators/           # per-market data sanity checks
+  ├── validators/           # per-market data sanity checks (§14.4)
   └── gates/                # optional extra phases per market (§6.5)
 ```
 
-Two composable axes. Six markets × five timeframes = **30 profile files, not 30 engines.**
+Composable axes. Six markets × six asset classes × many timeframes = **profile files, not engines.**
 
-### 6.3 MarketProfile — what genuinely differs by market
+### 6.3 Cost models are per market × asset class ★
 
-Inputs, never different algorithms:
-
-| Group | Contents |
-|---|---|
-| **Calendar** | Session hours, holidays, half-days. NSE 09:15–15:30; MCX to 23:30; crypto 24/7; forex 24/5 with a Sunday open |
-| **Costs** | Resolved **per market *and* per asset class** (§6.3a) — the same venue charges a cash equity, an ETF and a derivative differently |
-| **Constraints** | Tick size, lot size, contract multiplier, margin, circuit limits (India) vs halts (US), short-selling rules (Indian cash equities: intraday only) |
-| **Data hazards** | Survivorship and delisting (equities), contract roll/contango (commodities), exchange-specific bad prints (crypto) |
-| **Reference** | Risk-free rate source, benchmark for alpha/beta, P&L currency, ADV/liquidity cap |
-
-### 6.3a Cost models are per market × asset class ★
-
-Cost is **not** a market-level property. NSE charges a delivery equity trade, an intraday equity trade and an index future entirely differently. The resolved cost model is therefore keyed on `(market, asset_class)`, and `asset_class` is a first-class field on every instrument.
+Cost is **not** a market-level property. NSE charges a delivery equity trade, an intraday equity trade and an index future entirely differently. The resolved cost model is keyed on `(market, asset_class)`, and `asset_class` is a first-class field on every instrument.
 
 **Asset classes in scope:** cash equity · index ETF · index/commodity **future** · **CFD** · **spot crypto** · **crypto perpetual**.
 
@@ -356,66 +335,39 @@ Cost is **not** a market-level property. NSE charges a delivery equity trade, an
 | Slippage (NIFTY-50 liquidity) | 2–5 bps per side | 4–10 bps |
 | **Realistic all-in** | | **≈ 27–32 bps** |
 
-> **This single number shapes what is even worth researching.** A swing strategy must average **> 30 bps per round trip** merely to break even, and the 2× cost stress means clearing **~55–65 bps**. At 100 trades/year that is roughly 3% of turnover consumed annually before any edge exists.
+> **This number shapes what is worth researching at all.** A swing strategy must average **> 30 bps per round trip** merely to break even, and the 2× cost stress means clearing **~55–65 bps**. At 100 trades/year that is ~3% of turnover consumed annually before any edge exists.
 
-**Provenance requirement:** these figures were derived from public sources and are a *starting default only*. Before any live capital, each market's cost model must be **re-derived from a real broker contract note** and the source recorded on the profile. Published rates go stale, differ by segment, and change with budgets — a cost model sourced from a blog is a silent, systematic bias in every backtest that uses it.
+**Provenance requirement:** these figures came from public sources and are a *starting default only*. Before any live capital, each market's cost model must be **re-derived from a real broker contract note**, with the source recorded on the profile. Published rates go stale and differ by segment — a cost model sourced from a blog is a silent, systematic bias in every backtest that uses it.
 
-### 6.4 TimeframeProfile — what genuinely differs by timeframe
+### 6.4 MarketProfile — what genuinely differs by market
 
-Different in kind, and the primary source of silent self-deception:
-
-**Supported range: 1 second to 1 month.** The architecture must span roughly seven orders of magnitude in bar size, which makes every field below profile-driven rather than assumed.
-
-| Field | Why it matters |
+| Group | Contents |
 |---|---|
-| **`periods_per_year`** | √252 daily vs √(252×375) for 1-minute vs ~5.7M periods/year for 1-second NSE. **Must come from the profile — never a hardcoded constant.** One wrong value makes every Sharpe in the database fiction |
-| **`fill_model`** | Monthly/daily: next-open. Intraday: bar-level rules + spread-fraction slippage. **Sub-minute: queue position and latency assumptions we do not yet trust** — see the warning below |
-| **`cost_stress_multipliers`** | At 1-second, costs and spread dominate entirely; at monthly they are a rounding error |
-| **Walk-forward windows** | Sized in **bars** for statistical power *and* **calendar time** for regime coverage. At 1-second a 1-year test window is ~5.7M bars; at monthly it is 12 |
-| **`min_trades`** | Ties directly to the promotion rule (PRD §9.3) |
-| **Overnight handling** | Gap risk, carry, crypto funding accrual — only if positions cross sessions |
-
-> ⚠️ **Honesty limit at the fast end.** Below roughly 1 minute, backtest realism degrades sharply: fills depend on queue position, latency and order-book depth that bar data cannot represent. The architecture *supports* 1-second bars; that is not the same as the results being trustworthy there. Sub-minute strategies should carry a much heavier slippage assumption and be treated as research artifacts until validated by real paper-trading fills. This is a data-fidelity limit, not a code limit.
->
-> **Storage note:** 1-second bars for 50 instruments across 25 years is on the order of terabytes. Fast timeframes should be scoped to shorter histories or fewer instruments rather than assuming full coverage.
-
-Illustrative:
-
-```yaml
-market: nse_equity
-  calendar: nse
-  costs:       {brokerage_bps: 3, stt_bps: 10, stamp_bps: 1.5, gst_pct: 18}
-  constraints: {tick: 0.05, short_intraday_only: true, circuit_pct: 20}
-  benchmark:   NIFTY50
-  risk_free:   india_tbill_91d
-  currency:    INR
-
-timeframe: daily
-  periods_per_year: 252
-  fill_model: next_bar_open
-  cost_stress_multipliers: [1, 2, 3, 5]
-  min_trades: 100
-  overnight: true
-```
+| **Calendar** | Session hours, holidays, half-days. NSE 09:15–15:30; MCX to 23:30; crypto 24/7; forex 24/5 with a Sunday open |
+| **Constraints** | Tick size, lot size, contract multiplier, margin, circuit limits (India) vs halts (US), short-selling rules (Indian cash equities: intraday only) |
+| **Universe** | Point-in-time index membership where applicable (§14.3) |
+| **Data hazards** | Survivorship (equities), contract roll/contango (commodities), exchange-specific bad prints (crypto) |
+| **Reference** | Risk-free rate source, benchmark for alpha/beta, P&L currency, ADV/liquidity cap |
 
 ### 6.5 Legitimate per-market variation — extra gates, not extra engines
 
 Additional phases **appended** to the standard sequence, so core metrics stay identical and comparable:
 
 - **Crypto:** venue robustness (does the edge survive on a second exchange?), funding-cost sensitivity
-- **Equities:** survivorship-bias check, capacity/ADV constraint
-- **Commodities:** roll-method sensitivity (does the edge depend on how contracts were stitched?)
+- **Equities:** survivorship check, capacity/ADV constraint
+- **Commodities:** roll-method sensitivity
 - **Forex:** session-of-day dependence, carry decomposition
 
 ### 6.6 Provenance — mandatory on every experiment ★
 
 ```
-eval_engine_version      # semver of evaluate.py
-market_profile_hash      # content hash of the resolved profile
-timeframe_profile_hash   # content hash of the resolved profile
-wf_config_hash           # hash of {scheme, train_years, test_years} — §8.2
-code_commit              # git commit of the strategy code
-data_snapshot_id         # exact dataset version
+eval_engine_version         # semver of evaluate.py
+market_profile_hash         # content hash of the resolved profile
+timeframe_profile_hash      # content hash of the resolved profile
+cost_model_hash             # (market, asset_class) cost model — §6.3
+wf_config_hash              # {scheme, train windows, test window} — §8.2
+code_commit                 # git commit of the strategy code
+data_snapshot_id            # raw content hash + corporate_actions_version — §14.2a
 operator_library_version
 random_seed
 ```
@@ -426,14 +378,14 @@ Changing any profile or the engine bumps a version. Old results are never delete
 
 ### 6.7 The invariant
 
-The reference achieves comparability with a single constant — the 5-minute wall clock — rather than a versioning scheme. The AQRL analogue is a **fixed evaluation contract**: data slice, cost model, walk-forward configuration and test protocol held constant across a campaign. §6.6 enforces it; the design goal is to keep the contract simple enough that it rarely changes, because **every change partitions the result history.**
+The reference achieves comparability with a single constant — the 5-minute wall clock. The AQRL analogue is a **fixed evaluation contract**: data snapshot, cost model, walk-forward configuration and test protocol held constant across a campaign. §6.6 enforces it; the design goal is to keep the contract simple enough that it rarely changes, because **every change partitions the result history.**
 
 ---
 
 ## 7. The Honest Score ★
 
 > ```
-> score = SR_oos  −  2 × SE(SR)  −  SR*(N_trials)
+> score = SR_oos  −  1.65 × SE(SR)  −  SR*(N_trials)
 > ```
 >
 > **The deflated lower bound on out-of-sample Sharpe.** In words: *what Sharpe can we be confident is real, after accounting for how few trades we have, how ugly the tails are, and how many things we already tried?*
@@ -444,7 +396,7 @@ The reference achieves comparability with a single constant — the 5-minute wal
 
 Running every test in `evaluate.py` does not produce a score. Thirty metrics is a **report**; it cannot answer *"is experiment 47 better than 46?"* The score is a decision rule, chosen deliberately.
 
-The reference project works because it has one honest scalar. `val_bpb` is held out, vocab-independent (so architectures compare fairly), a single number, and effectively impossible to game. Our equivalent must satisfy:
+The reference project works because it has one honest scalar. `val_bpb` is held out, vocab-independent, a single number, and effectively impossible to game. Our equivalent must satisfy:
 
 | `val_bpb` property | AQRL requirement |
 |---|---|
@@ -459,7 +411,7 @@ The reference project works because it has one honest scalar. `val_bpb` is held 
 **Term 1 — `SR_oos`: Sharpe on data the search never fitted.**
 Generated by purged rolling walk-forward with an embargo gap (§8). All test windows concatenate into one return series. **That series is the only thing ever scored** — never the fitted sample. Computed at **2× assumed costs**; cost stress is the default condition, not a separate later test.
 
-**Term 2 — the uncertainty haircut.** The standard asymptotic standard error of a Sharpe estimate:
+**Term 2 — the uncertainty haircut**, at `z = 1.65` (~95% one-sided):
 
 ```
 SE(SR) = sqrt( (1 + SR²/2 − skew·SR + (kurtosis−3)/4 · SR²) / n )
@@ -473,13 +425,13 @@ This closes three attack vectors with one formula, without a rule for each:
 | Pick up pennies in front of a steamroller | negative skew → `−skew·SR` positive → SE grows → score drops |
 | Rare catastrophic tail | kurtosis term grows → score drops |
 
-**Term 3 — the trials haircut, `SR*(N_trials)`.** Try N strategies on pure noise and the best will show a respectable Sharpe by luck alone. That expected-best-under-null is computable from N and subtracted (the deflated Sharpe construction, Bailey & López de Prado). Try 10 things, subtract a little; try 10,000, subtract a lot. This is why `strategies.family` and the trial count exist in the schema.
+**Term 3 — the trials haircut, `SR*(N_trials)`.** Try N strategies on pure noise and the best will show a respectable Sharpe by luck alone. That expected-best-under-null is computable from N and subtracted (Bailey & López de Prado). Try 10 things, subtract a little; try 10,000, subtract a lot.
 
-**What counts as a trial is defined precisely in §8.6** — and it includes the ×3 from evaluating every strategy at three train-window lengths and reporting the best (§8.2). Under-counting here is the single easiest way to make this whole score dishonest.
+**What counts as a trial is defined precisely in §8.6**, and it includes the **×3** from evaluating every strategy at three train-window lengths and reporting the best (§8.2). Under-counting here is the easiest way to make this whole score dishonest.
 
 ### 7.3 Why a bound and not a probability
 
-The Probabilistic Sharpe Ratio returns a probability, which **saturates** — two good strategies both score 0.99 and the hill-climb loses its gradient. The loop needs a number that keeps moving so the agent can tell it is making progress, exactly as `val_bpb` does. A lower confidence bound provides that; a probability does not.
+The Probabilistic Sharpe Ratio returns a probability, which **saturates** — two good strategies both score 0.99 and the hill-climb loses its gradient. The loop needs a number that keeps moving so the agent can tell it is making progress, exactly as `val_bpb` does.
 
 ### 7.4 Rejected alternatives
 
@@ -495,35 +447,33 @@ The Probabilistic Sharpe Ratio returns a probability, which **saturates** — tw
 
 A hard pass/fail bar runs **before** any score is computed.
 
-| The bar (pass/fail, pre-registered) | Value | The score (ranking) |
-|---|---|---|
-| Minimum honest score | **0.50** | `SR_oos − 1.65·SE(SR) − SR*(N)` |
-| **Maximum out-of-sample drawdown** | **15%** — **20% for crypto** | |
-| Minimum trade count | **100** | |
-| Minimum breadth across instruments | *TBD* | |
-| Profitable at 2× costs | required | |
-| Maximum complexity | *TBD* | |
-| **`z` multiplier on the haircut** | **1.65** (~95% one-sided) | |
+| The bar (pass/fail, pre-registered) | Value |
+|---|---|
+| Minimum honest score | **0.50** |
+| **Maximum out-of-sample drawdown** | **15%** — **20% for crypto** |
+| Minimum trade count | **100** |
+| Minimum breadth across instruments | *definition open (§21)* |
+| Maximum complexity | *definition open (§21)* |
+| Profitable at 2× costs | required |
+| `z` multiplier on the haircut | **1.65** |
 
 Fail any item → **`discard`, no score computed, stop.**
 
-> Breadth and complexity are deliberately still open (§20) — both need a measurement definition before they can carry a number.
-
 **Drawdown deliberately does not enter the score.** Max drawdown is a single worst-moment statistic — very noisy, highly dependent on the sample window. Ranking on it means ranking partly on luck. As a *gate* its noisiness is harmless; as a *ranking* it is corrosive.
 
-**Clearing the bar is an immediate, unconditional stop.** The first passing iteration is the last one — the worker routes straight to A4 without invoking A3 (PRD §9.2, App-Flow §6.1). Since the bar already contains a minimum score, clearing it already means "good enough by a standard set in advance."
+**Clearing the bar is an immediate, unconditional stop.** The first passing iteration is the last — the worker routes straight to A4 without invoking A3 (PRD §9.2, App-Flow §6.1). Since the bar already contains a minimum score, clearing it already means "good enough by a standard set in advance."
 
 **Gates are enforced in `evaluate.py`, not merely stated in `program.md`.** `program.md` is *instructions* — the agent decides whether it complied, and will eventually persuade itself that 40 trades is close enough to 100. The bar therefore lives in both files with different jobs: `program.md` states the target; `evaluate.py` **enforces** it. Since the agent can neither read nor edit `evaluate.py`, the gate is a fact rather than a request.
 
 ### 7.6 Ranked criteria
 
 1. **Primary** — the honest score
-2. **Secondary** — a resource constraint: capacity or turnover (the analogue of the reference's VRAM ceiling)
+2. **Secondary** — a resource constraint: capacity or turnover
 3. **Tertiary** — **simplicity**, scored rather than left to reviewer judgment
 
 ### 7.7 Frequency fairness
 
-Annualising by `√periods_per_year` is fair **when trades are independent** — a higher-frequency strategy genuinely gets more independent observations, so a higher Sharpe is real rather than an artifact. The unfairness appears with **autocorrelated returns** (overlapping positions, slow-decaying signals), which require an autocorrelation correction or the Sharpe is inflated.
+Annualising by `√periods_per_year` is fair **when trades are independent**. The unfairness appears with **autocorrelated returns** (overlapping positions, slow-decaying signals), which require an autocorrelation correction or the Sharpe is inflated.
 
 Capacity — which genuinely favours lower frequency — stays as the **secondary ranked criterion**, never blended into the primary score, so neither can hide the other.
 
@@ -531,7 +481,7 @@ Capacity — which genuinely favours lower frequency — stays as the **secondar
 
 Every iteration against the walk-forward window makes it slightly less out-of-sample. After a few thousand iterations it is effectively in-sample — it has simply been fitted more slowly.
 
-The trials haircut compensates mathematically and the vault (§14.2) protects the final promotion decision, but the real defence is **satisficing** (PRD §10.2). The loop stops at the first strategy clearing the bar not out of modesty, but because **every extra iteration spends a resource that cannot be refilled.**
+The trials haircut compensates mathematically and the vault (§15.2) protects the final promotion decision, but the real defence is **satisficing** (PRD §10.2). The loop stops at the first strategy clearing the bar not out of modesty, but because **every extra iteration spends a resource that cannot be refilled.**
 
 ---
 
@@ -542,23 +492,23 @@ The trials haircut compensates mathematically and the vault (§14.2) protects th
 | Scheme | Shape | Notes |
 |---|---|---|
 | **Rolling / sliding** ✔ | train 2016 → test 2017; train 2017 → test 2018 … | Fixed train length, slides forward. **This is what we use** |
-| Anchored / expanding | train 2015–2020 → test 2021; train 2015–2021 → test 2022 … | Fixed start, growing train set |
+| Anchored / expanding | train 2015–2020 → test 2021 … | Fixed start, growing train set |
 | Single holdout | train 2000–2015 → test 2016–2025 | One fold. Simple, high variance |
-| Combinatorial purged CV | many valid train/test combinations across N groups | Yields a *distribution* of outcomes. What PBO is built on. Expensive — deferred past Stage 0 |
+| Combinatorial purged CV | many valid train/test combinations | Yields a *distribution* of outcomes. Expensive — deferred past Stage 0 |
 
 **Decision: rolling window, purged, embargo ≥ holding period.**
 
-- **Test window: always 1 year.** Fixed, non-negotiable. It represents the strategy's realistic re-fit and re-validation cadence in production, which is independent of how much history each fit sees.
+- **Test window: always 1 year.** Fixed, non-negotiable. It represents the strategy's realistic re-fit and re-validation cadence in production, independent of how much history each fit sees.
 - **Train window: every strategy is evaluated at all three lengths — 1, 2 and 3 years.** The reported score is the **best** of the three (§8.2).
 
-Rolling over anchored because train and test lengths stay constant, so **folds are comparable to each other.** Anchored fails that — its later folds carry several times the training data of its early ones. Anchored is better only when data is scarce, which at 25 years it is not.
+Rolling over anchored because train and test lengths stay constant, so **folds are comparable to each other.** Anchored fails that — its later folds carry several times the training data of its early ones.
 
 **What the train window trades off:**
 
-- **Fit stability vs recency.** More train years gives more data to estimate parameters robustly — relevant if the strategy relies on slow-moving structure. But a longer window anchors each fold's fit to older information relative to the 1-year test that follows, so the strategy adapts more slowly if the relationship drifts.
-- **Effect on `n` is real but modest.** Because the test window is always 1 year, total OOS observations scale as `(dataset_years − train_years)`. On ~26 years: train=1yr → ~25 years of OOS; train=3yr → ~23. An ~8% difference — the stability-vs-recency tradeoff dominates, not the width of `SE(SR)`.
+- **Fit stability vs recency.** More train years estimates parameters more robustly, but anchors each fold's fit to older information relative to the 1-year test that follows.
+- **Effect on `n` is modest.** Because the test window is always 1 year, total OOS observations scale as `(dataset_years − train_years)`. On ~26 years: train=1yr → ~25 years of OOS; train=3yr → ~23. An ~8% difference — the stability-vs-recency tradeoff dominates.
 
-Evaluating all three means **3× the compute per experiment.** That is a real throughput cost, budgeted for in §9.
+Evaluating all three means **3× the compute per experiment.** A real throughput cost, budgeted for in §9.
 
 ### 8.2 Best-of-three, and the trial count that makes it honest ★
 
@@ -568,67 +518,64 @@ Evaluating all three means **3× the compute per experiment.** That is a real th
 honest_score = max( score(train=1yr), score(train=2yr), score(train=3yr) )
 ```
 
-**Taking the best of three configurations is a selection**, and selections inflate scores — with enough configurations, noise alone produces a good-looking winner. This is the same hazard as trying many strategies and keeping the best.
+**Taking the best of three configurations is a selection**, and selections inflate scores — with enough configurations, noise alone produces a good-looking winner.
 
 **The deflated Sharpe already handles exactly this, provided it is told the truth about how many things were tried.** So the rule is not "don't select" — it is **"select freely, but count every configuration in `N_trials`."**
 
 ```
-N_trials for a family  =  Σ over iterations of (train windows evaluated)
-                       =  iterations × 3
-                       + prior related experiments in the same family
+N_trials for a family  =  iterations × 3
+                       +  prior related experiments in the same family
 ```
 
 Consequences, stated plainly:
 
-- The trials haircut is **three times larger** than it would be under a single fixed window. That is the honest price of taking the best, and it makes the bar harder to clear.
-- All three scores are stored (`score_train_1y`, `score_train_2y`, `score_train_3y`) alongside which one won. A strategy that scores 0.61 / 0.58 / 0.60 is robust to history length; one that scores 0.62 / 0.11 / 0.09 is not — **and that spread is a first-class diagnostic even though it does not gate.**
-- The winning window is recorded on the experiment, so "which history length does this edge need?" becomes a queryable, aggregatable question across the whole archive.
+- The trials haircut is **three times larger** than under a single fixed window. That is the honest price of taking the best, and it makes the bar harder to clear.
+- All three scores are stored alongside which one won. A strategy scoring 0.61 / 0.58 / 0.60 is robust to history length; one scoring 0.62 / 0.11 / 0.09 is not — **and that spread is a first-class diagnostic even though it does not gate.**
+- The winning window is recorded, so *"which history length does this edge need?"* becomes queryable across the whole archive.
 
-**The scheme itself remains fixed.** Rolling vs anchored vs CPCV is *not* searched over — running rolling, then anchored, and reporting whichever scored better would be a selection **outside** the trial count, invisible to the haircut. One scheme per campaign, fixed in `evaluate.py` before searching begins, hashed into `wf_config_hash` (§6.6).
+**The scheme itself remains fixed.** Rolling vs anchored vs CPCV is *not* searched over — running rolling, then anchored, and reporting whichever scored better would be a selection **outside** the trial count, invisible to the haircut. One scheme per campaign, hashed into `wf_config_hash`.
 
-**An emergent property worth naming:** because `evaluate.py` is off-limits to the agent, the walk-forward configuration — scheme, the set of train windows, test length — **cannot be an iteration lever.** A3 may propose changes to `strategy.py`, but it can never propose "try a different training window," because that is part of the evaluation contract, structurally outside its reach. The best-of-three happens inside `evaluate.py` on every experiment identically, so it cannot be gamed by choosing when to apply it.
+**An emergent property worth naming:** because `evaluate.py` is off-limits to the agent, the walk-forward configuration **cannot be an iteration lever.** A3 may propose changes to `strategy.py`, but never "try a different training window" — that is part of the evaluation contract, structurally outside its reach. The best-of-three happens inside `evaluate.py` identically on every experiment, so it cannot be gamed by choosing when to apply it.
 
 ### 8.3 Combining folds — concatenate, always
 
-**The score is computed from a single concatenated series.** All test-window returns are joined end to end into one out-of-sample track record; `SR`, `skew`, `kurtosis` and `n` are computed once over that series.
+**The score is computed from a single concatenated series.** All test-window returns are joined end to end; `SR`, `skew`, `kurtosis` and `n` computed once over that series. Scoring each fold and averaging is **not** used.
 
-The alternative — scoring each fold and averaging — is **not** used for the score.
-
-**Per-fold metrics are still computed and stored** (`fold_metrics`, `folds_profitable`, `wf_efficiency`) because they diagnose something concatenation hides: a strategy brilliant in 3 folds and terrible in 5 can still concatenate to a respectable Sharpe. They inform promotion review and A3's reasoning; they do not drive keep/discard.
+**Per-fold metrics are still computed and stored** because they diagnose something concatenation hides: a strategy brilliant in 3 folds and terrible in 5 can still concatenate to a respectable Sharpe.
 
 **Walk-forward efficiency** (out-of-sample ÷ in-sample performance) is the key diagnostic — if OOS is far below IS, each fold is overfitting internally even though the concatenated series looks acceptable.
 
 ### 8.4 Purging and embargo
 
-Applied to whichever scheme is in use. **The embargo gap must be ≥ the strategy's holding period**, or trades straddle the train/test boundary and leak. This is a hard requirement, verified by test.
+**The embargo gap must be ≥ the strategy's holding period**, or trades straddle the train/test boundary and leak. A hard requirement, verified by test.
 
-### 8.5 What walk-forward actually tests — and the tuning rules ★
+### 8.5 What walk-forward tests, and the tuning rules ★
 
 Walk-forward validates the **fitting process**, not the strategy. Each fold re-runs parameter selection on the training window alone and checks whether the result survives the next period.
 
 **Decision: the agent tunes parameters.** Therefore:
 
-- **Every fold re-runs the tuning from scratch, on that fold's training window only.** If tuning ever touches the test window, the entire exercise is theatre and the OOS number is fiction.
-- The tuned parameters chosen in each fold are recorded, so parameter drift across folds is inspectable — a strategy whose optimal parameters swing wildly between folds is unstable regardless of its score.
+- **Every fold re-runs the tuning from scratch, on that fold's training window only.** If tuning ever touches the test window, the OOS number is fiction.
+- Tuned parameters per fold are recorded, so drift is inspectable — a strategy whose optimal parameters swing wildly between folds is unstable regardless of its score.
 
-### 8.6 Does parameter tuning inflate the trial count? — a subtle but decisive distinction ★
+### 8.6 Does parameter tuning inflate the trial count? ★
 
-**No, provided the tuning selects on training data only.** This is worth getting exactly right, because getting it wrong makes the haircut either useless or impossible to clear.
+**No, provided the tuning selects on training data only.** Worth getting exactly right, because getting it wrong makes the haircut either useless or impossible to clear.
 
-The deflated Sharpe's `N` counts **selections made on the metric being reported.** So:
+The deflated Sharpe's `N` counts **selections made on the metric being reported.**
 
 | Activity | Selects on | Counts toward `N_trials`? |
 |---|---|---|
-| Parameter tuning **inside a fold**, on training data | Train performance | ❌ **No.** It never saw the test window. It is part of the *procedure being evaluated*, not a selection over reported outcomes |
-| Choosing the **best of 3 train windows** by OOS score | The reported OOS score | ✅ **Yes — ×3** (§8.2) |
-| Each **A2↔A3 iteration**, where a change is made after seeing the OOS result | The reported OOS score | ✅ **Yes — +1 each** |
+| Parameter tuning **inside a fold**, on training data | Train performance | ❌ **No.** Never saw the test window. Part of the *procedure being evaluated* |
+| Choosing the **best of 3 train windows** by OOS score | The reported OOS score | ✅ **Yes — ×3** |
+| Each **A2↔A3 iteration**, changed after seeing the OOS result | The reported OOS score | ✅ **Yes — +1 each** |
 | Prior experiments in the **same family**, including the same idea in another market | The reported OOS score | ✅ **Yes** |
 
 The principle: *if a human or agent looked at an out-of-sample number and then changed something, that is a trial.* If a procedure fitted itself on training data with no view of the test set, that is just the procedure.
 
-**But tuning is not free — it moves the risk somewhere else.** A large parameter grid does not inflate the haircut; it inflates the chance that each fold overfits *internally*, which shows up as **walk-forward efficiency** (§8.3) collapsing — strong in-sample, weak out-of-sample, fold after fold. That is the diagnostic to watch, not `N_trials`.
+**But tuning is not free — it moves the risk elsewhere.** A large grid does not inflate the haircut; it inflates the chance each fold overfits *internally*, which shows up as **walk-forward efficiency** collapsing. That is the diagnostic to watch, not `N_trials`.
 
-**Recommended starting grid: ≤ 50 combinations per fold**, coarse rather than fine. Rationale: the compute cost is already 3× from the train-window sweep (§8.2), a coarse grid is far less prone to fitting fold-specific noise, and if `wf_efficiency` stays healthy the grid can be widened later with evidence. Widen only in response to a measured need, never by default.
+**Recommended starting grid: ≤ 50 combinations per fold**, coarse rather than fine. Compute is already 3× from the train-window sweep, a coarse grid is far less prone to fitting fold-specific noise, and the grid can be widened later *with evidence* if `wf_efficiency` stays healthy.
 
 ---
 
@@ -645,72 +592,62 @@ The principle: *if a human or agent looked at an out-of-sample number and then c
 | 2 minutes | ~360 |
 | 20 minutes | ~36 |
 
-That is the difference between a research laboratory and a slow notebook. **Target: `evaluate.py` completes in seconds, not minutes.**
+**Target: `evaluate.py` completes in seconds, not minutes** — and every experiment now runs three train windows (§8.2), so the per-window budget is a third of the total.
 
 ### 9.2 Vectorise the maths, JIT the path
 
 - **Vectorised NumPy / Polars** for everything expressible as array maths. No Python loops over bars.
-- **Numba `@njit` for genuinely path-dependent logic** — trailing stops, position state, sequential fills. These cannot be vectorised honestly, and a JIT loop is both far faster than Python *and* far easier to keep correct than a contorted vectorised version.
+- **Numba `@njit` for genuinely path-dependent logic** — trailing stops, position state, sequential fills. Both faster than Python *and* easier to keep correct than a contorted vectorised version.
 - **Polars over pandas** for large frames; **DuckDB** for analytical queries straight over Parquet.
 - **Memory-mapped columnar reads.** Load only the columns and date range a fold needs.
-- **Compute indicators once per snapshot, not once per fold.** Across ~24 rolling folds this is the single largest easy win.
+- **Compute indicators once per snapshot, not once per fold.** Across ~24 rolling folds × 3 train windows this is the single largest easy win.
 
 ### 9.3 Parallelism — processes, not threads ★
 
-**Python threads do not speed up CPU-bound backtesting.** The GIL serialises them; you get complexity and no throughput.
+**Python threads do not speed up CPU-bound backtesting.** The GIL serialises them.
 
 - Use **`multiprocessing` / `joblib`** across independent units of work.
 - **NumPy and Numba release the GIL** internally, so vectorised work already uses hardware efficiently within one process.
-- Free-threaded CPython builds are maturing but should not be depended on.
 
-Embarrassingly parallel, in priority order:
-
-| Work | Parallel across | Notes |
-|---|---|---|
-| Walk-forward folds | ~24 folds | Fully independent — the biggest single win |
-| Monte Carlo / bootstrap | replications | Trivially parallel |
-| **Null-world calibration** | replications × null models | The heaviest job in the system; parallelise hard |
-| Parameter sweeps | combinations | |
-| Multiple experiments | strategies | Later stages, once the queue exists |
+| Work | Parallel across |
+|---|---|
+| Walk-forward folds × train windows | ~24 folds × 3 windows — the biggest single win |
+| Monte Carlo / bootstrap | replications |
+| **Null-world calibration** | replications × null models — the heaviest job in the system |
+| Parameter sweeps | combinations |
+| Multiple experiments | strategies |
 
 Parallelise at the **outermost independent level** — the inner loop should already be vectorised or JIT-compiled.
 
 ### 9.4 Vectorisation is the top source of look-ahead ★
 
-**This is the one place where "make it fast" fights "make it honest," and speed must not win.**
+**The one place where "make it fast" fights "make it honest," and speed must not win.**
 
 ```python
 df['signal'] = df['close'] > df['ma']                  # signal from THIS bar's close
 df['ret'] = df['signal'] * df['close'].pct_change()    # ...traded at THIS bar's close
 ```
 
-Others: rolling z-scores or percentile ranks over the **whole** series; `fillna(method='bfill')` pulling values backwards; centred windows; normalisation fitted on the full sample before splitting.
+Others: rolling z-scores over the **whole** series; `bfill()` pulling values backwards; centred windows; normalisation fitted before splitting.
 
-Consequences:
-
-- **P0's look-ahead checks (§10.1) matter more as the code gets more vectorised**, not less.
-- Every signal must be explicitly lagged, and that lag **verified by test**, not by eyeballing.
-- Known-answer tests must include a **deliberately leaky vectorised strategy** that P0 is required to catch.
-- The prohibitions are written into `program.md` (§2.4) so the agent avoids them by default — but that is error reduction, not enforcement.
+- **P0's look-ahead checks (§11.1) matter more as the code gets more vectorised**, not less.
+- Every signal must be explicitly lagged, and that lag **verified by test**.
+- Known-answer tests must include a **deliberately leaky vectorised strategy** P0 is required to catch.
 
 ### 9.5 Determinism under parallelism — non-negotiable
 
-Parallel execution must not change results. A score that shifts between runs destroys the comparability everything else rests on.
-
 - **Seeds derived per fold / per replication** from a base seed — never from wall clock or worker ID.
-- **Deterministic reduction order** — floating-point summation is not associative, so results must combine in a fixed order regardless of which worker finishes first.
+- **Deterministic reduction order** — floating-point summation is not associative.
 - Fold returns concatenate in **chronological order**, never completion order.
 - The same experiment re-run must produce a **bit-identical** `honest_score`.
 
 ### 9.6 Per-experiment time budget
 
-Borrowed from the reference's fixed wall clock: an experiment exceeding its budget is **killed and recorded as `crash`**. This keeps overnight throughput predictable and stops one pathological strategy consuming a whole night.
+An experiment exceeding its budget is **killed and recorded as `crash`**. This keeps overnight throughput predictable and stops one pathological strategy consuming a whole night.
 
 ### 9.7 Order of work
 
-**Correct first, then measure, then optimise the measured bottleneck.** A fast wrong answer is worse than a slow one, because it is wrong at scale. But nothing in the architecture may *preclude* speed — hence vectorised structures, process-level parallelism and columnar storage from the start.
-
-Profile before optimising. On this workload the bottleneck is usually data loading and per-fold indicator recomputation, not the maths.
+**Correct first, then measure, then optimise the measured bottleneck.** A fast wrong answer is worse than a slow one, because it is wrong at scale. Profile before optimising — on this workload the bottleneck is usually data loading and per-fold indicator recomputation, not the maths.
 
 ---
 
@@ -720,47 +657,42 @@ An ordered funnel. Cheap tests first; a failure short-circuits the rest.
 
 | Phase | Name | Contents | Cost |
 |---|---|---|---|
+| **Bar** | Hard gate | Pre-registered pass/fail (§7.5). Fails → no score computed | Instant |
 | **P0** | Smoke & correctness | Compiles, runs, produces trades. **Look-ahead & leakage static checks.** No NaN/inf | Seconds |
 | **P1** | Fast backtest | Small slice, frictionless. Is there any signal at all? | Seconds–minutes |
 | **P2** | Full backtest | Complete history, realistic costs and fills, correct calendar | Minutes |
-| **P3** | Robustness battery | Walk-forward, Monte Carlo, deflated Sharpe, White's Reality Check, CSCV/PBO, regime analysis, cost sensitivity, parameter sensitivity | Minutes–hours |
+| **P3** | Robustness battery | Walk-forward × 3 windows, Monte Carlo, deflated Sharpe, White's RC, CSCV/PBO, regime analysis, cost sensitivity, parameter sensitivity | Minutes–hours |
 | **P4** | Paper trading | Forward evidence in live market conditions | Weeks–months |
 
 ### 10.1 P0 is the most underrated
 
-Look-ahead bias and data leakage are the dominant failure modes of LLM-written strategy code. P0 must include automated checks:
+Look-ahead bias and data leakage are the dominant failure modes of LLM-written strategy code. P0 must include:
 
 - No use of future bars in signal computation (shift/lag verification)
 - No fitting on the full sample before splitting
-- No survivorship-biased universe construction
+- **No absolute price thresholds** — back-adjusted series make absolute levels forward-looking (§14.2c)
+- **Snapshot is corporate-action adjusted** — an unadjusted series is rejected outright (§14.2)
+- **Universe was point-in-time resolved** — a static universe is rejected (§14.3)
 - No use of point-in-time-unavailable fundamentals
 - Signal → order → fill ordering respects the fill model
-- **No absolute price thresholds** — back-adjusted series make absolute levels forward-looking (§13.2c). Rules must be ratio or percentage based
-- **Snapshot is corporate-action adjusted** — an unadjusted series is rejected outright, not merely warned about (§13.2)
 
-**A strategy that fails P0 is a bug**, routed back to A2 with the diagnostic. It is not a research finding and must never pollute the knowledge base as one.
+**A strategy that fails P0 is a bug**, routed back to A2 with the diagnostic. Never a research finding, never allowed to pollute the knowledge base.
 
 ### 10.2 Multiple-testing discipline
 
-The deflated Sharpe requires the **number of trials**, which must include:
-
-- Every iteration of the A2↔A3 loop for this strategy
-- Every parameter combination swept
-- The related experiments already run in the same **family**
-
-Under-counting trials makes deflated Sharpe a rubber stamp. The database must answer *"how many trials in this family?"* as an indexed query — a hard schema requirement, not an afterthought.
+The deflated Sharpe requires the **number of trials**, defined in §8.6. The database must answer *"how many trials in this family?"* as an indexed query — a hard schema requirement.
 
 **Trying the same idea across 3 markets is 3 trials, not 1.** The family grouping exists precisely so this cannot be miscounted.
 
 ### 10.3 Gate outcomes
 
-Each phase yields `PASS | FAIL | WARN` per test plus a numeric value and its threshold. Thresholds are configuration, versioned alongside profiles.
+Each phase yields `PASS | FAIL | WARN` per test plus a numeric value **and its threshold**. Thresholds are configuration, versioned alongside profiles.
 
 ---
 
 ## 11. The Operator Library
 
-**The LLM does not invent arbitrary formulas.** It composes from a vetted, versioned library. This shrinks the search space enormously, makes strategies interpretable and reviewable, and makes results comparable across experiments.
+**The LLM does not invent arbitrary formulas.** It composes from a vetted, versioned library. This shrinks the search space enormously, makes strategies interpretable, and makes results comparable across experiments.
 
 | Category | Examples |
 |---|---|
@@ -774,8 +706,8 @@ Each phase yields `PASS | FAIL | WARN` per test plus a numeric value and its thr
 - Every operator is **versioned, unit-tested**, and documented with valid parameter ranges.
 - Every operator declares which timeframes and markets it is valid for.
 - A strategy spec is a **composition of operators expressible as a DAG** — making specs diffable, hashable and searchable for near-duplicates.
-- **Duplicate detection:** the spec's canonical hash is checked against all prior specs before any compute is spent. An identical composition is rejected at insert; near-duplicates surface the prior result to A3.
-- New operators may be proposed (by A1 from literature, or by a human) but enter the library only via **explicit review with tests**. The library is not self-modifying.
+- **Duplicate detection:** the spec's canonical hash is checked against all prior specs before any compute is spent.
+- New operators may be proposed but enter the library only via **explicit review with tests**. The library is not self-modifying.
 
 ---
 
@@ -783,18 +715,18 @@ Each phase yields `PASS | FAIL | WARN` per test plus a numeric value and its thr
 
 ### 12.1 Internal memory — two layers
 
-Append-only. Key requirement: **every experiment must be reproducible from its stored record alone** — spec, code version, data snapshot, profiles, seeds.
+Append-only. Key requirement: **every experiment must be reproducible from its stored record alone.**
 
 | Layer | Written by | When | Cost |
 |---|---|---|---|
 | **Raw record** — every experiment with full evaluation results | Automatically | Every experiment, immediately | Free (a DB write) |
 | **Synthesized lesson** — lab notebooks, knowledge entries, graph edges | A5 | Once, when a strategy's story concludes | An LLM call |
 
-A5 reads the **complete** set of a strategy's iterations at once and writes one well-formed lesson, rather than a half-formed summary after each attempt. Nothing is lost — the raw layer already captured everything — and the synthesis is both better-informed and cheaper for being done once.
+A5 reads the **complete** set of a strategy's iterations at once and writes one well-formed lesson, rather than a half-formed summary after each attempt. Nothing is lost — the raw layer already captured everything.
 
 ### 12.2 External ingestion — the Librarian ★
 
-A **single uniform pipeline for every source type.** A GitHub source contributes its text (README, docs, comments) through the same path as a paper or a blog post — no separate code-graph or AST tooling.
+A **single uniform pipeline for every source type.** A GitHub source contributes its text through the same path as a paper — no separate code-graph tooling.
 
 ```
 Collectors (Python, scheduled — arXiv, SSRN, GitHub, blogs, market data)
@@ -821,37 +753,32 @@ Dedup by content_hash · cheap relevance filter (before any LLM cost)
               Consumed by A1
 ```
 
-**Claude is not a crawler.** Collectors fetch; the Librarian's extraction pass converts each document to structured records; the raw document is archived and **never re-read**. Every later access — by A1, by a human, by anything — is to the structured rows.
+**Claude is not a crawler.** A document is read **exactly once, ever**; every later access is to the structured rows.
 
 **Chunking and synthesis policy:**
-- **Chunk by meaning, not fixed size.** A blind 2,000-token window risks cutting a method description or equation across a boundary.
-- **Two passes, not one.** Skipping pass 2 is the most common mistake — it produces one giant undifferentiated summary per document instead of individually testable ideas.
-- **Traceability.** Every synthesized idea records which chunks it came from, so *"why do we believe this"* resolves to an exact passage.
-- **Read once, ever.** Chunking means "read once, in pieces, ever."
+- **Chunk by meaning, not fixed size.** A blind token window risks cutting an equation across a boundary.
+- **Two passes, not one.** Skipping pass 2 produces one undifferentiated summary per document instead of individually testable ideas.
+- **Traceability.** Every idea records its source chunks, so *"why do we believe this"* resolves to an exact passage.
 
 ### 12.3 Trust tier — a claim is not a fact ★
 
-Everything the Librarian writes is tagged `evidence_tier = external_claim`. Its `extraction_confidence` measures **the Librarian's confidence that it read and summarised the source correctly** — explicitly *not* a claim that the underlying idea is true.
+Everything the Librarian writes is tagged `evidence_tier = external_claim`. Its `extraction_confidence` measures **the Librarian's confidence that it read the source correctly** — explicitly *not* that the idea is true.
 
-That distinction is easy to blur and costly to blur: a plausible-sounding paper is not evidence; an executed and validated experiment is. Only `knowledge_entries` (internal) carry tested-evidence weight. **A strategy is never promoted on the strength of "a paper said so."**
+A plausible-sounding paper is not evidence; an executed and validated experiment is. Only `knowledge_entries` carry tested-evidence weight. **A strategy is never promoted on the strength of "a paper said so."**
 
 ### 12.4 Curiosity queue
 
-Failure patterns and A3/A5 observations generate **research questions** carrying a topic, motivation and originating experiment. Collectors consult this queue to run targeted searches rather than only broad sweeps. Each question tracks whether it *ever produced a usable hypothesis*, so the loop's own value is auditable.
+Failure patterns and A3/A5 observations generate **research questions** carrying a topic, motivation and originating experiment. Collectors consult this queue to run targeted searches. Each question tracks whether it *ever produced a usable hypothesis*, so the loop's own value is auditable.
 
 ### 12.5 Knowledge graph
-
-A5 maintains a graph of concepts and conditional relationships:
 
 ```
 Momentum ──works-in──▶ Trending, Low-Volatility
          ──fails-in──▶ Sideways, High-Volatility
 JMA      ──pairs-well-with──▶ ATR
-         ──pairs-poorly-with──▶ RSI
-         ──effective-in──▶ Commodities
 ```
 
-Edges carry **evidence counts and confidence** and link back to the experiments supporting them. **An edge with no experiment backing must not exist** — no agent may assert a relationship from pure reasoning.
+Edges carry **evidence counts and confidence** and link back to supporting experiments. **An edge with no experiment backing must not exist** — no agent may assert a relationship from pure reasoning.
 
 ---
 
@@ -860,30 +787,57 @@ Edges carry **evidence counts and confidence** and link back to the experiments 
 | Store | Purpose |
 |---|---|
 | **SQLite** (v1) → **PostgreSQL** (v3) | Experiment metadata, jobs, state machine, knowledge |
-| **Parquet** | Market data, tradebooks, equity curves, per-trade records |
+| **Parquet** | Market data (**raw**), tradebooks, equity curves, per-trade records |
 | **DuckDB** | Analytical queries over Parquet without loading into Python |
 | **Vector index** | Embeddings for literature and prior-experiment similarity |
 | **git** | Strategy code (§5) |
 | **Object storage** (v3) | Raw documents, large artifacts, archived runs |
 
-### 13.1 Market data requirements
+### 13.1 Snapshots
 
-- **Immutable, versioned snapshots.** An experiment references a snapshot ID, never "whatever was on disk that day."
-- **Point-in-time correctness** — no restated data leaking backward.
-- Per-market validators run **at ingest**, not at experiment time.
-- Adjustments recorded as a **versioned method**, since the choice affects results.
+- **Immutable, versioned.** An experiment references a snapshot ID, never "whatever was on disk that day."
+- Identity is **`(raw_content_hash, corporate_actions_version)`** — see §14.2a for why the actions version is a separate component.
+- **Raw files are never rewritten.** All adjustment happens at load time.
+- Per-market validators run **at ingest**, not at experiment time (§14.4).
 
-### 13.2 Corporate-action adjustment — mandatory pre-processing ★
+### 13.2 Timeframes — 1 second to 1 month
 
-**Source data for Indian equities is unadjusted.** Splits and bonus issues therefore appear as violent phantom gaps: a 1:2 split halves the price overnight, and every indicator reads a **−50% move that never occurred.** Left unhandled this corrupts returns, volatility, drawdown and every price-based signal — and across ~50 instruments over 25 years there will be hundreds of such events.
+The architecture must span roughly seven orders of magnitude in bar size, which makes every timeframe-dependent value profile-driven.
 
-This is not optional cleanup. **An unadjusted series makes every backtest on it meaningless.**
+| Field | Why it matters |
+|---|---|
+| **`periods_per_year`** | √252 daily vs √(252×375) for 1-minute vs ~5.7M periods/year for 1-second NSE. **Must come from the profile — never a hardcoded constant.** One wrong value makes every Sharpe in the database fiction |
+| **`fill_model`** | Monthly/daily: next-open. Intraday: bar-level rules + spread-fraction slippage. Sub-minute: queue and latency assumptions we do not trust |
+| **`cost_stress_multipliers`** | At 1-second, costs and spread dominate entirely; at monthly they are a rounding error |
+| **Walk-forward windows** | Sized in **bars** for statistical power *and* **calendar time** for regime coverage. At 1-second a 1-year test window is ~5.7M bars; at monthly it is 12 |
+| **`min_trades`** | Ties to the promotion rule (PRD §9.3) |
+| **Overnight handling** | Gap risk, carry, crypto funding accrual — only if positions cross sessions |
 
-#### 13.2a Store raw, adjust at load — never rewrite history
+> ⚠️ **Honesty limit at the fast end.** Below roughly 1 minute, backtest realism degrades sharply: fills depend on queue position, latency and order-book depth that bar data cannot represent. **The architecture supports 1-second bars; that is not the same as the results being trustworthy there.** Sub-minute strategies should carry much heavier slippage assumptions and be treated as research artifacts until validated by real paper-trading fills.
+>
+> **Storage note:** 1-second bars for 50 instruments across 25 years is on the order of terabytes. Fast timeframes should be scoped to shorter histories or fewer instruments.
 
-The naive approach — back-adjust the price files once and store the result — has a serious operational flaw. Back-adjustment rewrites *all* historical prices, so **every new split changes the entire past**, which changes `content_hash`, which marks every prior experiment on that snapshot `comparable = 0`. A single corporate action would invalidate the archive.
+---
 
-The correct factoring:
+## 14. Data Integrity ★
+
+Two data-quality problems affect Indian equities, and they **compound — both inflate results in the same direction.** Neither is optional to fix, because a backtest on corrupted data is not a weak result, it is a meaningless one.
+
+### 14.1 Why this sits beside adversarial integrity
+
+§15 defends against the **agent** fooling us. §14 defends against the **data** fooling us.
+
+A perfectly honest scorer running on survivorship-biased, unadjusted prices will confidently report discoveries that do not exist — and **null-world calibration cannot catch it**, because null-world tests the pipeline, not the inputs. Feed the same corrupted assumptions into the null generator and it will happily agree the pipeline is fine.
+
+That is why these are two sections, not one.
+
+### 14.2 Corporate-action adjustment — mandatory pre-processing
+
+**Source data for Indian equities is unadjusted.** Splits and bonus issues therefore appear as violent phantom gaps: a 1:2 split halves the price overnight, and every indicator reads a **−50% move that never occurred.** Across ~50 instruments over 25 years there will be hundreds of such events.
+
+#### 14.2a Store raw, adjust at load — never rewrite history
+
+The naive approach — back-adjust the files once and store the result — has a serious flaw. Back-adjustment rewrites *all* historical prices, so **every new split changes the entire past**, changing the content hash, marking every prior experiment `comparable = 0`. A single corporate action would invalidate the archive.
 
 | Stored | Mutability |
 |---|---|
@@ -891,11 +845,9 @@ The correct factoring:
 | **`corporate_actions` table** | Append-only, versioned |
 | **Adjusted series** | **Computed at load time**, never persisted as the source of truth |
 
-A new split appends one row to `corporate_actions` and bumps its version; raw prices are untouched. The snapshot's identity becomes `(raw_content_hash, corporate_actions_version)`, so comparability is scoped to what actually changed.
+A new split appends one row and bumps the actions version; raw prices are untouched. Snapshot identity is `(raw_content_hash, corporate_actions_version)`, so comparability is scoped to what actually changed.
 
-#### 13.2b The adjustment itself
-
-Walking backwards from the newest bar, accumulating a factor:
+#### 14.2b The adjustment itself
 
 ```
 cumulative_factor = 1.0
@@ -914,41 +866,30 @@ for each bar, newest → oldest:
 
 **Volume must be adjusted too**, in the opposite direction — a 1:2 split doubles share count. Volume-based operators break silently otherwise, and this is the most commonly forgotten half.
 
-#### 13.2c The look-ahead caveat nobody mentions ⚠️
+#### 14.2c The look-ahead caveat nobody mentions ⚠️
 
 **Back-adjustment is itself mildly forward-looking.** The adjusted price shown for 2015 depends on splits that happened in 2020 — information no 2015 trader had.
 
-This is harmless for anything **ratio-based** (returns, percentage moves, moving-average crossovers, volatility) because ratios are preserved exactly. It is **contaminating for anything using absolute price levels** — a rule like *"enter when price < ₹500"* means something different on an adjusted series than it did in reality.
+Harmless for anything **ratio-based** (returns, percentage moves, crossovers, volatility) because ratios are preserved exactly. **Contaminating for absolute price levels** — a rule like *"enter when price < ₹500"* means something different on an adjusted series than it did in reality.
 
-Consequence, enforced in `program.md` (§2.4) and checked at P0: **strategies must be expressed in ratio or percentage terms, never in absolute price thresholds.** This is good practice independently — absolute-level rules do not transfer across instruments anyway — but here it is a correctness requirement, not a style preference.
+**Consequence: absolute price thresholds are forbidden**, stated in `program.md` (§2.4) and enforced at P0. Good practice independently — absolute levels do not transfer across instruments — but here a correctness requirement.
 
-#### 13.2d Validator — the safety net for missing actions
+### 14.3 Point-in-time universe resolution
 
-Adjustment is only as good as the corporate-actions data behind it, and that data will have gaps. So at ingest, independently of the adjustment:
+**Decision: historical index membership.** The universe is not "today's NIFTY-50 projected backwards" — it is *whichever stocks were actually in the index on each bar's date.*
 
-**Flag any single-bar move beyond a threshold (e.g. |return| > 20%) that has no corresponding corporate-action record.** Every flag is either a genuine market event or a missing adjustment, and each must be resolved by a human before the snapshot is marked valid. This catches exactly the errors the adjustment pipeline cannot catch itself.
+#### 14.3a The data this requires
 
-> **Cheaper alternative worth weighing:** sourcing an already-adjusted series (or a vendor-supplied corporate-actions feed) is usually far less work than building and validating this pipeline — because the hard part is not the arithmetic, it is obtaining complete and correct corporate-action history. Build this only if adjusted data genuinely is not obtainable.
+1. **Index membership history** — entry and exit dates per constituent. NSE publishes reconstitution: semi-annual reviews plus ad-hoc changes for mergers, demergers and delistings. Roughly 2–5 changes per year.
+2. **Price history for every stock that was *ever* a member** — approximately **100–150 unique tickers over 2000–2025, not 50.**
 
-### 13.3 Point-in-time universe resolution ★
+> The second requirement is the whole point. The companies that *left* are exactly the ones whose poor performance is currently invisible — **collecting only today's 50 reproduces the original bias with extra steps.**
 
-**Decision: historical index membership.** The universe is not "today's NIFTY-50 projected backwards" — it is *whichever 50 stocks were actually in the index on each bar's date.*
+Delisted and merged entities are the hardest to source and the most important to have. Where a member was absorbed by a merger, the record must capture the transition rather than the ticker simply vanishing.
 
-#### 13.3a The data this requires
+#### 14.3b How resolution works
 
-Two things, and the second is the one people miss:
-
-1. **Index membership history** — for each constituent, when it entered and when it left. NSE publishes index reconstitution: semi-annual reviews plus ad-hoc changes for mergers, demergers and delistings. Roughly 2–5 changes per year.
-
-2. **Price history for every stock that was *ever* a member** — not just current members. Over 2000–2025 that union is approximately **100–150 unique tickers, not 50.**
-
-> The second requirement is the whole point. The companies that *left* the index are exactly the ones whose poor performance is currently invisible — collecting only today's 50 reproduces the original bias with extra steps.
-
-Delisted and merged entities are the hardest to source and the most important to have. Where a member was absorbed by a merger (e.g. an entity folding into another listed company), the membership record must capture the transition rather than the ticker simply vanishing.
-
-#### 13.3b How resolution works
-
-Universe membership is resolved **at load time inside `data.py`** — which the agent can read but never edit (§2.1), so the universe cannot be quietly widened by a strategy:
+Resolved **at load time inside `data.py`** — readable by the agent, never editable (§2.1), so the universe cannot be quietly widened by a strategy:
 
 ```
 for each bar date t:
@@ -957,31 +898,50 @@ for each bar date t:
 
 A strategy never selects its own universe from a static list. It receives, per bar, the set of instruments that genuinely existed in the index at that moment.
 
-#### 13.3c Enforcement
+#### 14.3c Enforcement
 
-- **P0 rejects any snapshot whose universe was not point-in-time resolved** (`data_snapshots.point_in_time_membership = false`).
-- The number of distinct instruments seen across a backtest should exceed the index size — a 25-year NIFTY-50 backtest touching exactly 50 tickers is a **symptom of the bias, not a sign of tidy data**, and the validator flags it.
+- **P0 rejects any snapshot not point-in-time resolved.**
+- **Distinct instruments across a backtest should exceed the index size.** A 25-year NIFTY-50 backtest touching exactly 50 tickers is a **symptom of the bias, not a sign of tidy data** — the validator flags it.
+
+### 14.4 Validators — the safety net for what adjustment cannot catch
+
+Adjustment is only as good as the corporate-actions data behind it, and that data will have gaps. So at ingest, independently:
+
+| Flag | Catches |
+|---|---|
+| `unexplained_jump` | \|return\| > ~20% with no matching corporate-action record — a genuine event, or a **missing** adjustment |
+| `universe_too_narrow` | Distinct instruments ≈ index size (§14.3c) |
+| `zero_volume` · `stale_price` · `gap` | Ordinary data corruption |
+
+**A snapshot with unresolved flags cannot be marked valid**, and the scheduler will not dispatch experiments against it. Every flag is either a real market event or a data error, and a human must say which.
+
+### 14.5 Current status
+
+| Gap | Status |
+|---|---|
+| Unadjusted source prices | ✅ **Mitigated by design** — the §14.2 pipeline |
+| Point-in-time NIFTY-50 membership | ⚠️ **Fix chosen, blocked on data collection** — §14.3a |
+
+**Until point-in-time data exists, Indian equity results remain optimistic and must not be promoted to live capital.** Index-level research (NIFTY futures/ETF) is structurally unaffected and should run in parallel, so the laboratory is never idle waiting on this.
 
 ---
 
-## 14. Adversarial Integrity & Self-Calibration ★
+## 15. Adversarial Integrity & Self-Calibration ★
 
 The three mechanisms that make automated search in markets defensible. **None are optional, and all three precede any real-data result.**
 
-### 14.1 Reward hacking is a certainty, not a risk
+### 15.1 Reward hacking is a certainty, not a risk
 
 Give an agent a scoring function and enough iterations and it will optimise the scorer rather than the market — usually by accident, through a subtle look-ahead path, a fill assumption, or a near-zero denominator.
 
-Defences:
-
 - **`evaluate.py` is neither readable nor writable by the agent** (§2.3). Separate process, no source access.
 - **`data.py` is read-only.** An agent able to edit the cost model will eventually make costs cheaper and call it a discovery.
-- **"Too good to be true" tripwire.** Sharpe > 3 on daily data is a *bug hypothesis*, not a discovery — auto-route to adversarial audit rather than promotion.
+- **"Too good to be true" tripwire.** Sharpe > 3 on daily data is a *bug hypothesis*, not a discovery — auto-route to adversarial audit.
 - **Periodic red-teaming.** Deliberately task an agent with breaking `evaluate.py`; treat every exploit found as a high-value knowledge entry, and fix it.
 
-### 14.2 The vault — data the loop cannot read
+### 15.2 The vault — data the loop cannot read
 
-Every other protection — deflated Sharpe, walk-forward, PBO — depends on honestly counting trials. Once an LLM generates hypotheses influenced by memory of past results, the effective trial count becomes **genuinely unknowable.** The vault is the one defence that does not depend on counting anything.
+Every other protection depends on honestly counting trials. Once an LLM generates hypotheses influenced by memory of past results, the effective trial count becomes **genuinely unknowable.** The vault is the one defence that does not depend on counting anything.
 
 - A span of years, a set of instruments, and/or an entire market is **locked away**.
 - The research loop has **no read path**. Not "should not" — *cannot*.
@@ -989,68 +949,57 @@ Every other protection — deflated Sharpe, walk-forward, PBO — depends on hon
 - Every open is logged and counts against a lifetime budget.
 - A family that exhausts its budget cannot be promoted again until genuinely new data exists.
 
-### 14.3 Null-world calibration — measuring our own false discovery rate
-
-The procedure from PRD §4.2, as an engineering requirement:
+### 15.3 Null-world calibration — measuring our own false discovery rate
 
 - Generate datasets with **no alpha by construction**: permuted returns, block bootstrap, synthetic paths with matched volatility and fat tails.
-- Run the **complete loop** — generation, iteration, evaluation, promotion recommendation — against them, through the identical code path as real data. No shortcuts, no special-casing.
+- Run the **complete loop** against them, through the identical code path as real data. No shortcuts, no special-casing.
 - Count reported discoveries. **That count is the false discovery rate.**
 
 Requirements:
 - A **permanent regression test** after any change to `evaluate.py`, the scoring rule, or any profile.
-- Results recorded in `null_world_runs` and surfaced on the Laboratory screen beside cost-per-discovery.
 - Records `max_score_observed` in noise — the bar any real result must clear.
 - **Milestone 0.** No real-data result is trusted before FDR has been measured and driven low.
 
-### 14.4 The autonomy ratchet
+> **Scope limit worth stating explicitly:** null-world tests whether the *pipeline* invents discoveries. It **cannot detect corrupted inputs** — survivorship bias and unadjusted prices pass through it unnoticed, because the null generator inherits the same assumptions. That is precisely why §14 exists as a separate defence.
 
-Experiment throughput is **tied to measured FDR**. If FDR rises, throughput automatically drops. Scaling becomes earned rather than assumed — the reference project's ~100 experiments overnight is safe only once the pipeline has demonstrated it does not invent discoveries at that volume.
+### 15.4 The autonomy ratchet
+
+Experiment throughput is **tied to measured FDR**. If FDR rises, throughput automatically drops. Scaling becomes earned rather than assumed.
 
 ---
 
-## 15. LLM Integration Requirements
+## 16. LLM Integration Requirements
 
 - **Model:** Claude, via Claude Code sessions. Stateless and disposable.
-- **Context assembly is a Python responsibility.** The worker builds the brief — relevant knowledge, prior iterations, evaluation report, operator catalog — and hands Claude a complete packet. Claude does not go hunting for context.
-- **Structured outputs.** Every agent returns schema-validated JSON. Free text goes in dedicated reasoning fields, never mixed with machine-read values.
-- **Prompt versioning.** Prompts are versioned artifacts in the repo; the version is recorded on every agent output. A prompt change is a system change and affects comparability.
-- **Determinism where possible.** Seeds recorded. Where the LLM is inherently non-deterministic, the *output artifact* is stored so the experiment remains reproducible even if regeneration would differ.
+- **Context assembly is a Python responsibility.** The worker builds the brief and hands Claude a complete packet. Claude does not go hunting for context.
+- **Structured outputs.** Schema-validated JSON. Free text goes in dedicated reasoning fields, never mixed with machine-read values.
+- **Prompt versioning.** Prompts are versioned artifacts; the version is recorded on every output. A prompt change is a system change and affects comparability.
+- **Determinism where possible.** Seeds recorded. Where the LLM is non-deterministic, the *output artifact* is stored so the experiment remains reproducible.
 - **Cost accounting.** Tokens and dollars recorded per job, per strategy, per discovery.
 
 ---
 
-## 16. Observability & Audit
+## 17. Observability & Audit
 
 - **Structured logs** for every job, with correlation IDs threading `strategy → experiment → job`.
-- **The "why" record.** Every agent decision stores its reasoning and the evidence it cited. A hard requirement (PRD §11.1), not a nice-to-have.
-- **Lab notebook per experiment**, auto-generated:
-  ```
-  Experiment #12,483
-  Hypothesis:  Adaptive ATR works better in volatile markets
-  Result:      Rejected
-  Reason:      Overfit to 2019–2021
-  Evidence:    Sharpe collapsed 2.4 → 0.6 out-of-sample; PBO 0.71
-  Confidence:  94%
-  Next:        1. Normalise ATR  2. Try volatility clustering  3. Test on commodities
-  ```
-  **The "Next" section is mandatory** — it is what makes the system self-propelling.
+- **The "why" record.** Every agent decision stores its reasoning and the evidence it cited. A hard requirement (PRD §11.1).
+- **Lab notebook per experiment**, auto-generated, ending in mandatory next-questions — that is what makes the system self-propelling.
 - **Live agent activity** is observable from the moment concurrency exists (Implementation_Plan Stage 4a), not deferred to the full dashboard.
 
 ---
 
-## 17. Safety & Risk Controls
+## 18. Safety & Risk Controls
 
 - **Two mandatory human gates:** research→paper, paper→live. **No code path may bypass them.**
-- **Agents have no trading credentials.** Order placement is a separate, minimally-scoped service. An agent *recommends*; only the execution service, gated on a human-approved record, can act.
+- **Agents have no trading credentials.** An agent *recommends*; only the execution service, gated on a human-approved record, can act.
 - **Hard risk limits enforced outside strategy logic:** per-strategy max loss, per-portfolio max drawdown, position limits, kill switch. These must make a 100% drawdown **structurally unreachable**.
 - **Live capital ramps in stages** (1–5% → scale up), never straight to full allocation.
-- **Rollback:** any promoted strategy can be demoted or halted from the dashboard immediately.
-- **Sandboxed code execution.** A2 writes code that will be executed; it runs isolated, with no network and no credentials.
+- **Rollback:** any promoted strategy can be demoted or halted immediately.
+- **Sandboxed code execution.** A2's code runs isolated, with no network and no credentials.
 
 ---
 
-## 18. Technology Choices
+## 19. Technology Choices
 
 | Concern | v1 | Later |
 |---|---|---|
@@ -1058,14 +1007,13 @@ Experiment throughput is **tied to measured FDR**. If FDR rises, throughput auto
 | Array maths | NumPy + Polars | same |
 | Path-dependent loops | Numba `@njit` | same |
 | Analytics over Parquet | DuckDB | same |
-| Parallelism | `multiprocessing` / `joblib` across folds and replications — **not threads** (§9.3) | Distributed workers |
+| Parallelism | `multiprocessing` / `joblib` across folds × windows — **not threads** (§9.3) | Distributed workers |
 | Reasoning | Claude Code (stateless sessions) | same |
 | Strategy code history | git, one branch per strategy (§5.2) | same |
 | Metadata DB | SQLite, 3 tables to start (§2.5) | PostgreSQL |
 | Job queue | none in nanoAQRL; SQLite + leases with the scheduler | Redis |
 | Columnar data | Parquet + DuckDB | + object storage |
 | Vector search | Local (FAISS / sqlite-vss) | Dedicated vector DB |
-| Scheduling | `scheduler.py` tick loop | Prefect / Airflow if warranted |
 | Isolation | subprocess | Docker → Kubernetes |
 | Dashboard | Local web app, read-only | same, hosted |
 
@@ -1073,11 +1021,11 @@ Deliberately boring. **The novelty budget is spent on the research loop, not the
 
 ---
 
-## 19. Non-Functional Requirements
+## 20. Non-Functional Requirements
 
 | Requirement | Target |
 |---|---|
-| **`evaluate.py` runtime** | Seconds, not minutes (§9.1) |
+| **`evaluate.py` runtime** | Seconds, not minutes (§9.1) — across all three train windows |
 | **Determinism under parallelism** | Bit-identical `honest_score` on re-run (§9.5) |
 | **Experiment reproducibility** | 100% from the stored record alone |
 | Fold-level parallelism | Scales with cores; no shared mutable state |
@@ -1089,50 +1037,40 @@ Deliberately boring. **The novelty budget is spent on the research loop, not the
 
 ---
 
-## 20. Open Technical Questions
+## 21. Open Technical Questions
 
 **Resolved 2026-07-28**
-- [x] ~~Confidence level on the haircut~~ — **`1.65×SE` (~95% one-sided)**
-- [x] ~~Bar values~~ — **min score 0.50 · max OOS DD 15% (20% crypto) · min trades 100**
-- [x] ~~Train window~~ — **all three (1/2/3 yr) evaluated, best reported, `N_trials` ×3** (§8.2)
-- [x] ~~Does the agent tune parameters?~~ — **yes; train-only inside each fold, and it does *not* inflate `N_trials`** (§8.6)
-- [x] ~~Trial-counting scope~~ — **per family, per §8.6's table**
+- [x] Confidence level on the haircut — **`1.65×SE`**
+- [x] Bar values — **min score 0.50 · max OOS DD 15% (20% crypto) · min trades 100**
+- [x] Train window — **all three evaluated, best reported, `N_trials` ×3** (§8.2)
+- [x] Parameter tuning — **yes; train-only per fold, does not inflate `N_trials`** (§8.6)
+- [x] Trial-counting scope — **per family**, per §8.6
+- [x] Survivorship handling — **point-in-time index membership** (§14.3)
+- [x] Corporate actions — **raw immutable, adjust at load** (§14.2)
 
 **Owner: human — still open**
-- [ ] **Survivorship handling for NIFTY-50** — point-in-time index membership, trade the index instead, or accept and document the bias. Blocks trustworthy equity results (§20.1)
-- [ ] How is **breadth** measured — instrument count, % of universe profitable, or something else? Needed before it can carry a number
-- [ ] How is **complexity** measured — operator count, free parameters, DAG depth? Needed for the tertiary criterion
-- [ ] Vault composition — which years, instruments or markets are locked, and the per-family peek budget
-- [ ] Broker selection, and whether paper trading is an internal simulator or a broker API
+- [ ] **Where to source price history for the ~100–150 ever-members of NIFTY-50.** If genuinely unobtainable, the honest fallback is index-only trading, not quietly reverting to today's 50
+- [ ] **Is corporate-actions history available**, or does it need sourcing too? This, not the adjustment code, is the real Stage 1 blocker
+- [ ] Is existing data adjusted for *some* periods and not others? **Mixed adjustment is worse than none** — the validator cannot distinguish "genuine move" from "adjusted here but not there"
+- [ ] How far back equities genuinely need to go — **a shorter correct history beats a longer contaminated one**
+- [ ] How **breadth** is measured — instrument count, % of universe profitable, or something else
+- [ ] How **complexity** is measured — operator count, free parameters, DAG depth
+- [ ] Vault composition and per-family peek budget; what happens when a family exhausts it
+- [ ] Broker selection; internal paper-trading simulator vs broker API
 
 **Design questions**
-- [ ] Autocorrelation correction — required from the start, or only once overlapping-position strategies appear?
-- [ ] Minimum fold count before a score is considered meaningful
-- [ ] Which Monte Carlo variant is canonical (trade-order shuffle, block bootstrap, synthetic path generation)?
-- [ ] Null-world generator: which null models, how many replications, and what counts as a "discovery"?
-- [ ] Near-duplicate spec detection: exact hash only, or embedding-similarity threshold?
-- [ ] **How is `evaluate.py` isolated in practice** — separate process, container, or Unix file permissions under a different user? The design requires "cannot read"; the mechanism is unchosen
-- [ ] How is the operator library versioned against in-flight experiments?
+- [ ] Autocorrelation correction — from the start, or only once overlapping-position strategies appear?
+- [ ] Minimum fold count before a score is meaningful
+- [ ] Which Monte Carlo variant is canonical
+- [ ] Null-world: which null models, how many replications, and what counts as a "discovery"?
+- [ ] Near-duplicate spec detection: exact hash only, or embedding similarity?
+- [ ] **How `evaluate.py` isolation is enforced** — separate Unix user with `chmod 700`, container, or a local service? Recommended: the first, near-zero effort and genuinely blocks `cat`
+- [ ] Operator library versioning against in-flight experiments
 - [ ] Vector index choice for v1
-- [ ] Chunk size / section detection for documents with poor structural markup
-- [ ] Does the Librarian run continuously or in scheduled batches, and how is its compute budget capped?
-- [ ] At what branch count does one-branch-per-strategy need a lighter ref namespace?
-- [ ] Sub-minute fidelity — at what timeframe do we stop trusting bar-based fills entirely (§6.4)?
-
-### 20.1 NIFTY-50 survivorship — mitigation chosen, data pending ⚠️
-
-**The bias:** backtesting today's constituents over 2000–2025 implicitly assumes foreknowledge of which companies would still be index-worthy in 2026. Membership turns over ~2–5 names per year, so every dropped company — precisely the poor performers — is invisible. This inflates every Indian equity backtest and is exactly the self-deception P0 and the null-world calibration exist to prevent.
-
-**Decision: point-in-time index membership** (§13.3). Not "trade the index instead," and not "accept and document."
-
-**Status: blocked on data collection**, in two parts:
-
-| Needed | Difficulty |
-|---|---|
-| NIFTY-50 membership history — entry and exit dates per constituent | Moderate. NSE publishes index reconstitution |
-| **Price history for all ~100–150 stocks that were ever members**, including those since delisted or merged | **The hard part.** Delisted-entity prices are the least available and the most important |
-
-**Until both exist, Indian equity results remain optimistic and must not be promoted to live capital.** Index-level research (NIFTY futures/ETF) is structurally unaffected and can proceed in parallel — it is the sensible thing to run while the equity data is assembled.
+- [ ] Chunk size / section detection for poorly-marked-up documents
+- [ ] Librarian scheduling and compute budget
+- [ ] Branch-count threshold before a lighter ref namespace is needed
+- [ ] Sub-minute fidelity — at what timeframe do we stop trusting bar-based fills entirely (§13.2)?
 
 ---
 
@@ -1140,11 +1078,9 @@ Deliberately boring. **The novelty budget is spent on the research loop, not the
 
 | Date | Change |
 |---|---|
-| 2026-07-27 | Initial document — execution model, the single-`evaluate.py` decision with Market/Timeframe profile factoring, provenance hashing, validation battery, operator library, knowledge subsystem, safety controls. |
-| 2026-07-27 | Added nanoAQRL (v1 file shape and permission boundary), the honest score, `program.md` required contents, performance and parallelism, and adversarial integrity. Evaluator became unreadable as well as unwritable. |
-| 2026-07-27 | Walk-forward resolved — rolling scheme, 1-year test windows, concatenated folds, scheme selection identified as a hidden multiple-testing channel. Librarian formalised. |
-| 2026-07-28 | Train window fixed as configurable 1/2/3 years with test always 1 year, folded into `wf_config_hash`. Clearing the bar became an immediate stop. Git branching and merge convention added. |
-| 2026-07-28 | **Full rewrite for clarity and consistency.** Collapsed the patched §2A/§4A/§4B/§8A numbering into sequential sections 1–20; merged all superseded rules into their final form; removed duplicated material between the honest score, walk-forward and validation sections; consolidated the changelog. No decisions changed in this pass. |
-| 2026-07-28 | **Design decisions locked in.** `z` = 1.65; bar values set (min score 0.50, max DD 15% / 20% crypto, min trades 100). Walk-forward now evaluates **all three train windows and reports the best**, with `N_trials` ×3 so the deflated Sharpe absorbs the selection (§8.2). Parameter tuning enabled, with §8.6 defining precisely what does and does not count as a trial — train-only tuning does not inflate the haircut, but raises internal fold overfitting instead. Cost models re-keyed on `(market, asset_class)` with NSE delivery costs derived (§6.3a). Timeframe range set to 1 second–1 month with an explicit fidelity warning below 1 minute. Added §4.5 continuous operation and the idle-by-design vs idle-by-bug distinction, and §20.1 recording the unmitigated NIFTY-50 survivorship bias. |
-| 2026-07-28 | **Corporate-action adjustment added (§13.2).** Source prices are unadjusted, so splits and bonuses appear as phantom ±50% moves that corrupt every price-based indicator. Design: raw prices stay immutable, corporate actions live in their own append-only versioned table, and adjustment is applied **at load time** — so a new split bumps the actions version rather than rewriting history and invalidating the whole archive. Volume adjusts inversely. Documented the back-adjustment look-ahead caveat: adjusted series preserve ratios exactly but distort absolute price levels, so absolute price thresholds are now forbidden and checked at P0. Added the unexplained-jump validator as the safety net for *missing* actions. |
-| 2026-07-28 | **Survivorship resolved to point-in-time index membership (§13.3).** Universe is now whichever stocks were actually in the index on each bar's date, resolved at load time inside `data.py` so a strategy cannot widen its own universe. Documented the requirement people miss: this needs price history for **all ~100–150 stocks ever in NIFTY-50**, not today's 50 — the ones that left are exactly the invisible losses. Added the `universe_too_narrow` check, since a 25-year backtest touching exactly 50 tickers is a symptom of the bias rather than tidy data. §20.1 updated from unmitigated to blocked-on-data. |
+| 2026-07-27 | Initial document — execution model, single-`evaluate.py` decision with profile factoring, provenance hashing, validation battery, operator library, knowledge subsystem, safety controls. |
+| 2026-07-27 | Added nanoAQRL, the honest score, `program.md` required contents, performance and parallelism, and adversarial integrity. Evaluator became unreadable as well as unwritable. Librarian formalised. |
+| 2026-07-28 | Walk-forward resolved; git branching and merge convention added; clearing the bar became an immediate stop. |
+| 2026-07-28 | **Design decisions locked in** — z = 1.65, bar values, best-of-three train windows with `N_trials` ×3, parameter tuning with precise trial-counting rules, per-`(market, asset_class)` cost models with NSE figures derived, 1s–1month timeframe range, continuous operation. |
+| 2026-07-28 | **Data integrity added** — corporate-action adjustment at load time, and point-in-time index membership. |
+| 2026-07-28 | **Full rewrite.** Promoted data integrity to its own section (§14) beside adversarial integrity (§15), with an explicit statement of why they are different threats — §15 defends against the agent fooling us, §14 against the data fooling us, and **null-world calibration cannot catch the latter** because the null generator inherits the same corrupted assumptions. Renumbered sequentially §1–§21; folded the locked-in decisions into the body rather than leaving them as appended edits; consolidated the changelog. No decisions changed in this pass. |

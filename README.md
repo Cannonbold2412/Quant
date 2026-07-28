@@ -38,16 +38,22 @@ Each carries an open-questions section and a changelog.
 **The honest score** — the single float that drives every keep/discard decision:
 
 ```
-score = SR_oos − 2·SE(SR) − SR*(N_trials)
+score = SR_oos − 1.65·SE(SR) − SR*(N_trials)
 ```
 
 The deflated lower bound on out-of-sample Sharpe. *What Sharpe can we be confident is real, after accounting for how few trades we have, how ugly the tails are, and how many things we already tried?* Every other metric is computed and stored, but none of them drive the loop. → TRD §7
+
+**The pre-registered bar:** min score **0.50** · max out-of-sample drawdown **15%** (**20% crypto**) · min **100** trades · survives **2× costs**. Fail any item and the run is discarded with no score computed.
 
 **The bar and the score are separate.** A pass/fail bar — minimum trades, max drawdown, breadth, 2× cost survival, complexity cap — runs before any score is computed. Drawdown gates but does not rank; a worst-moment statistic is too noisy to rank on. → TRD §7.5
 
 **Clearing the bar is an immediate, unconditional stop.** The first passing iteration is the last one — enforced in Python before A3 is even asked. This is satisficing made structural: the bar already contains a minimum score, so clearing it already means "good enough by a standard set in advance." → PRD §9.2
 
-**Walk-forward** — rolling, test window always 1 year, train window configurable at 1/2/3 years (default 1), purged with embargo ≥ holding period, all folds concatenated into one out-of-sample series. Scheme *and* train length are fixed per campaign and hashed into provenance, because trying several and reporting the best is a multiple-testing channel the deflated Sharpe cannot see. → TRD §8
+**Walk-forward** — rolling, test window **always 1 year**, evaluated at **all three train windows (1/2/3 yr) with the best reported**, purged with embargo ≥ holding period, folds concatenated. Taking the best of three is a selection, so **`N_trials` is multiplied by three** — the deflated Sharpe absorbs it and the haircut grows accordingly. The *scheme* stays fixed and unsearched, because selecting a scheme by result would sit outside the trial count where the haircut cannot see it. → TRD §8
+
+**Parameter tuning is enabled**, run inside each fold on training data only. It does **not** inflate `N_trials` — it never saw the test window, so it is part of the procedure rather than a selection on the reported metric. It raises internal fold overfitting instead, visible in walk-forward efficiency. → TRD §8.6
+
+**Markets and instruments** — Indian equities (NIFTY-50), Indian and US indices, forex, commodities, crypto — traded as cash equity, ETFs, futures, CFDs, spot and perpetuals. **Cost models are keyed on `(market, asset_class)`**, not market alone. NSE cash delivery works out to ~22 bps statutory, **~27–32 bps all-in** — so a swing strategy must clear ~30 bps per round trip just to break even. → TRD §6.3
 
 **Storage** — SQLite for metadata, git for code, `experiments.code_commit` linking them. One repo forever, one branch per strategy, never deleted. Almost nothing merges — except at approval, where clearing a human gate merges the strategy into `deploy/paper` or `deploy/live`, giving both gates a physical, auditable action. → TRD §5
 
@@ -65,7 +71,18 @@ These are what make automated search in markets defensible. **None are optional.
 
 **3. Evaluator isolation.** The agent can neither read nor edit `evaluate.py`, and `data.py` is read-only. Reward hacking is a certainty, not a risk — give an agent a scoring function and enough iterations and it will optimise the scorer rather than the market. Structural, not procedural.
 
-→ TRD §14
+→ TRD §15
+
+### And a fourth, defending a different threat: data integrity
+
+The three above stop the **agent** fooling us. They cannot stop the **data** fooling us — a perfectly honest scorer running on corrupted inputs will confidently report discoveries that do not exist, and **null-world calibration cannot catch it**, because the null generator inherits the same corrupted assumptions.
+
+| Problem | Status |
+|---|---|
+| **Unadjusted prices** — a 1:2 split reads as a −50% move | ✅ Mitigated: raw data immutable, corporate actions in a versioned table, **adjustment applied at load time** so a new split never rewrites history |
+| **Survivorship** — today's NIFTY-50 projected back to 2000 | ⚠️ Fix chosen (**point-in-time membership**), blocked on collecting price history for all **~100–150 ever-members**, not today's 50 |
+
+**Indian equity results cannot reach live capital until survivorship is resolved.** Index-level research is structurally unaffected and runs in parallel. → TRD §14
 
 ---
 
@@ -75,7 +92,7 @@ Five files. The five-agent architecture, job queue, knowledge graph and full sch
 
 | File | Contents | Agent permission |
 |---|---|---|
-| `data.py` | Snapshots, calendars, cost models, universe | read only |
+| `data.py` | Snapshots, calendars, cost models, corporate-action adjustment, point-in-time universe | read only |
 | `strategy.py` | Signal logic, entries, exits, sizing | **the only writable file** |
 | `evaluate.py` | Scoring harness + hard bar | **no read, no write** |
 | `program.md` | Instructions and the acceptance bar | human-edited only |
@@ -160,11 +177,11 @@ Once proves the concept. Repeatedly across markets means something rare.
 Numeric and strategic choices that shape the build:
 
 - The acceptance bar values — min score, max out-of-sample drawdown, min trades, breadth, complexity cap
-- The `z` multiplier on the uncertainty haircut — `2.0` (~97.5% one-sided) or `1.65` (~95%)
-- Which train window (1/2/3 years) for the first campaign
-- **Whether the agent tunes parameters per fold or writes fixed-parameter strategies** — changes what walk-forward actually tests, and how `evaluate.py` must be built
+- **Where to source price history for the ~100–150 ever-members of NIFTY-50.** If genuinely unobtainable, the honest fallback is index-only trading — not quietly reverting to today's 50
+- **Whether corporate-actions history is available**, or needs sourcing too. That, not the adjustment code, is the real Stage 1 blocker
+- How **breadth** and **complexity** are measured — both sit in the bar but neither has a definition yet
 - Vault composition and per-family peek budget
-- First fully-supported market × timeframe profile
+- How `evaluate.py` isolation is enforced in practice — a separate Unix user with `chmod 700` is the cheap option that genuinely blocks `cat`
 
 ---
 

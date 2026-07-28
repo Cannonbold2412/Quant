@@ -83,11 +83,13 @@
    │   fail ├────────────────▶ discard, NO score computed
    │        │
    │   pass ▼
-   │    rolling walk-forward (1yr test, purged + embargo, 2× costs)
-   │    all folds CONCATENATED into one OOS series
+   │    rolling walk-forward, 1yr test, purged + embargo, 2× costs
+   │    run at ALL THREE train windows (1/2/3 yr), folds CONCATENATED
+   │    per-fold parameter tuning on TRAIN data only
    │        │
    │        ▼
-   │    honest_score = SR_oos − 2·SE(SR) − SR*(N_trials)
+   │    honest_score = max over the three windows of
+   │        SR_oos − 1.65·SE(SR) − SR*(N_trials)     [N_trials ×3]
    │        │
    │        ▼
    │    keep the commit — and STOP (satisficing, PRD §10.2)
@@ -289,13 +291,15 @@ Resolve data_snapshot_id
                 │ FAIL → costs_exceed_edge / negative_expectancy
                 ▼ PASS
 ┌── P3  Robustness battery ─────────────────────────┐
-│   rolling walk-forward → concatenated OOS series  │
+│   rolling walk-forward × 3 train windows          │
+│   → concatenated OOS series per window            │
 │   Monte Carlo · deflated Sharpe · White's RC      │
 │   CSCV/PBO · regime analysis · cost sensitivity   │
 │   parameter sensitivity · market-specific gates   │
 └───────────────┬───────────────────────────────────┘
                 ▼
-honest_score = SR_oos − 2·SE(SR) − SR*(N_trials)
+honest_score = max over 3 train windows of
+                 SR_oos − 1.65·SE(SR) − SR*(N_trials)
         │
         ▼
 Write evaluations + evaluation_tests + regime_performance + fold_metrics
@@ -636,7 +640,7 @@ Ongoing lifecycle decisions:
 
 ### 11.1 Hard risk controls, outside strategy logic
 
-Independent of any agent decision (TRD §17):
+Independent of any agent decision (TRD §18):
 
 - Per-strategy max loss → automatic halt
 - Per-portfolio max drawdown → automatic halt
@@ -727,7 +731,7 @@ every ~60 seconds:
 
 ## 14. Flow 12 — Null-World Calibration (runs before anything real) ★
 
-The procedure that establishes whether the pipeline can be trusted at all (PRD §4.2, TRD §14.3).
+The procedure that establishes whether the pipeline can be trusted at all (PRD §4.2, TRD §15.3).
 
 ```
 Generate null datasets — NO alpha by construction
@@ -754,7 +758,7 @@ Record null_world_runs · surface FDR on the Laboratory screen
 Record max_score_observed → the bar any real result must clear
 ```
 
-**Re-run as a regression test** after every change to `evaluate.py`, the scoring rule, or any profile. Throughput is tied to the result via the autonomy ratchet (TRD §14.4): if FDR rises, experiments-per-day automatically fall.
+**Re-run as a regression test** after every change to `evaluate.py`, the scoring rule, or any profile. Throughput is tied to the result via the autonomy ratchet (TRD §15.4): if FDR rises, experiments-per-day automatically fall.
 
 ---
 
@@ -844,6 +848,7 @@ trade
 | Date | Change |
 |---|---|
 | 2026-07-27 | Initial document — all flows mapped, evidence-based stop conditions, trial counting, curiosity loop closure, two human gates, error/edge cases, traceability chain. |
-| 2026-07-27 | Added Flow 0 (the nanoAQRL loop that actually runs first), null-world calibration and vault access flows. Rewrote Flow 1 around the Research Brief and Flow 2 around the Implementation Brief; rewrote Flow 10 around the Librarian. |
-| 2026-07-28 | Clearing the bar became an immediate stop routing straight to A4; A3 lost its `PROMOTE` verdict entirely; plateau collapsed to a single below-the-bar concept always routing to A5. Portfolio correlation removed from A4 and marked dashboard-computed. Git merge actions wired into both human gates. |
-| 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential numbering (§1–§18) replacing the patched §1A/§5.0/§5.1a/§7a scheme; the hard bar now shown explicitly in the evaluation flow where it actually runs; A5 documented as running once per strategy over the complete iteration set; all cross-references updated to the renumbered TRD and PRD. No decisions changed in this pass. |
+| 2026-07-27 | Added Flow 0 (nanoAQRL), null-world calibration and vault access. Rewrote Flow 1 around the Research Brief, Flow 2 around the Implementation Brief, Flow 10 around the Librarian. |
+| 2026-07-28 | Clearing the bar became an immediate stop routing straight to A4; A3 lost its `PROMOTE` verdict; plateau collapsed to a below-the-bar concept always routing to A5. Git merge actions wired into both human gates. |
+| 2026-07-28 | **Full rewrite.** Sequential numbering §1–§18; the hard bar shown explicitly in the evaluation flow where it runs; A5 documented as running once per strategy over the complete iteration set. |
+| 2026-07-28 | Flow 0 and Flow 3 updated for the locked-in scoring rule — `z = 1.65`, all three train windows evaluated with the best reported and `N_trials` ×3, per-fold tuning on training data only. Cross-references updated to the renumbered TRD. |
