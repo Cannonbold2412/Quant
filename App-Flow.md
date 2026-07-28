@@ -495,7 +495,9 @@ A retired strategy is not deleted. It becomes a knowledge entry: what worked, fo
 
 ---
 
-## 11. Flow 10 — External Knowledge Ingestion (no LLM until the last step)
+## 11. Flow 10 — External Knowledge Ingestion (the Librarian Agent, no LLM until the extraction step)
+
+**One unified pipeline for every source type.** A GitHub source contributes text (README, docs, comments) through the exact same path as a paper or a blog post — no separate tooling branch for code.
 
 ```
 Scheduler fires collector jobs
@@ -509,16 +511,42 @@ arXiv/SSRN   GitHub       Blogs        Market data
                       ▼
         Dedup by content_hash · cheap relevance filter
                       ▼
-        Only survivors get EXTRACT_KNOWLEDGE (LLM, once ever)
-                      ▼
-        Structured external_knowledge + embeddings
-                      ▼
-        Available to A1
+        Survivors only → THE LIBRARIAN (PRD §6.2)
+                      │
+              ┌───────┴────────┐
+              │  big document?  │
+              └───────┬────────┘
+                  yes  │  no
+                       ▼
+          chunk by structure (section/heading — never
+          a blind token window, TRD §7.2a)
+                       │
+                       ▼
+          PASS 1 — per chunk: what claim/method is here?
+          → document_chunks.chunk_extraction
+                       │
+                       ▼
+          PASS 2 — synthesize across all chunks of this
+          document into a small number of DISTINCT ideas
+          (typically 2-3 per paper, never one blob)
+                       │
+                       ▼
+          classify + tag extraction_confidence
+          + evidence_tier = 'external_claim' (TRD §7.2b)
+                       │
+                       ▼
+        One external_knowledge row PER IDEA, each carrying
+        source_chunk_ids back to the exact passage
+                       │
+                       ▼
+        Available to A1 — as a candidate to test, not a fact
 ```
 
-**Claude never crawls.** Python collectors do the fetching. A document is read by an LLM exactly once in its lifetime, then never again — subsequent access is to the structured record.
+**Claude never crawls.** Python collectors do the fetching. A document is read by the Librarian exactly once in its lifetime, then never again — subsequent access, by A1 or anyone else, is to the structured `external_knowledge` rows.
 
 **Targeted mode:** collectors also consume the `research_questions` queue, so searches are driven by the lab's own gaps rather than only broad topical sweeps.
+
+**The Librarian runs outside the five-agent loop.** It is never invoked by A3 or A4, and it never blocks an experiment — it only ever adds candidates to the shelf that A1 reads from next cycle.
 
 ---
 
@@ -666,4 +694,5 @@ Check vault budget for this FAMILY (not this strategy)
 | 2026-07-27 | Initial document. All 11 flows mapped, evidence-based stop conditions, trial counting, curiosity loop closure, two human gates, error/edge cases, traceability chain. |
 | 2026-07-27 | Added §1A Flow 0 (the nanoAQRL loop that actually runs first), §15 null-world calibration, §16 vault access. |
 | 2026-07-27 | Flow 0 now points at TRD §2A.3a for the required contents of `program.md`. |
+| 2026-07-27 | Rewrote **Flow 10** around the Librarian Agent: a single unified pipeline for every source type (no separate code-repository branch), explicit chunk → per-chunk extraction → cross-chunk synthesis → classify steps, and confirmation that the Librarian sits outside the five-agent loop and never blocks an experiment. |
 | 2026-07-27 | Flow 0 updated for the resolved honest score — the hard bar now gates inside `evaluate.py` before any score is computed, and one float drives keep/discard. |

@@ -144,6 +144,18 @@ Fixed as of the 2026-07-27 session. Agents 4 and 5 are **separate** — they ans
 
 **A5 works across experiments, not within one.** Its value emerges from noticing that experiments #25, #193 and #6201 all failed for the same reason, and promoting that into a global rule: *"Avoid ATR multipliers above 3.0 in this strategy family."*
 
+### 6.2 A sixth role, outside the loop — the Librarian ★
+
+**The Librarian is not part of the five-agent research loop.** A1–A5 iterate on one strategy at a time inside Research → Code → Test → Review → Promote. The Librarian runs on its own schedule, reading papers, books and other external documents, and only ever *feeds* A1 — it never sits inside the iterate/promote cycle and is never invoked by A3 or A4.
+
+| | A5 — Knowledge Manager (existing) | Librarian (new) |
+|---|---|---|
+| Reads | Our own experiment results | Other people's papers, books, external sources |
+| Question it answers | "What did **we** learn from **our** test?" | "What is this document trying to say?" |
+| Trust level of output | High — our own tested evidence | Lower — a claim, not yet tested (§8.2) |
+
+Kept separate for the same reason A4 and A5 were split (§6.1): different inputs, different failure modes, and merging them overloads one role as both archives grow. Full design in TRD §7.2; output schema in Backend-Schema.md §9.
+
 ---
 
 ## 7. The Closed Loop
@@ -224,9 +236,11 @@ Four layers:
 | Software Knowledge | New libraries, faster algorithms, better optimizers |
 | Infrastructure Knowledge | Better testing/validation/risk methodology |
 
-**Store knowledge, not documents.** A 40-page paper becomes a structured record: `{paper_id, core_idea, category, applicable_markets, strength, weakness, implementation_difficulty, proposed_experiments, confidence}`. Claude reads any given paper exactly once, ever.
+**Store knowledge, not documents.** The Librarian (§6.2) is the agent responsible for this conversion. A 40-page paper does **not** become one blob of a summary — it typically contains several distinct usable ideas, and each becomes its own structured record: `{paper_id, core_idea, category, applicable_markets, strength, weakness, implementation_difficulty, proposed_experiments, confidence}`. The document itself is read exactly once, ever; every later access is to these structured records. Full mechanics — how a large document is broken down and reassembled — in TRD §7.2.
 
-**Claude does not browse the web.** Ordinary Python collectors gather and pre-process; Claude consumes prepared knowledge.
+**Claude does not browse the web.** Ordinary Python collectors gather and pre-process; the Librarian consumes prepared documents, never crawls.
+
+**A claim from a paper is not a fact.** It is a candidate worth testing, tagged with the Librarian's confidence in its *own reading* of the source — never a claim that the idea is true. Only Internal Knowledge (§8.1) carries the weight of tested evidence. The two must never be confused: a strategy is not promoted because "a paper said so," only because our own experiments confirmed it.
 
 ---
 
@@ -455,6 +469,7 @@ Tracked here until resolved in a session, then moved into the body of the docs.
 - [ ] Whether A1 hypothesis generation is scheduled (nightly batch) or purely event-driven
 - [ ] Capacity/AUM modelling — at what point does liquidity invalidate a backtest
 - [ ] Human review SLA — how long may a candidate sit in the dashboard queue
+- [ ] Does an `external_claim` ever get promoted to a higher trust tier purely from repeated corroboration across many papers, or strictly only via our own tested experiments (§8.2)?
 
 ---
 
@@ -465,3 +480,4 @@ Tracked here until resolved in a session, then moved into the body of the docs.
 | 2026-07-27 | Initial document. Vision, 5-agent architecture, promotion rules, health monitoring, portfolio allocation, success criteria captured from architecture sessions. |
 | 2026-07-27 | Reconciled against karpathy/autoresearch (§14). Added null-world false discovery rate as the headline integrity metric (§4.5), the two-phase search objective, satisficing over maximising, ranked acceptance criteria with a simplicity penalty, and the diversification-as-anti-overfitting argument (§13). |
 | 2026-07-27 | Honest score resolved (TRD §4A). §13.2 updated: the bar is stated in `program.md` and enforced in `evaluate.py`; failing it returns `discard` with no score; out-of-sample data noted as a consumable resource. |
+| 2026-07-27 | Added **§6.2 — the Librarian**, a sixth role formalizing external-knowledge extraction, explicitly kept outside the five-agent research loop. §8.2 rewritten: one paper yields several structured ideas, not one blob; and a claim from a paper is never a fact — only internal, tested evidence is. |

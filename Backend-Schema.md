@@ -62,7 +62,7 @@ strategies ────────────► strategy_specs ────�
      ▼
 knowledge_entries ──► knowledge_edges
 research_questions
-external_documents ──► external_knowledge
+external_documents ──► document_chunks ──► external_knowledge   (the Librarian's pipeline, PRD §6.2)
 
 jobs · budgets · audit_log · data_snapshots · market_profiles · timeframe_profiles
 ```
@@ -498,28 +498,52 @@ Raw ingested artifacts. Read once, ever.
 | content_hash | TEXT | UNIQUE — deduplication |
 | raw_path | TEXT | Archived original |
 | ingested_at, extracted_at | TEXT | |
-| extraction_status | TEXT | `pending` \| `done` \| `failed` \| `irrelevant` |
+| extraction_status | TEXT | `pending` \| `chunked` \| `done` \| `failed` \| `irrelevant` |
 | relevance_score | REAL | Cheap filter before spending LLM tokens |
+| chunk_count | INTEGER | How many pieces this document was split into (TRD §7.2a). `1` for short documents that needed no split |
 
-### `external_knowledge`
-The structured extraction. **Store knowledge, not documents** (PRD §8.2).
+### `document_chunks` ★
+One row per piece a large document was split into. Exists purely so a synthesized idea can point at an exact passage instead of "somewhere in this paper" (TRD §7.2a, App-Flow §14).
 
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
-| document_id | FK | |
-| layer | TEXT | `research` \| `market` \| `software` \| `infrastructure` |
-| core_idea | TEXT | |
-| category | TEXT | |
+| document_id | FK → external_documents | |
+| chunk_index | INTEGER | 0-based position within the document |
+| section_title | TEXT | Nullable — populated when the source has structural headings |
+| char_start, char_end | INTEGER | Offsets into the raw document, for exact re-location |
+| chunk_extraction | TEXT (JSON) | Pass-1 output: candidate claims found in *this chunk alone*, before synthesis. Raw material, not the final record |
+| processed_at | TEXT | |
+
+> Chunks are never re-read once synthesis (§9's `external_knowledge`, below) has run. They exist for audit and traceability, not as a second copy to query routinely.
+
+### `external_knowledge` — the Librarian's output ★
+The structured extraction, produced by the **Librarian Agent** (PRD §6.2, TRD §7.2). **Store knowledge, not documents.** One row is **one idea**, never one row per document — a single paper's synthesis pass (TRD §7.2a) typically yields several of these.
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| document_id | FK → external_documents | |
+| **source_chunk_ids** | TEXT (JSON) | Which `document_chunks` this idea was synthesized from — the traceability link back to an exact passage |
+| layer | TEXT | `research` \| `market` \| `software` \| `infrastructure` (PRD §8.2) |
+| core_idea | TEXT | One clear sentence. If it needs a paragraph, synthesis (§7.2a) didn't finish its job |
+| category | TEXT | e.g. `signal`, `risk_management`, `portfolio_construction`, `validation_technique` |
 | applicable_markets, applicable_timeframes | TEXT (JSON) | |
 | strengths, weaknesses | TEXT | |
 | implementation_difficulty | TEXT | `low` \| `medium` \| `high` |
-| proposed_experiments | TEXT (JSON) | Directly consumable by A1 |
-| required_operators | TEXT (JSON) | Operators that would need to exist |
-| novelty_score, confidence | REAL | |
+| required_operators | TEXT (JSON) | Operators (Operator Library, TRD §6) that would need to exist to implement it |
+| proposed_experiments | TEXT (JSON) | Directly consumable by A1 — this is what makes the record actionable, not just informative |
+| novelty_score | REAL | How much this differs from what's already in the knowledge base |
+| **extraction_confidence** | REAL | **The Librarian's confidence that it read and summarized the source correctly.** Not a claim that the idea itself is true — see `evidence_tier` |
+| **evidence_tier** | TEXT | Always `external_claim` for Librarian output. Contrasts with `knowledge_entries` (internal, tested) — never conflate the two (TRD §7.2b) |
+| **extracted_by** | TEXT | Agent identifier, e.g. `librarian` |
+| **extraction_prompt_version** | TEXT | Versioned, same discipline as every other LLM output (TRD §9) |
+| **extracted_at** | TEXT | |
 | related_knowledge_ids | TEXT (JSON) | |
 | embedding_id | TEXT | |
-| used_in_specs | TEXT (JSON) | Did this ever produce a hypothesis? |
+| used_in_specs | TEXT (JSON) | Did this ever produce a hypothesis? Filled in later by A1's spec generation |
+
+> **Trust tier, stated plainly:** an `external_knowledge` row is a *candidate worth testing*. It only earns the weight of "confirmed" once an experiment tests it and A5 writes the result into `knowledge_entries` (internal). No promotion decision may cite `external_knowledge.extraction_confidence` as if it were evidence — that field describes reading accuracy, not truth.
 
 ### `research_questions`
 The curiosity queue (TRD §7.3).
@@ -780,3 +804,4 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 | 2026-07-27 | Added walk-forward columns to `evaluations` — `wf_scheme` (hashed into provenance), window sizes, `n_folds`, `folds_profitable`, per-fold `fold_metrics` stored but non-gating, and `params_refit_per_fold`. |
 | 2026-07-27 | Added `wf_config_hash` to `experiments` provenance and to the comparability index — hashes `{scheme, train_years, test_years}` together, since train window length carries the same hidden-multiple-testing risk as scheme choice. Split `wf_train_bars`/`wf_test_bars` into explicit `wf_train_years` (configurable 1/2/3) and `wf_test_years` (always 1) on `evaluations`. |
 | 2026-07-27 | Added the honest-score column group to `evaluations` — `honest_score` plus every input to it (`sr_oos`, `se_sr`, `z_multiplier`, `trials_haircut`, skew/kurtosis/n, embargo vs holding period) and the `bar_result` gate columns. Added `min_breadth` and `z_multiplier` to `acceptance_bars`. |
+| 2026-07-27 | Added **`document_chunks`** table and rewrote `external_knowledge` as the Librarian Agent's formal output schema: `source_chunk_ids` for exact-passage traceability, one row per idea rather than per document, `extraction_confidence` renamed and clarified to mean reading accuracy (not truth of the claim), and a new `evidence_tier` column fixed to `external_claim` so this table can never be mistaken for tested, internal evidence. `external_documents` gained `chunk_count` and a `chunked` extraction status. |

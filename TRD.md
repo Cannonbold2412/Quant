@@ -668,7 +668,9 @@ Each phase yields `PASS | FAIL | WARN` per test plus a numeric score. Thresholds
 
 Append-only. See `Backend-Schema.md` for tables. Key requirement: **every experiment must be reproducible from its stored record alone** — spec, code version, data snapshot, profiles, seeds.
 
-### 7.2 External ingestion pipeline
+### 7.2 External ingestion pipeline — the Librarian Agent
+
+**The Librarian (PRD §6.2)** is the named agent that performs extraction. It is a single, uniform pipeline — one document type, one process, regardless of whether the source is a paper, a book chapter, a blog post, or a GitHub README. No separate code-graph or AST tooling is used here; a GitHub source contributes its text (README, docs, comments) through the same path as everything else.
 
 ```
 Internet
@@ -677,19 +679,47 @@ Internet
 Collectors  (Python, scheduled — arXiv, SSRN, GitHub, blogs, market data)
    │
    ▼
-Cleaning & deduplication
+Cleaning & deduplication (content_hash) · cheap relevance filter
    │
    ▼
-Knowledge extraction  (LLM, once per document, ever)
-   │
-   ▼
-External Knowledge Base  (structured records + embeddings)
-   │
-   ▼
-Consumed by A1
+┌─────────────────── THE LIBRARIAN ───────────────────┐
+│                                                      │
+│  Big document? → chunk by structure                 │
+│  (sections / headings — never a blind token window,  │
+│   so a formula or an idea is never split in half)    │
+│           │                                          │
+│           ▼                                          │
+│  Per-chunk extraction — what claim, method, or        │
+│  indicator does THIS chunk contain?                   │
+│           │                                          │
+│           ▼                                          │
+│  Synthesis pass across all chunks of the document —   │
+│  a 40-page paper usually yields 2-3 DISTINCT ideas,    │
+│  never one blob. One row per idea, not per document.  │
+│           │                                          │
+│           ▼                                          │
+│  Classify + tag confidence in OWN READING (§7.2b)     │
+│                                                      │
+└──────────────────────┬───────────────────────────────┘
+                        ▼
+External Knowledge Base  (structured records + embeddings, schema: Backend-Schema §9)
+                        │
+                        ▼
+                  Consumed by A1
 ```
 
-**Claude is not a crawler.** Collectors produce raw artifacts; a single extraction pass converts each to a structured record; the raw document is archived and never re-read.
+**Claude is not a crawler.** Collectors produce raw artifacts; the Librarian's extraction pass converts each to structured records; the raw document is archived and **never re-read**. Every later access — by A1, by a human, by anything — is to the structured `external_knowledge` rows, never back to the source PDF.
+
+### 7.2a Chunking & synthesis policy
+
+- **Chunk by meaning, not by a fixed size.** Split on natural document structure (headings, sections) wherever the source has it. A blind "every 2,000 tokens" window risks cutting a method description or an equation across a chunk boundary.
+- **Two passes, not one.** Pass 1 extracts candidate claims *per chunk*. Pass 2 synthesizes *across* a document's chunks into a small number of distinct, non-overlapping ideas. Skipping pass 2 is the most common mistake — it produces one giant undifferentiated summary per document instead of individually testable ideas.
+- **Traceability.** Every synthesized idea records which chunk(s) it came from (`external_knowledge.source_chunk_ids` → `document_chunks`, Backend-Schema §9), so a later "why do we believe this" question resolves to an exact passage, not a vague "somewhere in this paper" (App-Flow §14).
+- **Read once, ever.** Chunking does not relax this — it means "read once, in pieces, ever." The chunks and the raw document are archived; nothing downstream re-opens them.
+
+### 7.2b Trust tier — a claim is not a fact ★
+
+Everything the Librarian writes is tagged `evidence_tier = external_claim` (Backend-Schema §9). Its `extraction_confidence` field measures **the Librarian's confidence that it read and summarized the source correctly** — it is explicitly *not* a claim that the underlying idea is true. That distinction is easy to blur and costly to blur: a plausible-sounding paper is not evidence, an executed and validated experiment is. Only `knowledge_entries` (internal, PRD §8.1) carry tested-evidence weight. A strategy is never promoted on the strength of "a paper said so" — only on the strength of our own experiments.
 
 ### 7.3 Curiosity queue
 
@@ -874,6 +904,8 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 - [ ] Vector index choice for v1
 - [ ] How is the operator library versioned against in-flight experiments?
 - [ ] Paper trading: simulated internally vs broker paper API per market?
+- [ ] Chunk size / section-detection method for documents with poor structural markup (scanned PDFs, plain-text blog posts)
+- [ ] Does the Librarian run continuously or in scheduled batches, and how is its own compute budget capped (TRD §3.4 back-pressure)?
 
 ---
 
@@ -885,6 +917,7 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 | 2026-07-27 | Added §2A nanoAQRL (the actual v1 shape, file permissions, SQLite+git split, 3-table minimum), §4A the honest score and ranked criteria, §8A adversarial integrity (reward hacking, the vault, null-world calibration, autonomy ratchet). Evaluator is now unreadable as well as unwritable by the agent. |
 | 2026-07-27 | Added **§2A.3a — required contents of `program.md`**: the reveal/hide split (correctness rules are shown since they are not gameable; the scoring formula and bar numbers are hidden since they are), the full anti-look-ahead rule set the agent must follow, and behavioural rules including "a P0 rejection is a bug, not an obstacle". Instructions reduce the error rate; P0 still enforces. |
 | 2026-07-27 | Added **§4B Performance & Parallelism** — throughput targets, vectorise-the-maths/JIT-the-path, process-level parallelism across folds and replications (threads are useless here under the GIL), determinism requirements under parallelism, per-experiment time budget, and the tension that vectorisation is the top source of look-ahead bias. |
+| 2026-07-27 | Formalized **the Librarian Agent** in §7.2 — the named agent behind external knowledge extraction, kept outside the five-agent research loop (PRD §6.2). Rewrote the ingestion pipeline as a single uniform process for all document types (no separate code-graph tooling). Added §7.2a (chunk-by-structure, two-pass extraction, one row per idea not per document, chunk-level traceability) and §7.2b (the `external_claim` trust tier — extraction confidence measures reading accuracy, never truth of the underlying claim). |
 | 2026-07-27 | Added **§4A.2f-a — train window length.** Test window stays fixed at 1 year; train window is configurable at 1/2/3 years, chosen once per family before the campaign, defaulting to 1 year. Documented the real tradeoff (fit stability vs recency; a modest ~8% effect on total OOS `n`, not the dominant factor). Extended §4A.2g: train length is subject to the same hidden-multiple-testing risk as scheme choice, so it is fixed per campaign and folded into a new `wf_config_hash` alongside the scheme. Noted the emergent property that evaluator isolation makes the walk-forward configuration structurally impossible for any agent to select — it can never be an iteration lever. |
 | 2026-07-27 | **Walk-forward resolved.** Scheme fixed as rolling with 1-year test windows (§4A.2f); fold combination fixed as concatenation into a single OOS series (§4A.2h), with per-fold metrics stored for diagnosis but not driving keep/discard. Added §4A.2g — scheme selection is a multiple-testing channel the deflated Sharpe cannot see, so the scheme is fixed per campaign and hashed into provenance. Added §4A.2i on what walk-forward actually tests. |
 | 2026-07-27 | **§4A resolved.** Honest score fixed as the deflated lower bound on out-of-sample Sharpe: `SR_oos − 2·SE(SR) − SR*(N_trials)`, on purged/embargoed walk-forward returns at 2× costs. Added the three-term derivation and the gaming vectors each term closes, rejected alternatives, bar/score separation (drawdown gates but does not rank), gate enforcement in `evaluate.py` rather than `program.md` alone, and OOS as a consumable resource. |

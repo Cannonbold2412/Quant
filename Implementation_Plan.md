@@ -344,22 +344,25 @@ Before trusting it, `evaluate.py` must be tested against **known-answer cases**:
 
 ---
 
-## 11. Stage 10 — External Knowledge & Curiosity
+## 11. Stage 10 — External Knowledge & Curiosity (the Librarian Agent)
 
-**Goal:** stop the loop from feeding on itself (PRD §7.1).
+**Goal:** stop the loop from feeding on itself (PRD §7.1), via a named agent formalized in PRD §6.2 / TRD §7.2 — kept outside the five-agent research loop from Stages 5–9.
 
 | Deliverable | Notes |
 |---|---|
-| Collectors (pure Python) | arXiv, SSRN, GitHub, blogs, market stats. **Claude never crawls** |
+| Collectors (pure Python) | arXiv, SSRN, GitHub, blogs, market stats. **Claude never crawls.** One unified pipeline — GitHub sources contribute text (README/docs), no separate code-graph tooling |
 | Dedup + relevance filter | Cheap filtering before spending LLM tokens |
-| `EXTRACT_KNOWLEDGE` job | LLM reads each document exactly once, ever |
-| Structured external knowledge + embeddings | Store knowledge, not documents |
+| Chunker | Splits large documents by structure (section/heading), not a blind token window (TRD §7.2a) |
+| Per-chunk extraction | Pass 1: what claim/method does this chunk contain? Written to `document_chunks.chunk_extraction` |
+| Cross-chunk synthesis | Pass 2: collapse a document's chunks into a small number of **distinct** ideas — one `external_knowledge` row per idea, never one row per document |
+| Trust tagging | Every row gets `evidence_tier = external_claim` and an `extraction_confidence` that measures reading accuracy, never the truth of the claim (TRD §7.2b) |
+| Structured external knowledge + embeddings | Store knowledge, not documents — schema in Backend-Schema §9 |
 | Curiosity queue | Failures → research questions → targeted collector searches |
 | Loop closure tracking | `produced_spec_ids` — did asking ever pay off? |
 
-**Done when:** a failure pattern automatically produces a targeted literature search whose results measurably influence a subsequent hypothesis.
+**Done when:** a failure pattern automatically produces a targeted literature search whose results measurably influence a subsequent hypothesis, **and** a sample of extracted papers shows correctly-separated distinct ideas rather than one blob per document.
 
-**Reuses:** `ai/indicator_extractor.py`, `ai/summarizer.py`, `utils/chunking.py`, `drive/` fetch patterns.
+**Reuses:** `ai/indicator_extractor.py`, `ai/summarizer.py`, `utils/chunking.py` (the chunker's starting point), `drive/` fetch patterns.
 
 ---
 
@@ -511,3 +514,4 @@ Not in the one-shot build:
 | 2026-07-27 | Added Stage 0.5a (profile then parallelise), two mandatory known-answer tests (leaky *vectorised* strategy; parallel vs single-threaded bit-identity), and three performance/correctness risks. |
 | 2026-07-27 | Stage 0.1 changed from "decide the honest score" to "implement" it — resolved in TRD §4A. Stage 0.2 now enforces the hard bar inside `evaluate.py`. Remaining Stage 0 unknowns are numeric choices owned by the human. |
 | 2026-07-27 | Added **Stage 4a — Observability**, pulled out of Stage 12 and placed immediately after the job queue exists: live agent activity feed and a read-only database explorer, built to debug the system rather than to make decisions. Stage 12 is now decision-layer only. Stage 0.1 updated to name the configurable train window (TRD §4A.2f-a). |
+| 2026-07-27 | Rewrote **Stage 10** around the formalized **Librarian Agent** (PRD §6.2): a single unified ingestion pipeline for every source type, explicit chunk/per-chunk-extract/synthesize steps, one `external_knowledge` row per idea rather than per document, and trust tagging (`evidence_tier = external_claim`) so extracted claims are never confused with tested internal evidence. Dropped the earlier idea of separate code-graph tooling for GitHub sources — GitHub text flows through the same pipeline as everything else. |

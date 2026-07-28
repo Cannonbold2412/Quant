@@ -51,6 +51,8 @@ The deflated lower bound on out-of-sample Sharpe. *What Sharpe can we be confide
 
 **Storage** — SQLite for metadata, git for strategy code, `experiments.code_commit` linking them. → TRD §2A.4
 
+**The Librarian** — a sixth agent, outside the five-agent research loop. Reads external documents (papers, books, blogs, GitHub) through one unified pipeline: chunk large documents by structure, extract candidate claims per chunk, then synthesize across chunks into a small number of distinct ideas — one database row per idea, never one per document. Every row is tagged `evidence_tier = external_claim`: a paper's claim is a candidate worth testing, never a fact, and only an internal, tested experiment can promote it to real knowledge. → PRD §6.2, TRD §7.2, Backend-Schema §9
+
 ---
 
 ## The three integrity mechanisms
