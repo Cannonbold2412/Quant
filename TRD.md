@@ -222,6 +222,24 @@ Hard caps enforced by the scheduler, all configurable:
 
 When a cap is hit the scheduler stops dispatching that class of work and logs the reason. **Budget exhaustion is a normal state, not an error.**
 
+### 4.5 Continuous operation — and the one legitimate reason to idle ★
+
+**The laboratory runs 24/7 and never stops on success.** Clearing the bar stops *that strategy's* iteration (§7.5); it does not stop the campaign, the goal, or the lab. Research continues while candidates sit in the human queue, while strategies paper-trade, and while others run live. Multiple strategies occupy paper trading simultaneously; the pipeline is continuous, not a one-shot search.
+
+**No agent should sit idle because nothing was queued.** That is a scheduling bug — it means A1 is not generating, or the queue drained, and throughput is being wasted.
+
+**Agents may idle because a safety limit was reached.** That is the system working:
+
+| Idle cause | Verdict |
+|---|---|
+| Queue empty, budget available, no limit hit | 🐛 **Bug** — investigate, the lab is wasting capacity |
+| Daily token/compute budget exhausted | ✅ **By design** (§4.4) |
+| Null-world FDR above threshold → autonomy ratchet throttling | ✅ **By design** (§14.4) |
+| A family's vault budget exhausted | ✅ **By design** (§14.2) |
+| Concurrency cap reached | ✅ **By design** |
+
+The distinction matters operationally: the dashboard must show *which* of these is occurring, so "the lab is quiet" is never ambiguous between "healthy and throttled" and "broken and stalled."
+
 ---
 
 ## 5. Storage & Git Convention
@@ -313,23 +331,53 @@ Inputs, never different algorithms:
 | Group | Contents |
 |---|---|
 | **Calendar** | Session hours, holidays, half-days. NSE 09:15–15:30; MCX to 23:30; crypto 24/7; forex 24/5 with a Sunday open |
-| **Costs** | Indian equities: brokerage + STT + stamp duty + exchange fee + GST. Crypto perps: maker/taker + **funding rate**. Forex: spread-driven. Futures: per-contract + roll cost |
+| **Costs** | Resolved **per market *and* per asset class** (§6.3a) — the same venue charges a cash equity, an ETF and a derivative differently |
 | **Constraints** | Tick size, lot size, contract multiplier, margin, circuit limits (India) vs halts (US), short-selling rules (Indian cash equities: intraday only) |
 | **Data hazards** | Survivorship and delisting (equities), contract roll/contango (commodities), exchange-specific bad prints (crypto) |
 | **Reference** | Risk-free rate source, benchmark for alpha/beta, P&L currency, ADV/liquidity cap |
+
+### 6.3a Cost models are per market × asset class ★
+
+Cost is **not** a market-level property. NSE charges a delivery equity trade, an intraday equity trade and an index future entirely differently. The resolved cost model is therefore keyed on `(market, asset_class)`, and `asset_class` is a first-class field on every instrument.
+
+**Asset classes in scope:** cash equity · index ETF · index/commodity **future** · **CFD** · **spot crypto** · **crypto perpetual**.
+
+#### Reference: NSE cash equity, delivery — derived 2026-07
+
+| Component | Rate | Round-trip |
+|---|---|---|
+| STT | 0.1% buy **and** sell | **20.0 bps** |
+| Stamp duty | 0.015% buy only | 1.5 bps |
+| Exchange transaction | 0.00345% each side | 0.69 bps |
+| SEBI turnover | 0.0001% each side | 0.02 bps |
+| Brokerage | ₹0 delivery (discount broker) | 0 bps |
+| GST | 18% on (brokerage + exchange + SEBI) | 0.13 bps |
+| **Statutory total** | | **≈ 22.3 bps** |
+| Slippage (NIFTY-50 liquidity) | 2–5 bps per side | 4–10 bps |
+| **Realistic all-in** | | **≈ 27–32 bps** |
+
+> **This single number shapes what is even worth researching.** A swing strategy must average **> 30 bps per round trip** merely to break even, and the 2× cost stress means clearing **~55–65 bps**. At 100 trades/year that is roughly 3% of turnover consumed annually before any edge exists.
+
+**Provenance requirement:** these figures were derived from public sources and are a *starting default only*. Before any live capital, each market's cost model must be **re-derived from a real broker contract note** and the source recorded on the profile. Published rates go stale, differ by segment, and change with budgets — a cost model sourced from a blog is a silent, systematic bias in every backtest that uses it.
 
 ### 6.4 TimeframeProfile — what genuinely differs by timeframe
 
 Different in kind, and the primary source of silent self-deception:
 
+**Supported range: 1 second to 1 month.** The architecture must span roughly seven orders of magnitude in bar size, which makes every field below profile-driven rather than assumed.
+
 | Field | Why it matters |
 |---|---|
-| **`periods_per_year`** | √252 daily vs √(252×375) for 1-minute. **Must come from the profile — never a hardcoded constant.** One wrong value makes every Sharpe in the database fiction |
-| **`fill_model`** | Daily: next-open. Intraday: bar-level rules + spread-fraction slippage. Sub-minute: queue/latency assumptions we do not yet trust |
-| **`cost_stress_multipliers`** | At 1-minute, costs decide everything; at daily they are a rounding error |
-| **Walk-forward windows** | Sized in **bars** for statistical power *and* **calendar time** for regime coverage |
+| **`periods_per_year`** | √252 daily vs √(252×375) for 1-minute vs ~5.7M periods/year for 1-second NSE. **Must come from the profile — never a hardcoded constant.** One wrong value makes every Sharpe in the database fiction |
+| **`fill_model`** | Monthly/daily: next-open. Intraday: bar-level rules + spread-fraction slippage. **Sub-minute: queue position and latency assumptions we do not yet trust** — see the warning below |
+| **`cost_stress_multipliers`** | At 1-second, costs and spread dominate entirely; at monthly they are a rounding error |
+| **Walk-forward windows** | Sized in **bars** for statistical power *and* **calendar time** for regime coverage. At 1-second a 1-year test window is ~5.7M bars; at monthly it is 12 |
 | **`min_trades`** | Ties directly to the promotion rule (PRD §9.3) |
 | **Overnight handling** | Gap risk, carry, crypto funding accrual — only if positions cross sessions |
+
+> ⚠️ **Honesty limit at the fast end.** Below roughly 1 minute, backtest realism degrades sharply: fills depend on queue position, latency and order-book depth that bar data cannot represent. The architecture *supports* 1-second bars; that is not the same as the results being trustworthy there. Sub-minute strategies should carry a much heavier slippage assumption and be treated as research artifacts until validated by real paper-trading fills. This is a data-fidelity limit, not a code limit.
+>
+> **Storage note:** 1-second bars for 50 instruments across 25 years is on the order of terabytes. Fast timeframes should be scoped to shorter histories or fewer instruments rather than assuming full coverage.
 
 Illustrative:
 
@@ -427,6 +475,8 @@ This closes three attack vectors with one formula, without a rule for each:
 
 **Term 3 — the trials haircut, `SR*(N_trials)`.** Try N strategies on pure noise and the best will show a respectable Sharpe by luck alone. That expected-best-under-null is computable from N and subtracted (the deflated Sharpe construction, Bailey & López de Prado). Try 10 things, subtract a little; try 10,000, subtract a lot. This is why `strategies.family` and the trial count exist in the schema.
 
+**What counts as a trial is defined precisely in §8.6** — and it includes the ×3 from evaluating every strategy at three train-window lengths and reporting the best (§8.2). Under-counting here is the single easiest way to make this whole score dishonest.
+
 ### 7.3 Why a bound and not a probability
 
 The Probabilistic Sharpe Ratio returns a probability, which **saturates** — two good strategies both score 0.99 and the hill-climb loses its gradient. The loop needs a number that keeps moving so the agent can tell it is making progress, exactly as `val_bpb` does. A lower confidence bound provides that; a probability does not.
@@ -445,15 +495,19 @@ The Probabilistic Sharpe Ratio returns a probability, which **saturates** — tw
 
 A hard pass/fail bar runs **before** any score is computed.
 
-| The bar (pass/fail, pre-registered) | The score (ranking) |
-|---|---|
-| Minimum trade count | `SR_oos − 2·SE(SR) − SR*(N)` |
-| **Maximum out-of-sample drawdown** | |
-| Minimum breadth across instruments | |
-| Profitable at 2× costs | |
-| Maximum complexity (rules / free parameters) | |
+| The bar (pass/fail, pre-registered) | Value | The score (ranking) |
+|---|---|---|
+| Minimum honest score | **0.50** | `SR_oos − 1.65·SE(SR) − SR*(N)` |
+| **Maximum out-of-sample drawdown** | **15%** — **20% for crypto** | |
+| Minimum trade count | **100** | |
+| Minimum breadth across instruments | *TBD* | |
+| Profitable at 2× costs | required | |
+| Maximum complexity | *TBD* | |
+| **`z` multiplier on the haircut** | **1.65** (~95% one-sided) | |
 
 Fail any item → **`discard`, no score computed, stop.**
+
+> Breadth and complexity are deliberately still open (§20) — both need a measurement definition before they can carry a number.
 
 **Drawdown deliberately does not enter the score.** Max drawdown is a single worst-moment statistic — very noisy, highly dependent on the sample window. Ranking on it means ranking partly on luck. As a *gate* its noisiness is harmless; as a *ranking* it is corrosive.
 
@@ -495,31 +549,44 @@ The trials haircut compensates mathematically and the vault (§14.2) protects th
 **Decision: rolling window, purged, embargo ≥ holding period.**
 
 - **Test window: always 1 year.** Fixed, non-negotiable. It represents the strategy's realistic re-fit and re-validation cadence in production, which is independent of how much history each fit sees.
-- **Train window: configurable at 1, 2 or 3 years.** Chosen once per strategy family before the campaign begins. **Default 1 year.**
+- **Train window: every strategy is evaluated at all three lengths — 1, 2 and 3 years.** The reported score is the **best** of the three (§8.2).
 
 Rolling over anchored because train and test lengths stay constant, so **folds are comparable to each other.** Anchored fails that — its later folds carry several times the training data of its early ones. Anchored is better only when data is scarce, which at 25 years it is not.
 
-> **Override condition:** if parameters will be fitted once and never revised in production, switch to anchored — the validation scheme should mirror how the strategy will actually be maintained. Changing this mid-campaign invalidates comparability (§6.6).
+**What the train window trades off:**
 
-**What the train window actually trades off:**
+- **Fit stability vs recency.** More train years gives more data to estimate parameters robustly — relevant if the strategy relies on slow-moving structure. But a longer window anchors each fold's fit to older information relative to the 1-year test that follows, so the strategy adapts more slowly if the relationship drifts.
+- **Effect on `n` is real but modest.** Because the test window is always 1 year, total OOS observations scale as `(dataset_years − train_years)`. On ~26 years: train=1yr → ~25 years of OOS; train=3yr → ~23. An ~8% difference — the stability-vs-recency tradeoff dominates, not the width of `SE(SR)`.
 
-- **Fit stability vs recency.** More train years gives more data to estimate parameters robustly — relevant if the strategy relies on slow-moving structure. But a longer window also anchors each fold's fit to older information relative to the 1-year test that follows, so the strategy adapts more slowly if the relationship drifts.
-- **Effect on `n` is real but modest, not dominant.** Because the test window is always 1 year, total OOS observations scale as `(dataset_years − train_years)`. On ~26 years: train=1yr → ~25 years of OOS; train=3yr → ~23 years. An ~8% difference — worth knowing, but the stability-vs-recency tradeoff dominates, not the width of `SE(SR)`.
+Evaluating all three means **3× the compute per experiment.** That is a real throughput cost, budgeted for in §9.
 
-**Default 1 year** maximises fold count and forces the strategy to prove it does not need a long memory. Move to 2 or 3 only when the strategy's own logic demands more history to stabilise — and record why.
+### 8.2 Best-of-three, and the trial count that makes it honest ★
 
-### 8.2 Scheme selection is a hidden multiple-testing channel ★
+**Decision: run all three train windows, report the best.**
 
-Run rolling, get 0.4. Run anchored, get 0.9. Report 0.9. **The deflated Sharpe will not catch this**, because `N_trials` counts strategies tried, not validation methods tried. The leak sits entirely outside the integrity machinery. **The same applies to train window length** — running 1yr, 2yr and 3yr and reporting the best is the identical mistake in a different variable.
+```
+honest_score = max( score(train=1yr), score(train=2yr), score(train=3yr) )
+```
 
-Therefore:
+**Taking the best of three configurations is a selection**, and selections inflate scores — with enough configurations, noise alone produces a good-looking winner. This is the same hazard as trying many strategies and keeping the best.
 
-- **One scheme and one train length per campaign**, both fixed in `evaluate.py` before searching begins.
-- The agent cannot select either — `evaluate.py` is unreadable and unwritable (§2.3).
-- Both are hashed into provenance as **`wf_config_hash`** (§6.6). Changing either marks all prior results `comparable = 0`.
-- If a human deliberately wants to compare train lengths, that is a legitimate research question — but it runs as **separate, explicitly labelled campaigns**, each contributing its own count to `N_trials`, never as a silent retry.
+**The deflated Sharpe already handles exactly this, provided it is told the truth about how many things were tried.** So the rule is not "don't select" — it is **"select freely, but count every configuration in `N_trials`."**
 
-**An emergent property worth naming:** because `evaluate.py` is off-limits to the agent, the walk-forward configuration **cannot be an iteration lever at all.** A3 may propose changes to `strategy.py`, but it can never propose "try a 2-year training window" — that would be a change to the evaluation contract, structurally outside its reach. This is not a limitation to work around; it is the correct consequence of evaluator isolation, and it is exactly why the choice is safe to leave with the human.
+```
+N_trials for a family  =  Σ over iterations of (train windows evaluated)
+                       =  iterations × 3
+                       + prior related experiments in the same family
+```
+
+Consequences, stated plainly:
+
+- The trials haircut is **three times larger** than it would be under a single fixed window. That is the honest price of taking the best, and it makes the bar harder to clear.
+- All three scores are stored (`score_train_1y`, `score_train_2y`, `score_train_3y`) alongside which one won. A strategy that scores 0.61 / 0.58 / 0.60 is robust to history length; one that scores 0.62 / 0.11 / 0.09 is not — **and that spread is a first-class diagnostic even though it does not gate.**
+- The winning window is recorded on the experiment, so "which history length does this edge need?" becomes a queryable, aggregatable question across the whole archive.
+
+**The scheme itself remains fixed.** Rolling vs anchored vs CPCV is *not* searched over — running rolling, then anchored, and reporting whichever scored better would be a selection **outside** the trial count, invisible to the haircut. One scheme per campaign, fixed in `evaluate.py` before searching begins, hashed into `wf_config_hash` (§6.6).
+
+**An emergent property worth naming:** because `evaluate.py` is off-limits to the agent, the walk-forward configuration — scheme, the set of train windows, test length — **cannot be an iteration lever.** A3 may propose changes to `strategy.py`, but it can never propose "try a different training window," because that is part of the evaluation contract, structurally outside its reach. The best-of-three happens inside `evaluate.py` on every experiment identically, so it cannot be gamed by choosing when to apply it.
 
 ### 8.3 Combining folds — concatenate, always
 
@@ -535,16 +602,33 @@ The alternative — scoring each fold and averaging — is **not** used for the 
 
 Applied to whichever scheme is in use. **The embargo gap must be ≥ the strategy's holding period**, or trades straddle the train/test boundary and leak. This is a hard requirement, verified by test.
 
-### 8.5 What walk-forward actually tests
+### 8.5 What walk-forward actually tests — and the tuning rules ★
 
 Walk-forward validates the **fitting process**, not the strategy. Each fold re-runs parameter selection on the training window alone and checks whether the result survives the next period.
 
-A sharp consequence:
+**Decision: the agent tunes parameters.** Therefore:
 
-- **If the agent tunes parameters** → each fold must re-run that tuning from scratch, on training data only. If tuning ever touches the test window, the entire exercise is theatre.
-- **If the agent hardcodes parameters** → walk-forward is not testing a fitting procedure at all; it is testing robustness across time periods. Still useful, but it is not overfitting protection, and the trials haircut carries correspondingly more weight.
+- **Every fold re-runs the tuning from scratch, on that fold's training window only.** If tuning ever touches the test window, the entire exercise is theatre and the OOS number is fiction.
+- The tuned parameters chosen in each fold are recorded, so parameter drift across folds is inspectable — a strategy whose optimal parameters swing wildly between folds is unstable regardless of its score.
 
-`evaluate.py` must be built for whichever case applies — see §20.
+### 8.6 Does parameter tuning inflate the trial count? — a subtle but decisive distinction ★
+
+**No, provided the tuning selects on training data only.** This is worth getting exactly right, because getting it wrong makes the haircut either useless or impossible to clear.
+
+The deflated Sharpe's `N` counts **selections made on the metric being reported.** So:
+
+| Activity | Selects on | Counts toward `N_trials`? |
+|---|---|---|
+| Parameter tuning **inside a fold**, on training data | Train performance | ❌ **No.** It never saw the test window. It is part of the *procedure being evaluated*, not a selection over reported outcomes |
+| Choosing the **best of 3 train windows** by OOS score | The reported OOS score | ✅ **Yes — ×3** (§8.2) |
+| Each **A2↔A3 iteration**, where a change is made after seeing the OOS result | The reported OOS score | ✅ **Yes — +1 each** |
+| Prior experiments in the **same family**, including the same idea in another market | The reported OOS score | ✅ **Yes** |
+
+The principle: *if a human or agent looked at an out-of-sample number and then changed something, that is a trial.* If a procedure fitted itself on training data with no view of the test set, that is just the procedure.
+
+**But tuning is not free — it moves the risk somewhere else.** A large parameter grid does not inflate the haircut; it inflates the chance that each fold overfits *internally*, which shows up as **walk-forward efficiency** (§8.3) collapsing — strong in-sample, weak out-of-sample, fold after fold. That is the diagnostic to watch, not `N_trials`.
+
+**Recommended starting grid: ≤ 50 combinations per fold**, coarse rather than fine. Rationale: the compute cost is already 3× from the train-window sweep (§8.2), a coarse grid is far less prone to fitting fold-specific noise, and if `wf_efficiency` stays healthy the grid can be widened later with evidence. Widen only in response to a measured need, never by default.
 
 ---
 
@@ -916,27 +1000,39 @@ Deliberately boring. **The novelty budget is spent on the research loop, not the
 
 ## 20. Open Technical Questions
 
-**Owner: human — numeric or strategic choices**
-- [ ] Confidence level on the uncertainty haircut: `2×SE` (~97.5% one-sided) vs `1.65×SE` (~95%)
-- [ ] Numeric bar values — min trades, max OOS drawdown, breadth, complexity cap
-- [ ] Which train window (1/2/3 years) for the first campaign
-- [ ] **Does the agent tune parameters per fold, or write fixed-parameter strategies?** Determines what walk-forward tests and how `evaluate.py` is built (§8.5)
+**Resolved 2026-07-28**
+- [x] ~~Confidence level on the haircut~~ — **`1.65×SE` (~95% one-sided)**
+- [x] ~~Bar values~~ — **min score 0.50 · max OOS DD 15% (20% crypto) · min trades 100**
+- [x] ~~Train window~~ — **all three (1/2/3 yr) evaluated, best reported, `N_trials` ×3** (§8.2)
+- [x] ~~Does the agent tune parameters?~~ — **yes; train-only inside each fold, and it does *not* inflate `N_trials`** (§8.6)
+- [x] ~~Trial-counting scope~~ — **per family, per §8.6's table**
+
+**Owner: human — still open**
+- [ ] **Survivorship handling for NIFTY-50** — point-in-time index membership, trade the index instead, or accept and document the bias. Blocks trustworthy equity results (§20.1)
+- [ ] How is **breadth** measured — instrument count, % of universe profitable, or something else? Needed before it can carry a number
+- [ ] How is **complexity** measured — operator count, free parameters, DAG depth? Needed for the tertiary criterion
 - [ ] Vault composition — which years, instruments or markets are locked, and the per-family peek budget
+- [ ] Broker selection, and whether paper trading is an internal simulator or a broker API
 
 **Design questions**
 - [ ] Autocorrelation correction — required from the start, or only once overlapping-position strategies appear?
 - [ ] Minimum fold count before a score is considered meaningful
 - [ ] Which Monte Carlo variant is canonical (trade-order shuffle, block bootstrap, synthetic path generation)?
-- [ ] Trial-counting scope for deflated Sharpe — per strategy, per family, or global?
-- [ ] Null-world generator: which null models, and how many replications for a stable FDR estimate?
+- [ ] Null-world generator: which null models, how many replications, and what counts as a "discovery"?
 - [ ] Near-duplicate spec detection: exact hash only, or embedding-similarity threshold?
-- [ ] How is `evaluate.py` isolated in practice — separate process, container, or file permissions?
+- [ ] **How is `evaluate.py` isolated in practice** — separate process, container, or Unix file permissions under a different user? The design requires "cannot read"; the mechanism is unchosen
 - [ ] How is the operator library versioned against in-flight experiments?
 - [ ] Vector index choice for v1
-- [ ] Chunk size / section detection for documents with poor structural markup (scanned PDFs, plain-text posts)
+- [ ] Chunk size / section detection for documents with poor structural markup
 - [ ] Does the Librarian run continuously or in scheduled batches, and how is its compute budget capped?
-- [ ] At what branch count does one-branch-per-strategy need a lighter ref namespace (tags, `refs/experiments/*`)? Millions of branches stays cheap for git itself, but browsing tools may not cope
-- [ ] Paper trading: internal simulator vs broker paper API, per market?
+- [ ] At what branch count does one-branch-per-strategy need a lighter ref namespace?
+- [ ] Sub-minute fidelity — at what timeframe do we stop trusting bar-based fills entirely (§6.4)?
+
+### 20.1 Known bias, currently unmitigated ⚠️
+
+**NIFTY-50 survivorship.** The universe is the NIFTY-50 and no delisted-stock or point-in-time membership dataset exists yet. Backtesting today's constituents over 2000–2025 implicitly assumes foreknowledge of which companies would still be index-worthy in 2026 — index membership turns over roughly 2–5 names per year, and every dropped company is invisible.
+
+This inflates every Indian equity backtest, and it is precisely the class of self-deception P0's survivorship check and the null-world calibration exist to prevent. **Until resolved, Indian equity results must be treated as optimistic and must not be promoted to live capital.** Index-level research (NIFTY futures/ETF) is unaffected and can proceed.
 
 ---
 
@@ -949,3 +1045,4 @@ Deliberately boring. **The novelty budget is spent on the research loop, not the
 | 2026-07-27 | Walk-forward resolved — rolling scheme, 1-year test windows, concatenated folds, scheme selection identified as a hidden multiple-testing channel. Librarian formalised. |
 | 2026-07-28 | Train window fixed as configurable 1/2/3 years with test always 1 year, folded into `wf_config_hash`. Clearing the bar became an immediate stop. Git branching and merge convention added. |
 | 2026-07-28 | **Full rewrite for clarity and consistency.** Collapsed the patched §2A/§4A/§4B/§8A numbering into sequential sections 1–20; merged all superseded rules into their final form; removed duplicated material between the honest score, walk-forward and validation sections; consolidated the changelog. No decisions changed in this pass. |
+| 2026-07-28 | **Design decisions locked in.** `z` = 1.65; bar values set (min score 0.50, max DD 15% / 20% crypto, min trades 100). Walk-forward now evaluates **all three train windows and reports the best**, with `N_trials` ×3 so the deflated Sharpe absorbs the selection (§8.2). Parameter tuning enabled, with §8.6 defining precisely what does and does not count as a trial — train-only tuning does not inflate the haircut, but raises internal fold overfitting instead. Cost models re-keyed on `(market, asset_class)` with NSE delivery costs derived (§6.3a). Timeframe range set to 1 second–1 month with an explicit fidelity warning below 1 minute. Added §4.5 continuous operation and the idle-by-design vs idle-by-bug distinction, and §20.1 recording the unmitigated NIFTY-50 survivorship bias. |

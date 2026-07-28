@@ -235,20 +235,26 @@ One row per phase run of `evaluate.py`.
 | bar_result | TEXT | `pass` \| `fail`. **On `fail`, no score is computed at all** |
 | bar_failed_on | TEXT | `min_trades` \| `max_drawdown` \| `breadth` \| `cost_stress` \| `complexity` |
 | **★ The honest score (TRD §7)** | | |
-| **honest_score** | REAL | `sr_oos − z·se_sr − trials_haircut`. **The single float that drives keep/discard** |
-| sr_oos | REAL | Sharpe on the concatenated purged/embargoed walk-forward series, at 2× costs |
+| **honest_score** | REAL | `sr_oos − z·se_sr − trials_haircut`, taken as the **max across the three train windows** (TRD §8.2). **The single float that drives keep/discard** |
+| sr_oos | REAL | Sharpe on the concatenated purged/embargoed walk-forward series, at 2× costs — for the winning window |
 | se_sr | REAL | Standard error including skew and kurtosis terms |
-| z_multiplier | REAL | 2.0 (~97.5% one-sided) or 1.65 (~95%) — recorded, since changing it changes comparability |
+| z_multiplier | REAL | **1.65** (~95% one-sided). Recorded, since changing it changes comparability |
 | trials_haircut | REAL | `SR*(N_trials)` — expected best-under-null for this family |
-| n_trials_used | INTEGER | The family trial count fed into the haircut |
+| n_trials_used | INTEGER | The family trial count fed into the haircut. **Includes the ×3 from best-of-three-windows** (TRD §8.6) |
+| **Best-of-three train windows (TRD §8.2)** | | |
+| score_train_1y, score_train_2y, score_train_3y | REAL | All three scores, always stored |
+| **winning_train_years** | INTEGER | Which window produced `honest_score` — makes *"how much history does this edge need?"* queryable across the archive |
+| train_window_spread | REAL | `max − min` across the three. **A diagnostic, not a gate:** 0.61/0.58/0.60 is robust to history length; 0.62/0.11/0.09 is not |
 | oos_skew, oos_kurtosis, oos_n_obs | REAL/INT | Inputs to `se_sr`, stored for audit |
 | autocorr_adjusted | INTEGER (bool) | Whether Lo's correction was applied |
 | complexity_count | INTEGER | Rules / free parameters — the tertiary criterion |
 | **Walk-forward configuration (TRD §8)** | | |
-| wf_scheme | TEXT | `rolling` \| `anchored` \| `holdout` \| `cpcv`. Part of `wf_config_hash` |
-| wf_train_years | INTEGER | **1, 2, or 3.** Chosen once per family before the campaign, never swept for a better score |
+| wf_scheme | TEXT | `rolling` \| `anchored` \| `holdout` \| `cpcv`. **Fixed per campaign, never searched over** — selecting a scheme by result would be a leak outside the trial count (TRD §8.2) |
+| wf_train_years_evaluated | TEXT (JSON) | Always `[1, 2, 3]` — all three are run on every experiment |
 | wf_test_years | INTEGER | **Always 1.** Fixed regardless of train length — it represents re-fit cadence, not a search parameter |
-| wf_train_bars, wf_test_bars | INTEGER | Bar-count equivalents, resolved per timeframe profile |
+| wf_train_bars, wf_test_bars | INTEGER | Bar-count equivalents for the winning window, resolved per timeframe profile |
+| params_grid_size | INTEGER | Parameter combinations tried per fold. **Does not inflate `n_trials_used`** — tuning selects on train only (TRD §8.6) — but a large grid raises internal fold overfitting, visible in `wf_efficiency` |
+| tuned_params_per_fold | TEXT (JSON) | Chosen parameters in each fold. Wild swings between folds indicate instability regardless of score |
 | embargo_bars, holding_period_bars | INTEGER | **Embargo must be ≥ holding period** or trades leak across the split |
 | n_folds | INTEGER | |
 | folds_profitable | INTEGER | How many test windows made money — the consistency diagnostic concatenation hides |
@@ -620,9 +626,12 @@ The satisficing bar (PRD §10.2), recorded **before** a campaign begins so it ca
 |---|---|---|
 | id, uid | | |
 | campaign_label | TEXT | |
-| min_score, max_drawdown, min_trades, min_breadth, max_complexity | REAL/INTEGER | |
-| cost_stress_multiple | REAL | Default 2.0 |
-| z_multiplier | REAL | Default 2.0 |
+| min_score | REAL | **0.50** |
+| max_drawdown | REAL | **0.15** — **0.20 for crypto** (per-market override) |
+| min_trades | INTEGER | **100** |
+| min_breadth, max_complexity | REAL/INTEGER | Definitions still open (TRD §20) |
+| cost_stress_multiple | REAL | **2.0** |
+| z_multiplier | REAL | **1.65** (~95% one-sided) |
 | **plateau_patience** | INTEGER | Consecutive **bar failures** before a PLATEAU verdict — never a score comparison, since clearing the bar stops the loop immediately. **Default 5** |
 | **hard_iteration_cap** | INTEGER | Outer backstop independent of plateau detection. **Default ~20–25** |
 | wf_scheme, wf_train_years, wf_test_years | TEXT/INTEGER | Fixed per campaign (TRD §8.2) |
@@ -665,11 +674,13 @@ Immutable dataset versions. An experiment references a snapshot, never "the file
 |---|---|
 | id, uid | |
 | market, timeframe | TEXT |
+| asset_class | TEXT | `cash_equity` \| `etf` \| `future` \| `cfd` \| `spot_crypto` \| `perpetual` — keys the cost model with `market` (TRD §6.3a) |
 | period_start, period_end | TEXT |
 | instrument_count, bar_count | INTEGER |
 | storage_path, content_hash | TEXT |
 | adjustment_method | TEXT |
-| survivorship_handled | INTEGER (bool) |
+| **survivorship_handled** | INTEGER (bool) | ⚠️ Currently **false** for Indian equities — no point-in-time NIFTY-50 membership exists (TRD §20.1). Snapshots with this false must not back a live promotion |
+| point_in_time_membership | INTEGER (bool) | Whether index constituents are historically accurate rather than today's list projected backwards |
 | in_vault | INTEGER (bool) — if true, the research loop has no read path (TRD §14.2) |
 | validation_status, validation_report | TEXT |
 | created_at | TEXT |
@@ -820,3 +831,4 @@ Each must be a simple indexed query, not a scan. These drove the design.
 | 2026-07-28 | Added `wf_config_hash` to provenance and the comparability index. Added the Librarian's output schema — `document_chunks`, and `external_knowledge` as one row per idea with `evidence_tier` and traceability back to exact passages. Added the git branch/merge columns. |
 | 2026-07-28 | Removed `promotions.correlation_with_live` (portfolio fit is out of scope for A4) and `acceptance_bars.plateau_margin_factor` (clearing the bar is an immediate stop, so score-to-score comparison no longer exists). |
 | 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential numbering (§0–§16) replacing the patched §0A/§15 scheme; internal and external knowledge separated into clearly-labelled trust tiers; all cross-references updated to the renumbered TRD, PRD and App-Flow; `in_vault` added to `data_snapshots`; changelog consolidated. No schema decisions changed in this pass. |
+| 2026-07-28 | **Design decisions locked in.** `evaluations` now stores all three train-window scores plus the winner and the spread; `n_trials_used` documented as including the ×3 selection factor; `params_grid_size` and `tuned_params_per_fold` added. `acceptance_bars` carries the concrete pre-registered values. `data_snapshots` gained `asset_class` and `point_in_time_membership`, and `survivorship_handled` now carries the warning that it is currently false for Indian equities. |

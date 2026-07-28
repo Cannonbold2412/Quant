@@ -78,7 +78,7 @@ Stages 1–13 remain the destination. None of them begin until Stage 0 has run f
 
 | # | Task | Notes |
 |---|---|---|
-| **0.1** | **Implement the honest score** — `SR_oos − 2·SE(SR) − SR*(N_trials)` (TRD §7) | Rolling walk-forward, test window fixed at 1 year, train window 1/2/3 years chosen before the campaign (default 1), purged, embargo ≥ holding period, 2× costs. All folds **concatenated** into one OOS series. Returns one float |
+| **0.1** | **Implement the honest score** — `SR_oos − 1.65·SE(SR) − SR*(N_trials)` (TRD §7) | Rolling walk-forward, test window fixed at 1 year, **all three train windows (1/2/3 yr) evaluated with the best reported and `N_trials` ×3**, purged, embargo ≥ holding period, 2× costs, per-fold parameter tuning on training data only. All folds **concatenated** into one OOS series. Returns one float |
 | **0.2** | **Build `evaluate.py`** around it, with the **hard bar enforced inside it** | Structurally isolated: the agent can neither read nor edit it. The bar gates before any score is computed |
 | **0.3** | **Run the null-world test** (TRD §14.3) | Prove the scorer does not invent discoveries in pure noise. Fix and re-run until FDR is low |
 | **0.4** | **Build the vault** (TRD §14.2) | Lock the holdout *before* the loop ever touches real data |
@@ -122,7 +122,9 @@ Plus three SQLite tables (`strategies`, `experiments`, `evaluations`) with `expe
 | SQLite schema | Per `Backend-Schema.md`, with migrations from day one |
 | DB access layer | Thin repository pattern; **no SQLite-specific SQL** (TRD §19) |
 | `MarketProfile` / `TimeframeProfile` loaders | YAML → validated object → content hash |
-| First profiles | `nse_equity` × `{daily, 15min}` — the market we know best |
+| **Cost models keyed on `(market, asset_class)`** | Not market alone — NSE charges cash equity, ETFs and futures differently (TRD §6.3a). Asset classes: cash equity, ETF, future, CFD, spot crypto, perpetual |
+| Timeframe range | Profiles must span **1 second → 1 month**; no hardcoded annualisation anywhere |
+| First profiles | Market/timeframe is **not** fixed to one pilot — all six markets are in scope from the start, so profile loading must be generic before any single profile is filled in |
 | Data snapshot manager | Ingest CSV/Parquet → immutable versioned snapshot + content hash |
 | Per-market data validators | Run **at ingest**, not at experiment time |
 | Structured logging | Correlation IDs threading `strategy → experiment → job` |
@@ -435,6 +437,9 @@ Only after the loop is proven and producing candidates.
 | **Token cost outruns value** | 🟠 High | Budgets with hard back-pressure; cost-per-discovery on the Laboratory screen |
 | **Human rubber-stamps approvals** | 🟠 High | Case-against-first UI; mandatory typed justification |
 | **Scaling requires a rewrite** | 🟡 Medium | No SQLite-specific SQL; lease-based queue from day one |
+| **NIFTY-50 survivorship bias** ⚠️ | 🔴 Critical, **currently unmitigated** | No point-in-time index membership exists. Backtesting today's constituents from 2000 assumes foreknowledge of index survival. **Indian equity results must not reach live capital until resolved** (TRD §20.1). Index-level research is unaffected |
+| **Cost model sourced from public rates, not contract notes** | 🟠 High | ~22 bps statutory on NSE delivery is a *starting default*. Re-derive from a real broker contract note before live capital — stale rates are a silent systematic bias in every backtest |
+| **Sub-minute backtest fidelity** | 🟠 High | Below ~1 minute, fills depend on queue position and latency that bar data cannot represent. Supported ≠ trustworthy (TRD §6.4) |
 | **Data quality corrupts everything silently** | 🟡 Medium | Validators at ingest; immutable hashed snapshots |
 
 ---
@@ -503,3 +508,4 @@ Not in the v1 build:
 | 2026-07-28 | Added Stage 4a (Observability), pulled out of the Stage 12 dashboard and placed immediately after the job queue. Rewrote Stage 10 around the Librarian. |
 | 2026-07-28 | Stage 6 gained the bar-clear short-circuit and lost A3's `promote` verdict; Stage 8's A4 lost the portfolio-correlation deliverable; Stage 5 and 9 gained the git branch and merge-on-approve steps. |
 | 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential section numbering; Stage 0 expanded with the parallelisation step in its proper order; all cross-references updated to the renumbered TRD, PRD and App-Flow; changelog consolidated. No plan decisions changed in this pass. |
+| 2026-07-28 | **Design decisions locked in.** Stage 0.1 now specifies best-of-three train windows with the ×3 trial count and per-fold tuning. Stage 1 gained per-`(market, asset_class)` cost models and the 1s–1month profile range, and no longer pilots a single market. Added three risks: NIFTY-50 survivorship (critical, unmitigated), cost models sourced from public rates rather than contract notes, and sub-minute backtest fidelity. |

@@ -353,16 +353,22 @@ A 20% drawdown may be perfectly acceptable if validation showed a 15–25% range
 
 ## 10. The Search Objective
 
-### 10.1 Two phases, in strict order
+### 10.1 The lab never stops — the objective evolves, the search does not pause ★
 
-The objective changes **exactly once** in the life of the laboratory.
+**AQRL runs continuously, 24/7, and does not stop on success.** Clearing the bar stops *that strategy's* iteration (§9.2); it does not stop the campaign or the laboratory. The lab keeps discovering alphas and feeding them into paper trading as a **continuous pipeline**, with many strategies at different lifecycle stages simultaneously.
 
-| Phase | Objective | When |
+What changes over time is the *objective A1 optimises for*, not whether the search is running:
+
+| Phase | Objective | Active when |
 |---|---|---|
-| **A** | *"Find one strategy that is tradeable, risk-controlled and robust."* | Now, until the first strategy completes paper trading |
-| **B** | *"Find a good strategy that makes money when the ones I already run don't."* | After Phase A completes |
+| **A** | *"Find strategies that are tradeable, risk-controlled and robust."* | Always. Never switched off |
+| **B** | *"Find strategies that make money when the ones already deployed don't."* | Layers on top of A, once strategies are live and their return series exist to measure against |
 
-You cannot build a portfolio from zero strategies. **Phase A is the v1 KPI** (§4.1); nothing about Phase B replaces it.
+You cannot build a portfolio from zero strategies, so Phase A comes first in *time* — but it is never *replaced*. Phase B is an additional lens applied to candidates that already cleared Phase A's bar, not a different bar.
+
+**The v1 KPI (§4.1) is the first strategy discovered this way**; the lab continuing past it is the point, not a deviation.
+
+**Idle is not the same as throttled.** No agent should sit idle because nothing was queued — that is a scheduling bug. Agents *may* idle because a budget cap, the autonomy ratchet, or a vault budget was reached; those are the safety mechanisms working. TRD §4.5 makes the distinction operational.
 
 ### 10.2 Satisficing, not maximising ★
 
@@ -377,14 +383,14 @@ The bar is decided in advance and lives in **two places with different jobs** (T
 - **`program.md`** — states the bar so the agent knows the target
 - **`evaluate.py`** — *enforces* it, so the agent cannot grade its own homework
 
-| The bar (pass/fail, pre-registered) |
-|---|
-| Minimum out-of-sample score (the honest score, TRD §7) |
-| Maximum out-of-sample drawdown — survivable financially and emotionally |
-| Minimum trade count |
-| Minimum breadth across instruments |
-| Maximum complexity (rules / free parameters) |
-| Must survive costs at 2× the assumed level |
+| The bar (pass/fail, pre-registered) | Value |
+|---|---|
+| Minimum honest score (TRD §7) | **0.50** |
+| Maximum out-of-sample drawdown | **15%** — **20% for crypto** |
+| Minimum trade count | **100** |
+| Minimum breadth across instruments | *definition still open* |
+| Maximum complexity | *definition still open* |
+| Must survive costs at 2× the assumed level | required |
 
 Failing any item returns `discard` with **no score computed**. The bar gates; the score ranks.
 
@@ -445,16 +451,39 @@ The test is not whether it *feels* different — it is whether the return series
 
 ## 12. Scope — Markets & Data
 
-| Asset class | Coverage | Notes |
-|---|---|---|
-| Indian Equities | 2000–present | **Primary focus**; existing JMA+ATR work lives here |
-| US Equities | 2000–present | Survivorship-bias handling required |
-| US Indices | 2000–present | |
-| Crypto | Exchange inception–present | 24/7, funding rates |
-| Commodities | 2000–present | Contract-roll handling |
-| Forex | 2000–present | Spread-driven costs |
+### 12.1 Markets and instruments
 
-A prior prototype (Drive notebook ingestion, indicator extraction, a backtest engine) exists in git history at `d08e812` and is mapped to the stages that reuse it in Implementation_Plan §19.
+| Market | Instruments traded | Notes |
+|---|---|---|
+| **Indian Equities** | Cash equity | **Universe: NIFTY-50 constituents only.** ⚠️ Survivorship unresolved — see §12.3 |
+| **Indian Indices** | Futures, ETFs | No survivorship problem — index-level |
+| **US Indices** | CFDs, ETFs | |
+| **Forex** | CFDs | Spread-driven costs |
+| **Commodities** | Futures, CFDs | Contract-roll handling required |
+| **Crypto** | Spot, perpetuals | 24/7; funding rates on perps; 20% drawdown limit vs 15% elsewhere |
+
+Cash indices are not directly tradeable — every index exposure is via a future, ETF or CFD, and the **cost model is keyed on `(market, asset_class)`**, not market alone (TRD §6.3a).
+
+### 12.2 Timeframes
+
+**1 second to 1 month.** The architecture must span the full range; every timeframe-dependent value is profile-driven (TRD §6.4). Below ~1 minute, backtest fidelity degrades because fills depend on queue position and latency that bar data cannot represent — supported, but not trustworthy without live confirmation.
+
+### 12.3 Capital
+
+| Stage | Amount |
+|---|---|
+| Paper trading | Unconstrained — any notional |
+| **Initial live** | **₹10 lakh** (~US$12,000) |
+
+At ₹10 lakh, a full 50-stock basket is thin — roughly ₹20,000 per position. Concentrated baskets (10–20 names) or index instruments are the more realistic starting shape. Capacity is not a binding constraint at this size, but **transaction costs are**: at ~30 bps round trip (TRD §6.3a), small positions are disproportionately eroded.
+
+### 12.4 Known data gap ⚠️
+
+**No delisted-stock or point-in-time NIFTY-50 membership dataset exists.** This is an unresolved survivorship bias on all Indian equity research — see TRD §20.1. Index-level work is unaffected.
+
+Market data is supplied manually as offline Parquet. Seed knowledge for both the internal and external stores is hand-written by the Research Director, which resolves the cold-start problem for A1.
+
+A prior prototype exists in git history at `d08e812`, mapped to the stages that reuse it in Implementation_Plan §19.
 
 ---
 
@@ -521,3 +550,4 @@ Owner marked where the decision is the human's to make.
 | 2026-07-27 | Honest score resolved (TRD §7). Added the Librarian as a sixth role outside the loop, and the two-trust-tier knowledge distinction. |
 | 2026-07-28 | Clearing the acceptance bar became an immediate, unconditional stop. Plateau became purely a below-the-bar concept, always routing to A5. Portfolio-correlation checks removed from A4 and added to non-goals. |
 | 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential section numbering throughout; all superseded rules resolved into their final form rather than layered as amendments; internal knowledge documented as two layers (automatic raw record + A5 synthesis); changelog consolidated. No decisions changed in this pass. |
+| 2026-07-28 | **Design decisions locked in.** Bar values set (min score 0.50, max DD 15% / 20% crypto, min trades 100, z = 1.65). §10.1 rewritten: the lab runs continuously and never stops on success — Phase B layers onto Phase A rather than replacing it. §12 rewritten with the final market and instrument list (Indian equities/indices, US indices, forex, commodities, crypto via CFDs, ETFs, futures, spot and perpetuals), the 1s–1month timeframe range, ₹10 lakh initial live capital, and the NIFTY-50 survivorship gap. |
