@@ -1,0 +1,33 @@
+# NSE equity ETF — PLACEHOLDER.
+#
+# ETFs are charged differently from cash equity (notably a lower, sell-side-only
+# STT), but the exact schedule has not been derived from a contract note. Rather
+# than fabricate precision, this carries deliberately conservative figures and
+# `is_placeholder: true`, so anything scored against it is visibly provisional.
+#
+# Implementation_Plan §21 lists per-market cost derivation as still open.
+
+market: nse_equity
+asset_class: etf
+version: "0.1.0"
+currency: INR
+
+# Conservative: assumes the cash-equity sell-side rate rather than the lower
+# ETF rate, so the model errs toward over-costing.
+stt_buy_bps: 0.0
+stt_sell_bps: 10.0
+stamp_duty_buy_bps: 1.5
+stamp_duty_sell_bps: 0.0
+exchange_txn_bps: 0.297
+sebi_turnover_bps: 0.01
+gst_rate: 0.18
+brokerage_bps: 0.0
+# Wider than cash equity: ETF order books are thinner outside the largest funds.
+slippage_bps: 5.0
+flat_charge_sell: 15.0
+reference_trade_size: 100000.0
+
+source: "Not derived — conservative placeholder pending a broker contract note"
+derived_at: null
+requires_contract_note_verification: true
+is_placeholder: true

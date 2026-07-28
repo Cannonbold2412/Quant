@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aqrl"
+version = "0.1.0"
+description = "AQRL — Autonomous Quantitative Research Laboratory"
+requires-python = ">=3.11"
+dependencies = [
+    "polars>=1.0",
+    "pyarrow>=15",
+    "duckdb>=1.0",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "pyyaml>=6",
+    # nanoAQRL (Stage 0) — the scoring harness still runs on NumPy/pandas/SciPy.
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+aqrl = "aqrl.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["aqrl", "nanoaqrl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "nanoaqrl/tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint.per-file-ignores]
+# nanoAQRL executes the committed strategy source by design (TRD §2.1). It is
+# not a security sandbox and does not claim to be — real agent isolation is
+# Stage 5's job. Flagging it here every run adds noise, not safety.
+"nanoaqrl/evaluate.py" = ["S102"]
+# The P0 look-ahead scanner keeps its branches explicit rather than collapsing
+# them into a precedence-dependent boolean chain. Readability wins in the one
+# place where a misread condition silently stops catching leaks.
+"nanoaqrl/_lib/backtest.py" = ["SIM114"]
+# Stage 0's tests, left as written.
+"nanoaqrl/tests/*" = ["RUF059", "SIM117"]

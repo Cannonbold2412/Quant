@@ -1,0 +1,27 @@
+# 1-hour bars.
+#
+# Note the NSE session is 6.25 hours, not a whole number, so a year is 1,575
+# bars rather than 252 x 6. The derivation handles the fraction; a hardcoded
+# constant would not.
+
+name: 1hour
+version: "1.0.0"
+description: One bar per hour.
+
+bar_seconds: 3600
+fill_model: next_bar_open
+cost_stress_multipliers: [1.0, 2.0]
+
+walk_forward:
+  train_years: [1, 2, 3]
+  test_years: 1
+  # 252 sessions x 6.25 bars.
+  min_train_bars: 1575
+  min_test_bars: 1575
+
+min_trades: 100
+overnight_positions: true
+fidelity_warning: null
+
+periods_per_year_assertions:
+  nse_equity: 1575

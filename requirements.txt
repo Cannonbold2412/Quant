@@ -1,4 +1,6 @@
-numpy
-pandas
-scipy
-pytest
+# Dependencies are declared in pyproject.toml as of Stage 1. This file remains
+# as a convenience entry point.
+#
+#   pip install -r requirements.txt   # runtime
+#   pip install -e ".[dev]"           # runtime + pytest/ruff
+-e .

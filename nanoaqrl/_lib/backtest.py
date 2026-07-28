@@ -17,8 +17,8 @@ below.
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -62,6 +62,10 @@ class _LookaheadVisitor(ast.NodeVisitor):
 
         if name == "shift" and node.args:
             arg = node.args[0]
+            # Kept as two explicit branches. Collapsing them into one
+            # `A and B or C and D` chain relies on operator precedence, and this
+            # is the look-ahead scanner — the one place in the codebase where a
+            # subtly misread condition silently stops catching leaks.
             if isinstance(arg, ast.UnaryOp) and isinstance(arg.op, ast.USub):
                 self.violations.append(f"line {node.lineno}: `shift(-n)` is forbidden anywhere")
             elif isinstance(arg, ast.Constant) and isinstance(arg.value, (int, float)) and arg.value < 0:
@@ -81,7 +85,7 @@ class _LookaheadVisitor(ast.NodeVisitor):
         if name in _UNROLLED_STAT_METHODS and isinstance(func, ast.Attribute):
             receiver = func.value
             chained_on_window = isinstance(receiver, ast.Call) and (
-                (isinstance(receiver.func, ast.Attribute) and receiver.func.attr in ("rolling", "expanding", "ewm"))
+                isinstance(receiver.func, ast.Attribute) and receiver.func.attr in ("rolling", "expanding", "ewm")
             )
             if not chained_on_window:
                 self.violations.append(

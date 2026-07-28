@@ -1,7 +1,6 @@
 """Known-answer tests (Implementation_Plan §5.2): cases whose correct answer
 is known in advance, used to validate the validator itself before any of its
 verdicts are trusted."""
-import pandas as pd
 import pytest
 
 from nanoaqrl._lib.backtest import empirical_leakage_scan, static_lookahead_scan

@@ -1,6 +1,6 @@
 # UI/UX Brief — AQRL
 
-> **Status:** Design complete for v1. No implementation started.
+> **Status:** Design complete for v1. **Stages 0-1 built** (`nanoaqrl/`, `aqrl/`); Stages 2-13 not started.
 > **Last updated:** 2026-07-28
 > **Companion docs:** `PRD.md` (gates & criteria) · `App-Flow.md` (what the human sees and when) · `Backend-Schema.md` (what backs each view)
 

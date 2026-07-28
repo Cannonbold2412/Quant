@@ -1,0 +1,23 @@
+# 1-minute bars. The fastest timeframe whose fills are broadly defensible.
+
+name: 1min
+version: "1.0.0"
+description: One bar per minute.
+
+bar_seconds: 60
+fill_model: next_bar_open
+cost_stress_multipliers: [1.0, 2.0]
+
+walk_forward:
+  train_years: [1, 2, 3]
+  test_years: 1
+  # 252 sessions x 375 minutes.
+  min_train_bars: 94500
+  min_test_bars: 94500
+
+min_trades: 100
+overnight_positions: false
+fidelity_warning: null
+
+periods_per_year_assertions:
+  nse_equity: 94500

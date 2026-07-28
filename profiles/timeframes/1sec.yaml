@@ -1,0 +1,38 @@
+# 1-second bars — the fast end of the supported range.
+#
+# Supported is NOT the same as trustworthy. Below roughly 1 minute, fills depend
+# on queue position, latency and order-book depth that bar data cannot
+# represent. Results here are research artifacts until validated by real
+# paper-trading fills (TRD §13.2).
+
+name: 1sec
+version: "1.0.0"
+description: One bar per second. Storage-heavy and fidelity-limited.
+
+bar_seconds: 1
+# Not next_open: at this resolution the fill assumption IS the result.
+fill_model: queue_position
+
+# Costs and spread dominate entirely at 1 second, so the stress ladder goes
+# higher than the daily default.
+cost_stress_multipliers: [1.0, 2.0, 3.0]
+
+walk_forward:
+  train_years: [1, 2, 3]
+  test_years: 1
+  # ~1 year at 252 sessions x 22,500 seconds.
+  min_train_bars: 5670000
+  min_test_bars: 5670000
+
+min_trades: 100
+overnight_positions: false
+fidelity_warning: >
+  Sub-minute fidelity is not trustworthy on bar data. Fills depend on queue
+  position and latency this model cannot represent; carry much heavier slippage
+  assumptions and treat any result as a research artifact until real fills
+  confirm it. Storage note: 1-second bars for 50 instruments across 25 years is
+  on the order of terabytes, so scope fast timeframes to shorter histories or
+  fewer instruments.
+
+periods_per_year_assertions:
+  nse_equity: 5670000

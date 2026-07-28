@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import subprocess
-import sys
 import types
 from pathlib import Path
 
@@ -117,6 +116,11 @@ def score_commit(commit: str, family: str, name: str, description: str, conn=Non
     experiment_id = db.insert_experiment(
         conn, strategy_id, iteration, code_commit=commit, wf_config_hash=wf_hash,
         eval_engine_version=EVAL_ENGINE_VERSION, random_seed=iteration,
+        # Stage 1 makes the profile hashes real, so the provenance stamp
+        # TRD §6.6 requires is now complete rather than partial.
+        market_profile_hash=data.MARKET_PROFILE_HASH,
+        timeframe_profile_hash=data.TIMEFRAME_PROFILE_HASH,
+        cost_model_hash=data.COST_MODEL_HASH,
     )
 
     try:

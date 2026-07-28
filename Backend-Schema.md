@@ -1,6 +1,6 @@
 # Backend Schema — AQRL
 
-> **Status:** Design complete for v1. No implementation started.
+> **Status:** Design complete for v1. **Implemented in `aqrl/db/migrations/`** as of Stage 1 — every table below exists, most still empty.
 > **Last updated:** 2026-07-28
 > **Target:** SQLite for v1, PostgreSQL-compatible by design. No SQLite-only features.
 > **Companion docs:** `TRD.md` (architecture) · `App-Flow.md` (who writes what, when)
