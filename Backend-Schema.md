@@ -1,46 +1,47 @@
 # Backend Schema — AQRL
 
-> **Status:** Living document. Updated after every design session.
-> **Last updated:** 2026-07-27
+> **Status:** Design complete for v1. No implementation started.
+> **Last updated:** 2026-07-28
 > **Target:** SQLite for v1, PostgreSQL-compatible by design. No SQLite-only features.
+> **Companion docs:** `TRD.md` (architecture) · `App-Flow.md` (who writes what, when)
 
 ---
 
 ## 0. Conventions
 
 - Every table has `id INTEGER PRIMARY KEY` plus a `uid TEXT UNIQUE` (UUID) for cross-system references.
-- Timestamps are `TEXT` ISO-8601 UTC (`created_at`, `updated_at`). UTC always; local time is a display concern.
+- Timestamps are `TEXT` ISO-8601 **UTC**. Local time is a display concern only.
 - JSON blobs are `TEXT` with a documented shape. Anything queried or filtered gets a real column.
-- Enums are `TEXT` with a `CHECK` constraint, listed in §11.
-- Nothing is hard-deleted. Use status transitions and `archived_at`.
-- Money is stored as integer minor units with an explicit `currency`. Never float.
+- Enums are `TEXT` with a `CHECK` constraint, listed in §13.
+- **Nothing is hard-deleted.** Use status transitions and `archived_at`.
+- Money is stored as integer minor units with an explicit `currency`. **Never float.**
 - Foreign keys are enforced.
 
 ---
 
-## 0A. What to build first ★
+## 1. What to Build First ★
 
 **This document describes the destination, not the starting point.** Building 15 tables before running one experiment is designing the archive before doing the science.
 
-**v1 (nanoAQRL, TRD §2A) uses three tables:**
+**v1 (nanoAQRL, TRD §2) uses three tables:**
 
 | Table | Why on day one |
 |---|---|
 | `strategies` | The research thread, carrying `family` — required for trial counting |
-| `experiments` | One row per attempt: provenance, `code_commit`, `status` |
+| `experiments` | One row per attempt: provenance, `code_commit`, status |
 | `evaluations` | The metrics produced by `evaluate.py` |
 
-Add `jobs` when the scheduler arrives. Add `vault_access_log` and `null_world_runs` (§15) alongside the integrity work, which precedes any real-data result. Everything else is added on **felt need** — when a question arrives that the existing tables cannot answer. The designs already exist here, so later addition is cheap.
+Add `jobs` when the scheduler arrives. Add the integrity tables (§11) alongside the integrity work, which precedes any real-data result. Everything else is added on **felt need** — when a question arrives that the existing tables cannot answer. The designs already exist here, so later addition is cheap.
 
-### 0A.1 Code lives in git, not in the database
+### 1.1 Code lives in git, not in the database
 
 Strategy code is **never** stored as a blob. git holds the code, diffs and history; SQLite holds metadata and metrics; `experiments.code_commit` links them. Storing code in the database loses diffs, blame, and the ability to check out and re-run a past experiment.
 
-The reference project (PRD §14) uses git as the *entire* experiment database. We diverge because deflated Sharpe needs a queryable trial count — "how many attempts in this family?" cannot be answered from `git log` — and because deployment, paper trading and health state need real storage.
+The reference project uses git as the *entire* experiment database. We diverge because the deflated Sharpe needs a **queryable trial count** — *"how many attempts in this family?"* cannot be answered from `git log` — and because deployment, paper trading and health state need real storage. See TRD §5.1.
 
 ---
 
-## 1. Entity Overview
+## 2. Entity Overview
 
 ```
 research_goals
@@ -50,7 +51,8 @@ strategies ────────────► strategy_specs ────�
      │                        │
      │                        ▼
      ├──────────────► experiments ──┬──► code_versions
-     │                    │         ├──► evaluations ──► evaluation_tests
+     │                    │         ├──► evaluations ──┬──► evaluation_tests
+     │                    │         │                  └──► regime_performance
      │                    │         ├──► research_plans
      │                    │         └──► lab_notebooks
      │                    ▼
@@ -60,16 +62,17 @@ strategies ────────────► strategy_specs ────�
      │                              ├──► health_checks
      │                              └──► lifecycle_events
      ▼
-knowledge_entries ──► knowledge_edges
+knowledge_entries ──► knowledge_edges                        internal, tested
 research_questions
-external_documents ──► document_chunks ──► external_knowledge   (the Librarian's pipeline, PRD §6.2)
+external_documents ──► document_chunks ──► external_knowledge   external, untested
 
+vault_access_log · null_world_runs · acceptance_bars              integrity
 jobs · budgets · audit_log · data_snapshots · market_profiles · timeframe_profiles
 ```
 
 ---
 
-## 2. Research Direction
+## 3. Research Direction
 
 ### `research_goals`
 Top-level direction set by the human Research Director. Drives A1's hypothesis budget.
@@ -79,9 +82,9 @@ Top-level direction set by the human Research Director. Drives A1's hypothesis b
 | id, uid | | |
 | title | TEXT | "Find robust swing alpha in Indian equities" |
 | description | TEXT | |
-| market | TEXT | FK-ish → `market_profiles.name`, nullable for cross-market goals |
-| timeframe | TEXT | nullable |
-| allocation_bucket | TEXT | `incremental` \| `cross_market` \| `exploratory` — the 70/20/10 split (PRD §4.4) |
+| market | TEXT | Nullable for cross-market goals |
+| timeframe | TEXT | Nullable |
+| allocation_bucket | TEXT | `incremental` \| `cross_market` \| `exploratory` — the 70/20/10 split (PRD §4.5) |
 | priority | INTEGER | |
 | hypothesis_budget | INTEGER | Max specs A1 may generate for this goal |
 | hypotheses_used | INTEGER | |
@@ -91,7 +94,7 @@ Top-level direction set by the human Research Director. Drives A1's hypothesis b
 
 ---
 
-## 3. Strategy & Spec
+## 4. Strategy & Spec
 
 ### `strategies`
 The durable identity of a research thread. One strategy has many experiments (iterations).
@@ -100,26 +103,25 @@ The durable identity of a research thread. One strategy has many experiments (it
 |---|---|---|
 | id, uid | | |
 | name | TEXT | Human-readable |
-| family | TEXT | e.g. `jma_atr_trend` — **critical for trial-counting** (TRD §5.2) |
+| **family** | TEXT | e.g. `jma_atr_trend` — **critical for trial counting** (TRD §10.2). The same idea tried in 3 markets is 3 trials in one family, not 3 independent results |
 | goal_id | FK → research_goals | |
-| market | TEXT | |
-| timeframe | TEXT | |
-| status | TEXT | See §11.1 |
-| **git_branch** | TEXT | `strategy/<strategy_id>`. Created on the first `IMPLEMENT` job, one per strategy — never per experiment, never per family (TRD §2A.4a). **Never deleted**, including on rejection |
-| **code_path** | TEXT | Where this strategy's file lives once multiple strategies coexist, e.g. `strategies/<strategy_id>/strategy.py` — required so many strategies can be merged into one deploy branch conflict-free |
+| market, timeframe | TEXT | |
+| status | TEXT | See §13.1 |
+| **git_branch** | TEXT | `strategy/<strategy_id>`. Created on the first `IMPLEMENT` job (TRD §5.2). **Never deleted**, including on rejection — git's GC only protects commits reachable from a branch |
+| **code_path** | TEXT | `strategies/<strategy_id>/strategy.py` — its own path, so many strategies merge into one deploy branch conflict-free |
 | current_experiment_id | FK → experiments | Latest iteration |
-| best_experiment_id | FK → experiments | Best by primary score |
+| best_experiment_id | FK → experiments | The bar-clearing one, if any |
 | iteration_count | INTEGER | **Feeds the multiple-testing correction** |
 | total_trials | INTEGER | Iterations + parameter combinations swept |
-| best_score | REAL | Primary composite score |
-| plateau_counter | INTEGER | Consecutive **bar failures**, below the bar (App-Flow §5.1a). Only ever increments — clearing the bar is an immediate stop (§5.0), so this counter never has an "improvement" case to reset against |
+| best_score | REAL | `honest_score` of the passing experiment; null if never cleared |
+| plateau_counter | INTEGER | Consecutive **bar failures** (App-Flow §6.3). Only ever increments — clearing the bar stops the loop immediately, so there is no "improvement" case to reset against |
 | tokens_spent, compute_seconds | INTEGER | Cost accounting |
-| quarantined | INTEGER (bool) | Poison-pill protection (TRD §3.3) |
+| quarantined | INTEGER (bool) | Poison-pill protection (TRD §4.3) |
 | quarantine_reason | TEXT | |
 | created_at, updated_at, archived_at | | |
 
 ### `strategy_specs`
-A1's output. Immutable once created; a revised spec is a new row.
+A1's output. **Immutable** once created; a revised spec is a new row.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -130,19 +132,17 @@ A1's output. Immutable once created; a revised spec is a new row.
 | rationale | TEXT | Why A1 believes this — the "why did you do this?" record |
 | entry_logic, exit_logic, filter_logic, risk_logic | TEXT (JSON) | Operator compositions |
 | universe | TEXT (JSON) | Instrument selection rules |
-| parameters | TEXT (JSON) | Parameter names, defaults, and **allowed ranges** |
-| spec_hash | TEXT | **Canonical hash of the operator DAG — duplicate detection (TRD §6.1)** |
-| source_external_knowledge_ids | TEXT (JSON) | Which `external_knowledge` rows (candidate, untested — TRD §7.2b) inspired this |
-| source_internal_knowledge_ids | TEXT (JSON) | Which `knowledge_entries` (tested, trusted) this spec respects or deliberately overrides |
+| parameters | TEXT (JSON) | Names, defaults, and **allowed ranges** |
+| **spec_hash** | TEXT UNIQUE | Canonical hash of the operator DAG — duplicate detection (TRD §11.1). An exact re-run is rejected at insert |
+| **source_external_knowledge_ids** | TEXT (JSON) | Which `external_knowledge` rows (candidate, untested) inspired this |
+| **source_internal_knowledge_ids** | TEXT (JSON) | Which `knowledge_entries` (tested, trusted) this respects or deliberately overrides |
 | source_question_id | FK → research_questions | If curiosity-driven |
-| expected_behavior | TEXT | What A1 predicts, so we can score A1's calibration |
+| expected_behavior | TEXT | A1's prediction, so A1's calibration can be scored later |
 | prompt_version | TEXT | |
 | created_at | | |
 
-> `spec_hash` has a UNIQUE index. An exact re-run is rejected at insert time.
-
 ### `operators`
-The vetted building-block library (TRD §6).
+The vetted building-block library (TRD §11).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -155,22 +155,22 @@ The vetted building-block library (TRD §6).
 | valid_markets, valid_timeframes | TEXT (JSON) | Applicability declarations |
 | description, references | TEXT | |
 | test_status | TEXT | `tested` \| `untested` \| `deprecated` |
-| approved_by | TEXT | `human` \| null — library is not self-modifying |
+| approved_by | TEXT | `human` or null — **the library is not self-modifying** |
 | created_at | | |
 
 ### `spec_operators`
-Join table making operator usage queryable — "which experiments ever used a Kalman filter?"
+Join table making operator usage queryable — *"which experiments ever used a Kalman filter?"*
 
 | Column | Type |
 |---|---|
 | spec_id | FK → strategy_specs |
 | operator_id | FK → operators |
-| role | TEXT (`entry`/`exit`/`filter`/`risk`) |
+| role | TEXT (`entry` / `exit` / `filter` / `risk`) |
 | parameters_used | TEXT (JSON) |
 
 ---
 
-## 4. Experiments & Evaluation
+## 5. Experiments & Evaluation
 
 ### `experiments`
 **The central table.** One row per iteration of the A2↔A3 loop.
@@ -178,31 +178,31 @@ Join table making operator usage queryable — "which experiments ever used a Ka
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
-| strategy_id | FK | |
-| spec_id | FK | |
+| strategy_id, spec_id | FK | |
 | iteration | INTEGER | 1-based within the strategy |
 | parent_experiment_id | FK → experiments | Lineage across iterations |
 | research_plan_id | FK → research_plans | The plan that produced this iteration (null for iteration 1) |
 | code_version_id | FK → code_versions | |
-| status | TEXT | See §11.2 |
-| phase_reached | TEXT | `P0`…`P4` |
+| status | TEXT | See §13.2 |
+| phase_reached | TEXT | `bar` \| `P0` … `P4` |
 | outcome | TEXT | `passed` \| `failed` \| `error` \| `plateaued` |
-| failure_reason | TEXT | Structured category, see §11.5 |
-| primary_score | REAL | Composite used for ranking |
-| **Provenance (TRD §4.7)** | | |
+| failure_reason | TEXT | Structured category, §13.5 |
+| **Provenance (TRD §6.6)** | | |
 | eval_engine_version | TEXT | |
 | market_profile_hash | TEXT | |
 | timeframe_profile_hash | TEXT | |
-| **wf_config_hash** | TEXT | Content hash of `{scheme, train_years, test_years}` (TRD §4A.2f/g). Train window length is subject to the same hidden-multiple-testing risk as scheme choice — hashed for the same reason |
+| **wf_config_hash** | TEXT | Hash of `{scheme, train_years, test_years}` (TRD §8.2). Train length carries the same hidden-multiple-testing risk as scheme choice, so it is hashed for the same reason |
 | operator_library_version | TEXT | |
+| **code_commit** | TEXT | git commit — the link to the code (§1.1) |
 | data_snapshot_id | FK → data_snapshots | |
 | random_seed | INTEGER | |
-| comparable | INTEGER (bool) | Set false when engine/profile/wf-config changes invalidate comparison |
+| comparable | INTEGER (bool) | Set false when engine / profile / wf-config changes invalidate comparison |
 | tokens_spent, compute_seconds | INTEGER | |
 | created_at, completed_at | | |
 
-> **Index on `(strategy_id, iteration)`, `(eval_engine_version, market_profile_hash, timeframe_profile_hash, wf_config_hash)`.**
-> The second index answers "which stored results are still comparable?" instantly.
+> **Indexes:** `(strategy_id, iteration)` and
+> `(eval_engine_version, market_profile_hash, timeframe_profile_hash, wf_config_hash)`.
+> The second answers *"which stored results are still comparable?"* instantly.
 
 ### `code_versions`
 Every implementation A2 produces.
@@ -213,12 +213,12 @@ Every implementation A2 produces.
 | experiment_id | FK | |
 | code_path | TEXT | Path to the generated strategy module |
 | code_hash | TEXT | Content hash |
-| git_commit | TEXT | If committed |
+| git_commit | TEXT | The commit on `strategies.git_branch` |
 | diff_from_parent | TEXT | What changed vs the previous iteration |
-| change_summary | TEXT | A2's plain-language description |
+| change_summary | TEXT | A2's plain-language description — including any objection to the plan it implemented anyway |
 | implements_plan_id | FK → research_plans | |
 | compile_ok | INTEGER (bool) | |
-| static_check_results | TEXT (JSON) | Look-ahead/leakage scan output (TRD §5.1) |
+| static_check_results | TEXT (JSON) | Look-ahead / leakage scan output (TRD §10.1) |
 | prompt_version | TEXT | |
 | created_at | | |
 
@@ -229,60 +229,59 @@ One row per phase run of `evaluate.py`.
 |---|---|---|
 | id, uid | | |
 | experiment_id | FK | |
-| phase | TEXT | `P0` \| `P1` \| `P2` \| `P3` \| `P4` |
+| phase | TEXT | `bar` \| `P0` \| `P1` \| `P2` \| `P3` \| `P4` |
 | result | TEXT | `pass` \| `fail` \| `warn` \| `error` |
-| **★ The honest score (TRD §4A)** | | |
-| bar_result | TEXT | `pass` \| `fail` — the pre-registered gate. On `fail`, no score is computed |
-| bar_failed_on | TEXT | Which bar item failed: `min_trades` \| `max_drawdown` \| `breadth` \| `cost_stress` \| `complexity` |
+| **★ The hard bar (TRD §7.5)** | | |
+| bar_result | TEXT | `pass` \| `fail`. **On `fail`, no score is computed at all** |
+| bar_failed_on | TEXT | `min_trades` \| `max_drawdown` \| `breadth` \| `cost_stress` \| `complexity` |
+| **★ The honest score (TRD §7)** | | |
 | **honest_score** | REAL | `sr_oos − z·se_sr − trials_haircut`. **The single float that drives keep/discard** |
-| sr_oos | REAL | Sharpe on concatenated purged/embargoed walk-forward test windows, at 2× costs |
-| se_sr | REAL | Standard error incl. skew and kurtosis terms |
+| sr_oos | REAL | Sharpe on the concatenated purged/embargoed walk-forward series, at 2× costs |
+| se_sr | REAL | Standard error including skew and kurtosis terms |
 | z_multiplier | REAL | 2.0 (~97.5% one-sided) or 1.65 (~95%) — recorded, since changing it changes comparability |
 | trials_haircut | REAL | `SR*(N_trials)` — expected best-under-null for this family |
 | n_trials_used | INTEGER | The family trial count fed into the haircut |
 | oos_skew, oos_kurtosis, oos_n_obs | REAL/INT | Inputs to `se_sr`, stored for audit |
-| embargo_bars, holding_period_bars | INTEGER | Embargo must be ≥ holding period or trades leak across the split |
-| **wf_scheme** | TEXT | `rolling` \| `anchored` \| `holdout` \| `cpcv`. Part of `wf_config_hash` above — changing it invalidates comparability (TRD §4A.2g) |
-| wf_train_years | INTEGER | **1, 2, or 3.** Chosen once per family before the campaign, never swept for a better score (TRD §4A.2f-a). Also part of `wf_config_hash` |
-| wf_test_years | INTEGER | **Always 1.** Fixed regardless of `wf_train_years` — it represents re-fit cadence, not a search parameter |
-| wf_train_bars, wf_test_bars | INTEGER | Bar-count equivalents of the above, resolved per timeframe profile |
+| autocorr_adjusted | INTEGER (bool) | Whether Lo's correction was applied |
+| complexity_count | INTEGER | Rules / free parameters — the tertiary criterion |
+| **Walk-forward configuration (TRD §8)** | | |
+| wf_scheme | TEXT | `rolling` \| `anchored` \| `holdout` \| `cpcv`. Part of `wf_config_hash` |
+| wf_train_years | INTEGER | **1, 2, or 3.** Chosen once per family before the campaign, never swept for a better score |
+| wf_test_years | INTEGER | **Always 1.** Fixed regardless of train length — it represents re-fit cadence, not a search parameter |
+| wf_train_bars, wf_test_bars | INTEGER | Bar-count equivalents, resolved per timeframe profile |
+| embargo_bars, holding_period_bars | INTEGER | **Embargo must be ≥ holding period** or trades leak across the split |
 | n_folds | INTEGER | |
 | folds_profitable | INTEGER | How many test windows made money — the consistency diagnostic concatenation hides |
 | fold_metrics | TEXT (JSON) | Per-fold score, trades, drawdown. **Stored for diagnosis; does not drive keep/discard** |
-| params_refit_per_fold | INTEGER (bool) | Whether tuning re-ran on each training window. Determines what walk-forward actually tested (TRD §4A.2i) |
-| autocorr_adjusted | INTEGER (bool) | Whether Lo's correction was applied |
-| complexity_count | INTEGER | Rules / free parameters — the tertiary criterion |
+| wf_efficiency | REAL | OOS ÷ IS performance — if far below 1, each fold overfits internally |
+| params_refit_per_fold | INTEGER (bool) | Whether tuning re-ran on each training window (TRD §8.5) |
 | **Core metrics** | | |
 | sharpe, sortino, calmar | REAL | |
 | cagr, total_return | REAL | |
 | max_drawdown, avg_drawdown, dd_duration_days | REAL | |
 | profit_factor, win_rate, expectancy | REAL | |
 | trade_count | INTEGER | |
-| avg_trade_return, turnover | REAL | |
-| exposure_pct | REAL | |
+| avg_trade_return, turnover, exposure_pct | REAL | |
 | **Robustness metrics (P3)** | | |
 | deflated_sharpe | REAL | |
-| trials_used_in_deflation | INTEGER | **Must reflect true trial count (TRD §5.2)** |
 | pbo | REAL | CSCV probability of backtest overfitting |
 | white_rc_pvalue | REAL | |
 | mc_p5_return, mc_p50_return, mc_p95_return | REAL | Monte Carlo percentiles |
 | mc_ruin_probability | REAL | |
-| wf_efficiency, wf_windows_passed, wf_windows_total | REAL/INT | Walk-forward |
 | param_sensitivity_score | REAL | |
-| cost_breakeven_multiplier | REAL | At what cost multiple does the edge vanish |
+| cost_breakeven_multiplier | REAL | At what cost multiple the edge vanishes |
 | regime_consistency_score | REAL | |
-| **Artifacts** | | |
-| equity_curve_path, tradebook_path | TEXT | Parquet references |
-| report_path | TEXT | Full evaluation report |
+| **Artifacts & cost** | | |
+| equity_curve_path, tradebook_path, report_path | TEXT | Parquet / report references |
 | metrics_json | TEXT (JSON) | Everything not promoted to a column |
-| duration_seconds | REAL | Wall clock. Tracked against the per-experiment budget (TRD §4B.6) |
+| duration_seconds | REAL | Wall clock, tracked against the per-experiment budget (TRD §9.6) |
 | cpu_seconds | REAL | Total across workers — reveals parallel efficiency |
-| n_workers | INTEGER | Processes used |
+| n_workers | INTEGER | |
 | timed_out | INTEGER (bool) | Exceeded the budget → recorded as `crash`, not `discard` |
 | created_at | | |
 
 ### `evaluation_tests`
-Individual test outcomes within a phase — needed to answer "which specific gate failed?"
+Individual test outcomes within a phase — needed to answer *"which specific gate failed, and by how much?"*
 
 | Column | Type | Notes |
 |---|---|---|
@@ -292,53 +291,53 @@ Individual test outcomes within a phase — needed to answer "which specific gat
 | category | TEXT | `correctness` \| `performance` \| `robustness` \| `cost` \| `regime` |
 | result | TEXT | `pass` \| `fail` \| `warn` |
 | gating | INTEGER (bool) | Hard fail vs advisory |
-| value, threshold | REAL | |
+| value, threshold | REAL | **Both stored** — a passing test with an invisible threshold is not evidence |
 | detail | TEXT | |
 
 ### `regime_performance`
-Per-regime breakdown. Feeds both promotion checks and the knowledge graph.
+Per-regime breakdown. Feeds promotion checks, health monitoring, and the knowledge graph.
 
 | Column | Type |
 |---|---|
 | evaluation_id | FK |
-| regime | TEXT (`trending`/`sideways`/`high_vol`/`low_vol`/`crisis`) |
+| regime | TEXT (§13.4) |
 | sharpe, cagr, max_drawdown, trade_count | REAL/INT |
 | period_start, period_end | TEXT |
 
 ---
 
-## 5. The Iteration Loop
+## 6. The Iteration Loop
 
 ### `research_plans`
-A3's output. **Never contains code** — it is a research instruction (PRD §6.1).
+A3's output. **Never contains code** — it is a research instruction (App-Flow §6.4).
 
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
-| experiment_id | FK | The experiment being reviewed |
+| experiment_id | FK | The experiment being reviewed — always a **bar failure** (App-Flow §6.1) |
 | strategy_id | FK | |
-| verdict | TEXT | `iterate` \| `reject` \| `promote` \| `plateau` |
+| verdict | TEXT | `iterate` \| `plateau` \| `reject`. **No `promote`** — clearing the bar bypasses A3 entirely |
 | diagnosis | TEXT | What A3 concluded from the evidence |
-| evidence_cited | TEXT (JSON) | Which metrics/tests drove the verdict — the "why" record |
+| evidence_cited | TEXT (JSON) | Which metrics / tests drove the verdict — the "why" record |
 | proposed_changes | TEXT (JSON) | Ordered list, e.g. `[{target: "exit", change: "replace fixed stop with ATR trailing", reason: "..."}]` |
 | expected_effect | TEXT | Prediction, so A3's calibration can be scored |
 | confidence | REAL | 0–1 |
-| improvement_vs_parent | REAL | |
 | prompt_version | TEXT | |
 | created_at | | |
 
 ---
 
-## 6. Promotion & Deployment
+## 7. Promotion & Deployment
 
 ### `promotions`
-A4's decision. Sees the **entire** research history, not just the final result. **Judges the strategy on its own merits only — no portfolio-correlation field on this table by design** (App-Flow §6); that check is deferred, multi-strategy portfolio construction being out of scope for v1 (PRD §3, Implementation_Plan §18).
+A4's decision. Sees the **entire** research history, not just the winner.
+
+**No portfolio-correlation column, by design** (App-Flow §7.2) — multi-strategy portfolio construction is out of scope for v1 (PRD §3), and A4 judges each strategy on its own merits.
 
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
-| strategy_id | FK | |
-| best_experiment_id | FK | |
+| strategy_id, best_experiment_id | FK | |
 | stage_from, stage_to | TEXT | `research`→`human_review`→`paper`→`live_small`→`live_scaled` |
 | decision | TEXT | `approve` \| `reject` \| `defer` |
 | rationale | TEXT | |
@@ -346,16 +345,17 @@ A4's decision. Sees the **entire** research history, not just the final result. 
 | iterations_considered | INTEGER | **Overfitting signal** — attempts spent before clearing the bar |
 | overfitting_risk | TEXT | `low` \| `medium` \| `high` |
 | confidence | REAL | |
-| capacity_liquidity_ok | INTEGER (bool) | Can *this* strategy alone trade at real size — a single-strategy property, unlike portfolio correlation |
-| recommended_allocation_pct | REAL | Sized from this strategy's own robustness only, not from portfolio fit |
-| requires_human_approval | INTEGER (bool) | Always 1 for paper and live gates |
+| capacity_liquidity_ok | INTEGER (bool) | Can *this* strategy alone trade at real size — a single-strategy property |
+| recommended_allocation_pct | REAL | Sized from this strategy's own robustness only |
+| requires_human_approval | INTEGER (bool) | **Always 1** for paper and live gates |
 | human_decision | TEXT | `approved` \| `rejected` \| `pending` |
-| human_decided_by, human_decided_at, human_notes | TEXT | |
-| **merge_commit** | TEXT | Set only on `approve`. The commit hash where `strategy/<id>` was merged into `deploy/paper` or `deploy/live` (TRD §2A.4b) — the merge message references this row's `uid`, so the git history and this table cross-reference each other |
+| human_decided_by, human_decided_at | TEXT | |
+| human_notes | TEXT | **Mandatory on approval** — friction on purpose |
+| **merge_commit** | TEXT | Set only on `approve`: the commit where `strategy/<id>` merged into `deploy/paper` or `deploy/live` (TRD §5.3). The merge message references this row's `uid`, so git and this table cross-reference |
 | prompt_version | TEXT | |
 | created_at | | |
 
-> **Portfolio correlation is a dashboard display value, not a column here.** It's computed on demand by plain Python from stored return series and shown to the human at review time (App-Flow §8) — deliberately more than A4 itself used, never fed back into A4's own decision.
+> **Portfolio correlation is a dashboard display value, not a column here.** Computed on demand from stored return series and shown to the human at review time (App-Flow §9) — deliberately more than A4 used, never fed back into A4's decision.
 
 ### `deployments`
 A strategy running in paper or live mode.
@@ -366,7 +366,7 @@ A strategy running in paper or live mode.
 | strategy_id, experiment_id | FK | The exact validated version deployed |
 | mode | TEXT | `paper` \| `live` |
 | status | TEXT | `active` \| `paused` \| `stopped` \| `retired` |
-| deploy_branch | TEXT | `deploy/paper` or `deploy/live` — whichever branch currently contains this strategy's code (TRD §2A.4b) |
+| deploy_branch | TEXT | `deploy/paper` or `deploy/live` — whichever currently contains this code (TRD §5.3) |
 | allocation_pct | REAL | |
 | capital_minor_units, currency | INTEGER/TEXT | |
 | broker_ref | TEXT | |
@@ -374,8 +374,8 @@ A strategy running in paper or live mode.
 | **Promotion gate tracking (PRD §9.3)** | | |
 | trades_required, trades_completed | INTEGER | |
 | regimes_required, regimes_observed | TEXT (JSON) | |
-| **Expected behavior baseline** | | |
-| expected_sharpe, expected_max_dd, expected_win_rate, expected_avg_trade | REAL | Copied from validation — the yardstick for health checks |
+| **Expected-behaviour baseline** | | |
+| expected_sharpe, expected_max_dd, expected_win_rate, expected_avg_trade | REAL | Copied from validation — **the yardstick for every health check** |
 | current_health | TEXT | `green` \| `yellow` \| `orange` \| `red` |
 | retirement_reason | TEXT | |
 
@@ -392,16 +392,16 @@ Individual paper/live executions. Parquet mirror for analytics; SQLite row for s
 | pnl_minor_units, currency | INTEGER/TEXT |
 | fees_minor_units | INTEGER |
 | **expected_slippage_bps, actual_slippage_bps** | REAL |
-| execution_quality | TEXT (`good`/`degraded`/`failed`) |
+| execution_quality | TEXT (`good` / `degraded` / `failed`) |
 | regime_at_entry | TEXT |
 | signal_reference | TEXT |
 
 ---
 
-## 7. Health & Lifecycle
+## 8. Health & Lifecycle
 
 ### `health_checks`
-The Strategy Lifecycle Manager's periodic verdict (PRD §9.4).
+The periodic verdict on *"is this still behaving like what we validated?"* (PRD §9.4).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -411,12 +411,12 @@ The Strategy Lifecycle Manager's periodic verdict (PRD §9.4).
 | level | TEXT | `green` \| `yellow` \| `orange` \| `red` |
 | **Performance** | | |
 | live_sharpe, live_max_dd, live_win_rate, live_profit_factor | REAL | |
-| **Deviation from validated baseline** | | |
-| sharpe_zscore, win_rate_zscore, avg_trade_zscore | REAL | |
+| **Deviation from the validated baseline** | | |
+| sharpe_zscore, win_rate_zscore, avg_trade_zscore | REAL | Z-scores, because "1.2 vs 1.6" means nothing without the expected spread |
 | loss_distribution_pvalue | REAL | Are losses outside the historical distribution? |
 | **Context** | | |
 | current_regime | TEXT | |
-| regime_historically_weak | INTEGER (bool) | A drawdown in a known-weak regime is *expected*, not evidence of death |
+| **regime_historically_weak** | INTEGER (bool) | A drawdown in a known-weak regime is *expected*, not evidence of death. This single field prevents the most common bad decision |
 | **Execution** | | |
 | slippage_deviation, missed_fill_rate, liquidity_change | REAL | |
 | verdict_reason | TEXT | |
@@ -429,16 +429,18 @@ Immutable audit trail of everything that happened to a deployment.
 |---|---|
 | id, uid | |
 | deployment_id, strategy_id | FK |
-| event_type | TEXT (`deployed`/`scaled_up`/`scaled_down`/`paused`/`resumed`/`retired`/`health_change`/`kill_switch`) |
+| event_type | TEXT (`deployed` / `scaled_up` / `scaled_down` / `paused` / `resumed` / `retired` / `health_change` / `kill_switch`) |
 | from_state, to_state | TEXT |
-| triggered_by | TEXT (`agent`/`human`/`automatic_rule`) |
+| triggered_by | TEXT (`agent` / `human` / `automatic_rule`) |
 | reason | TEXT |
-| evidence | TEXT (JSON) — on `retired`, includes the commit that removed this strategy from its deploy branch (App-Flow §10.2) |
+| evidence | TEXT (JSON) — on `retired`, includes the commit that removed this strategy from its deploy branch (App-Flow §11.2) |
 | created_at | TEXT |
 
 ---
 
-## 8. Knowledge
+## 9. Internal Knowledge — tested, ground truth
+
+Two layers (TRD §12.1): the **raw record** above (`experiments` + `evaluations`, written automatically for every attempt), and the **synthesized lessons** below, written by A5 once per strategy.
 
 ### `knowledge_entries`
 A5's output. The permanent scientific record.
@@ -453,16 +455,16 @@ A5's output. The permanent scientific record.
 | statement | TEXT | "ATR multipliers above 3.0 consistently overfit in trend families" |
 | evidence | TEXT (JSON) | Supporting experiment IDs |
 | evidence_count | INTEGER | How many experiments back this |
-| counter_evidence_count | INTEGER | Honest bookkeeping |
+| **counter_evidence_count** | INTEGER | Honest bookkeeping — a lesson with contradictions must look less certain |
 | confidence | REAL | |
 | applicable_markets, applicable_timeframes, applicable_regimes | TEXT (JSON) | |
 | future_ideas | TEXT (JSON) | **Mandatory — this is what self-propels the lab** |
 | embedding_id | TEXT | Vector index reference |
-| superseded_by | FK → knowledge_entries | Knowledge is revised, never deleted |
+| superseded_by | FK → knowledge_entries | **Knowledge is revised, never deleted** — the lab's memory only grows, and you can always see what it used to believe |
 | created_at | | |
 
 ### `knowledge_edges`
-The knowledge graph (TRD §7.4). **An edge with no experiment backing must not exist.**
+The knowledge graph (TRD §12.5). **An edge with no experiment backing must not exist.**
 
 | Column | Type | Notes |
 |---|---|---|
@@ -475,85 +477,85 @@ The knowledge graph (TRD §7.4). **An edge with no experiment backing must not e
 | supporting_experiments | TEXT (JSON) | |
 | first_observed_at, last_updated_at | TEXT | |
 
-> UNIQUE on `(subject, predicate, object)`. Repeated observation updates counts, not duplicate rows.
+> UNIQUE on `(subject, predicate, object)`. Repeated observation updates counts, never duplicates rows.
 
 ### `lab_notebooks`
-The human-readable record per experiment (TRD §10).
+The human-readable record per strategy (TRD §16).
 
 | Column | Type |
 |---|---|
 | id, uid | |
-| experiment_id | FK |
+| experiment_id, strategy_id | FK |
 | hypothesis, result, reason, evidence | TEXT |
 | confidence | REAL |
-| next_questions | TEXT (JSON) — **mandatory, non-empty** |
+| **next_questions** | TEXT (JSON) — **mandatory, non-empty** |
 | rendered_markdown | TEXT |
 | created_at | TEXT |
 
 ---
 
-## 9. External Knowledge
+## 10. External Knowledge — the Librarian's output, untested
 
 ### `external_documents`
-Raw ingested artifacts. Read once, ever.
+Raw ingested artifacts. **Read once, ever.**
 
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
-| source | TEXT | `arxiv` \| `ssrn` \| `github` \| `blog` \| `journal` |
+| source | TEXT | `arxiv` \| `ssrn` \| `github` \| `blog` \| `journal` \| `book` |
 | source_id, url, title, authors, published_at | TEXT | |
-| content_hash | TEXT | UNIQUE — deduplication |
+| content_hash | TEXT UNIQUE | Deduplication |
 | raw_path | TEXT | Archived original |
 | ingested_at, extracted_at | TEXT | |
 | extraction_status | TEXT | `pending` \| `chunked` \| `done` \| `failed` \| `irrelevant` |
-| relevance_score | REAL | Cheap filter before spending LLM tokens |
-| chunk_count | INTEGER | How many pieces this document was split into (TRD §7.2a). `1` for short documents that needed no split |
+| relevance_score | REAL | Cheap filter **before** spending LLM tokens |
+| chunk_count | INTEGER | How many pieces this was split into. `1` for short documents |
 
-### `document_chunks` ★
-One row per piece a large document was split into. Exists purely so a synthesized idea can point at an exact passage instead of "somewhere in this paper" (TRD §7.2a, App-Flow §14).
+### `document_chunks`
+One row per piece a large document was split into. Exists so a synthesized idea points at an **exact passage** rather than "somewhere in this paper" (TRD §12.2).
 
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
 | document_id | FK → external_documents | |
-| chunk_index | INTEGER | 0-based position within the document |
-| section_title | TEXT | Nullable — populated when the source has structural headings |
+| chunk_index | INTEGER | 0-based position |
+| section_title | TEXT | Populated when the source has structural headings |
 | char_start, char_end | INTEGER | Offsets into the raw document, for exact re-location |
-| chunk_extraction | TEXT (JSON) | Pass-1 output: candidate claims found in *this chunk alone*, before synthesis. Raw material, not the final record |
+| chunk_extraction | TEXT (JSON) | Pass-1 output: candidate claims in *this chunk alone*, before synthesis |
 | processed_at | TEXT | |
 
-> Chunks are never re-read once synthesis (§9's `external_knowledge`, below) has run. They exist for audit and traceability, not as a second copy to query routinely.
+> Chunks are never re-read once synthesis has run. They exist for audit and traceability.
 
-### `external_knowledge` — the Librarian's output ★
-The structured extraction, produced by the **Librarian Agent** (PRD §6.2, TRD §7.2). **Store knowledge, not documents.** One row is **one idea**, never one row per document — a single paper's synthesis pass (TRD §7.2a) typically yields several of these.
+### `external_knowledge`
+**One row is one idea, never one row per document.** A single paper's synthesis pass typically yields 2–3 of these.
 
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
-| document_id | FK → external_documents | |
-| **source_chunk_ids** | TEXT (JSON) | Which `document_chunks` this idea was synthesized from — the traceability link back to an exact passage |
+| document_id | FK | |
+| **source_chunk_ids** | TEXT (JSON) | Which chunks this idea was synthesized from — the traceability link |
 | layer | TEXT | `research` \| `market` \| `software` \| `infrastructure` (PRD §8.2) |
-| core_idea | TEXT | One clear sentence. If it needs a paragraph, synthesis (§7.2a) didn't finish its job |
-| category | TEXT | e.g. `signal`, `risk_management`, `portfolio_construction`, `validation_technique` |
+| core_idea | TEXT | **One clear sentence.** If it needs a paragraph, synthesis didn't finish its job |
+| category | TEXT | `signal`, `risk_management`, `portfolio_construction`, `validation_technique` |
 | applicable_markets, applicable_timeframes | TEXT (JSON) | |
 | strengths, weaknesses | TEXT | |
 | implementation_difficulty | TEXT | `low` \| `medium` \| `high` |
-| required_operators | TEXT (JSON) | Operators (Operator Library, TRD §6) that would need to exist to implement it |
-| proposed_experiments | TEXT (JSON) | Directly consumable by A1 — this is what makes the record actionable, not just informative |
-| novelty_score | REAL | How much this differs from what's already in the knowledge base |
-| **extraction_confidence** | REAL | **The Librarian's confidence that it read and summarized the source correctly.** Not a claim that the idea itself is true — see `evidence_tier` |
-| **evidence_tier** | TEXT | Always `external_claim` for Librarian output. Contrasts with `knowledge_entries` (internal, tested) — never conflate the two (TRD §7.2b) |
-| **extracted_by** | TEXT | Agent identifier, e.g. `librarian` |
-| **extraction_prompt_version** | TEXT | Versioned, same discipline as every other LLM output (TRD §9) |
-| **extracted_at** | TEXT | |
+| required_operators | TEXT (JSON) | Operators that would need to exist to implement it |
+| proposed_experiments | TEXT (JSON) | Directly consumable by A1 — this is what makes the record *actionable* |
+| novelty_score | REAL | How much this differs from what's already known. Above a threshold, triggers a `GENERATE_SPEC` job immediately (App-Flow §3.1) |
+| **extraction_confidence** | REAL | **The Librarian's confidence that it read the source correctly.** Explicitly *not* a claim the idea is true |
+| **evidence_tier** | TEXT | Always `external_claim`. Contrasts with `knowledge_entries` (internal, tested) — never conflate (TRD §12.3) |
+| extracted_by | TEXT | Agent identifier, e.g. `librarian` |
+| extraction_prompt_version | TEXT | |
+| extracted_at | TEXT | |
 | related_knowledge_ids | TEXT (JSON) | |
 | embedding_id | TEXT | |
-| used_in_specs | TEXT (JSON) | Did this ever produce a hypothesis? Filled in later by A1's spec generation |
+| used_in_specs | TEXT (JSON) | Did this ever produce a hypothesis? |
 
-> **Trust tier, stated plainly:** an `external_knowledge` row is a *candidate worth testing*. It only earns the weight of "confirmed" once an experiment tests it and A5 writes the result into `knowledge_entries` (internal). No promotion decision may cite `external_knowledge.extraction_confidence` as if it were evidence — that field describes reading accuracy, not truth.
+> **Trust tier, stated plainly:** an `external_knowledge` row is a *candidate worth testing*. It earns the weight of "confirmed" only when an experiment tests it and A5 writes the result into `knowledge_entries`. **No promotion decision may cite `extraction_confidence` as evidence** — that field describes reading accuracy, not truth.
 
 ### `research_questions`
-The curiosity queue (TRD §7.3).
+The curiosity queue (TRD §12.4).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -564,29 +566,89 @@ The curiosity queue (TRD §7.3).
 | origin_experiment_id, origin_knowledge_id | FK | |
 | priority | INTEGER | |
 | status | TEXT | `open` \| `searching` \| `answered` \| `abandoned` |
-| search_terms | TEXT (JSON) | Handed to collectors |
+| search_terms | TEXT (JSON) | Handed to the collectors |
 | answer_knowledge_ids | TEXT (JSON) | |
-| produced_spec_ids | TEXT (JSON) | **Did asking this ever pay off?** |
+| **produced_spec_ids** | TEXT (JSON) | **Did asking this ever pay off?** |
 | created_at, resolved_at | | |
 
 ---
 
-## 10. Infrastructure Tables
+## 11. Integrity Tables ★
 
-### `jobs`
-The queue. Lease-based claiming so v1→v3 migration is a backend swap (TRD §2.2).
+Built alongside the integrity work (TRD §14), which precedes any real-data result.
+
+### `vault_access_log`
+Every opening of the locked holdout. The vault is the one defence that does not depend on honestly counting trials, so **its own bookkeeping must be exact.**
 
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
-| job_type | TEXT | See §11.3 |
+| strategy_id, family | FK / TEXT | Budget is consumed **per family**, not per strategy |
+| vault_segment | TEXT | Which locked span / instruments / market was opened |
+| opened_at | TEXT | |
+| opened_by | TEXT | `human` \| `promotion_gate` — **never the research loop** |
+| reason | TEXT | |
+| promotion_id | FK → promotions | The decision this unlock served |
+| budget_before, budget_after | INTEGER | Remaining lifetime opens for this family |
+| result_score | REAL | What the vault said |
+| outcome | TEXT | `confirmed` \| `contradicted` |
+
+> A family whose budget reaches zero **cannot be promoted again** until genuinely new data exists.
+
+### `null_world_runs`
+The headline integrity metric (PRD §4.2). Re-run after any change to `evaluate.py`, the scoring rule, or a profile.
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| run_label | TEXT | |
+| null_model | TEXT | `permuted_returns` \| `block_bootstrap` \| `synthetic_gbm` \| `synthetic_fat_tail` |
+| replications | INTEGER | |
+| eval_engine_version, scoring_rule_version | TEXT | What was being calibrated |
+| experiments_run | INTEGER | |
+| **discoveries_reported** | INTEGER | The number that matters |
+| **false_discovery_rate** | REAL | discoveries ÷ replications |
+| max_score_observed | REAL | The best "strategy" found in pure noise — a useful bar for real results |
+| verdict | TEXT | `pipeline_trusted` \| `pipeline_suspect` |
+| notes | TEXT | |
+| created_at | | |
+
+### `acceptance_bars`
+The satisficing bar (PRD §10.2), recorded **before** a campaign begins so it cannot be adjusted after seeing results.
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| campaign_label | TEXT | |
+| min_score, max_drawdown, min_trades, min_breadth, max_complexity | REAL/INTEGER | |
+| cost_stress_multiple | REAL | Default 2.0 |
+| z_multiplier | REAL | Default 2.0 |
+| **plateau_patience** | INTEGER | Consecutive **bar failures** before a PLATEAU verdict — never a score comparison, since clearing the bar stops the loop immediately. **Default 5** |
+| **hard_iteration_cap** | INTEGER | Outer backstop independent of plateau detection. **Default ~20–25** |
+| wf_scheme, wf_train_years, wf_test_years | TEXT/INTEGER | Fixed per campaign (TRD §8.2) |
+| locked_at, locked_by | TEXT | |
+| superseded_by | FK | |
+
+> Written at campaign start. Changing a bar mid-campaign creates a new row and marks the campaign's prior results incomparable.
+
+---
+
+## 12. Infrastructure
+
+### `jobs`
+The queue. **Lease-based claiming**, so the v1→v3 migration is a backend swap (TRD §3.2).
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| job_type | TEXT | §13.3 |
 | payload | TEXT (JSON) | |
 | strategy_id, experiment_id | FK | Nullable |
 | status | TEXT | `pending` \| `claimed` \| `running` \| `succeeded` \| `failed` \| `timed_out` \| `cancelled` |
 | priority | INTEGER | |
 | **claimed_by, lease_expires_at, heartbeat_at** | TEXT | Dead-worker recovery |
 | attempts, max_attempts | INTEGER | |
-| failure_class | TEXT | `transient` \| `deterministic` — determines retry behavior |
+| failure_class | TEXT | `transient` \| `deterministic` — determines retry behaviour |
 | depends_on_job_id | FK → jobs | |
 | scheduled_for | TEXT | Delayed execution |
 | error_message, error_trace | TEXT | |
@@ -594,6 +656,7 @@ The queue. Lease-based claiming so v1→v3 migration is a backend swap (TRD §2.
 | created_at, started_at, completed_at | | |
 
 > Index on `(status, priority, scheduled_for)` — the scheduler's hot path.
+> This table also backs the live activity feed (UI-UX-Brief §8.1).
 
 ### `data_snapshots`
 Immutable dataset versions. An experiment references a snapshot, never "the files on disk."
@@ -604,15 +667,15 @@ Immutable dataset versions. An experiment references a snapshot, never "the file
 | market, timeframe | TEXT |
 | period_start, period_end | TEXT |
 | instrument_count, bar_count | INTEGER |
-| storage_path | TEXT |
-| content_hash | TEXT |
+| storage_path, content_hash | TEXT |
 | adjustment_method | TEXT |
 | survivorship_handled | INTEGER (bool) |
+| in_vault | INTEGER (bool) — if true, the research loop has no read path (TRD §14.2) |
 | validation_status, validation_report | TEXT |
 | created_at | TEXT |
 
 ### `market_profiles` / `timeframe_profiles`
-Registry of resolved profiles (TRD §4). Content-hashed so experiments can pin them.
+Registry of resolved profiles (TRD §6). Content-hashed so experiments can pin them.
 
 | Column | Type |
 |---|---|
@@ -626,26 +689,26 @@ Registry of resolved profiles (TRD §4). Content-hashed so experiments can pin t
 | created_at | TEXT |
 
 ### `budgets`
-Scheduler back-pressure (TRD §3.4).
+Scheduler back-pressure (TRD §4.4).
 
 | Column | Type |
 |---|---|
 | id | |
-| scope | TEXT (`global`/`strategy`/`goal`) |
+| scope | TEXT (`global` / `strategy` / `goal`) |
 | scope_id | INTEGER |
-| budget_type | TEXT (`tokens`/`experiments`/`iterations`/`compute_seconds`/`usd`) |
-| period | TEXT (`day`/`week`/`lifetime`) |
+| budget_type | TEXT (`tokens` / `experiments` / `iterations` / `compute_seconds` / `usd`) |
+| period | TEXT (`day` / `week` / `lifetime`) |
 | limit_value, used_value | INTEGER |
 | period_start | TEXT |
 | exhausted | INTEGER (bool) |
 
 ### `audit_log`
-Answers "why did you do this?" for every system action (PRD §10.1).
+Answers *"why did you do this?"* for every system action (PRD §11.1).
 
 | Column | Type |
 |---|---|
 | id, uid | |
-| actor | TEXT (`agent1`…`agent5`/`scheduler`/`human`/`evaluate`) |
+| actor | TEXT (`agent1`…`agent5` / `librarian` / `scheduler` / `human` / `evaluate`) |
 | action | TEXT |
 | entity_type, entity_id | TEXT/INTEGER |
 | reasoning | TEXT |
@@ -655,151 +718,96 @@ Answers "why did you do this?" for every system action (PRD §10.1).
 
 ---
 
-## 11. Enumerations
+## 13. Enumerations
 
-### 11.1 `strategies.status`
+### 13.1 `strategies.status`
 ```
-draft → spec_ready → coding → evaluating → evaluated → in_review
-      → iterating (loops back to coding)
-      → plateaued | rejected
-      → pending_promotion → awaiting_human_review
+draft → spec_ready → coding → evaluating → evaluated
+      → iterating (loops back to coding, below the bar only)
+      → plateaued | rejected                         (never cleared the bar)
+      → pending_promotion → awaiting_human_review     (cleared the bar)
       → paper_trading → pending_live_review
       → live_small → live_scaled
       → retired | quarantined
 ```
 
-### 11.2 `experiments.status`
+### 13.2 `experiments.status`
 ```
 created → code_pending → code_ready → evaluating → evaluated → reviewed → archived
         → failed | error
 ```
 
-### 11.3 `jobs.job_type`
+### 13.3 `jobs.job_type`
 ```
-GENERATE_SPEC      (A1)
-IMPLEMENT          (A2)
-FIX_CODE           (A2, from a P0 failure)
-EVALUATE           (evaluate.py, no LLM)
-REVIEW             (A3)
-PROMOTE            (A4)
-ARCHIVE            (A5)
-MINE_PATTERNS      (A5, cross-experiment, weekly)
-COLLECT_PAPERS · COLLECT_GITHUB · COLLECT_MARKET_DATA   (Python collectors)
-EXTRACT_KNOWLEDGE  (LLM, once per document)
-MONITOR_DEPLOYMENT (health checks)
+GENERATE_SPEC        (A1)
+IMPLEMENT            (A2)
+FIX_CODE             (A2, from a static-check or P0 failure)
+EVALUATE             (evaluate.py — no LLM)
+REVIEW               (A3 — only ever on a bar failure)
+PROMOTE              (A4)
+ARCHIVE              (A5)
+MINE_PATTERNS        (A5, cross-experiment, weekly)
+EXTRACT_KNOWLEDGE    (Librarian — once per document, ever)
+COLLECT_PAPERS · COLLECT_GITHUB · COLLECT_MARKET_DATA    (Python collectors)
+MONITOR_DEPLOYMENT   (health checks)
+NULL_WORLD_RUN       (integrity calibration)
 GENERATE_REPORT
 ```
 
-### 11.4 Regimes
+### 13.4 Regimes
 `trending` · `sideways` · `high_vol` · `low_vol` · `crisis`
 
-### 11.5 `experiments.failure_reason`
-Structured so A5 can aggregate. Free text is not acceptable here.
+### 13.5 `experiments.failure_reason`
+Structured so A5 can aggregate. **Free text is not acceptable here.**
+
 ```
-no_signal · negative_expectancy · costs_exceed_edge · overfit_in_sample
-walk_forward_unstable · regime_dependent · pbo_too_high · deflated_sharpe_insufficient
-insufficient_trades · monte_carlo_ruin_risk · parameter_sensitive
-correlated_with_existing · capacity_constrained · plateaued_below_bar
-code_error · look_ahead_detected · data_leakage_detected
+Research findings:
+  no_signal · negative_expectancy · costs_exceed_edge · overfit_in_sample
+  walk_forward_unstable · regime_dependent · pbo_too_high
+  deflated_sharpe_insufficient · insufficient_trades · monte_carlo_ruin_risk
+  parameter_sensitive · capacity_constrained · plateaued_below_bar
+
+Bugs — NOT research findings:
+  code_error · look_ahead_detected · data_leakage_detected
 ```
 
-> The last three are **bugs, not findings** (TRD §5.1). They route back to A2 and must not be recorded as research conclusions.
+> The three bug categories route back to A2 (TRD §10.1) and **must never be recorded as research conclusions** or pollute the knowledge base.
 
 ---
 
-## 12. Key Queries the Schema Must Answer Fast
+## 14. Key Queries the Schema Must Answer Fast
 
-These drove the design. Each must be a simple indexed query, not a scan.
+Each must be a simple indexed query, not a scan. These drove the design.
 
-1. *"How many trials have been run in this strategy family?"* → deflated Sharpe correctness
-2. *"Which stored results are still comparable to the current engine version?"* → `comparable` + provenance index
+1. *"How many trials have been run in this strategy **family**?"* → deflated Sharpe correctness (§4, `family`)
+2. *"Which stored results are still comparable to the current engine version?"* → the provenance index on `experiments`
 3. *"Has this exact operator composition been tried before?"* → `spec_hash` unique index
 4. *"Why did every experiment using ATR > 3.0 fail?"* → `spec_operators` + `failure_reason`
 5. *"Which knowledge entries have contradicting evidence?"* → `counter_evidence_count > 0`
 6. *"Is this live strategy behaving like the validated version?"* → `health_checks` vs `deployments.expected_*`
 7. *"Which research questions ever produced a usable hypothesis?"* → `research_questions.produced_spec_ids`
 8. *"What is the cost per credible discovery?"* → `tokens_spent` aggregated against promoted strategies
-9. *"Reproduce experiment #12,483 exactly."* → spec + code_version + data_snapshot + profiles + seed
+9. *"Reproduce experiment #12,483 exactly."* → spec + `code_commit` + `data_snapshot_id` + profile hashes + `wf_config_hash` + seed
+10. *"What is trading right now?"* → `deployments` where `status = active`, cross-checked against `git show deploy/live`
 
 ---
 
-## 13. Migration Notes
+## 15. Migration Notes
 
-- SQLite first, but **no SQLite-specific SQL.** No `AUTOINCREMENT` reliance, no dynamic typing tricks.
+- SQLite first, but **no SQLite-specific SQL.** No `AUTOINCREMENT` reliance, no dynamic-typing tricks.
 - JSON columns become `JSONB` in PostgreSQL.
-- The `jobs` table moves to Redis in v2; the lease/heartbeat model already matches Redis semantics, so agent code does not change.
-- Parquet paths are relative to a configurable root so local → object storage is a config change.
+- The `jobs` table moves to Redis in v2; the lease/heartbeat model already matches Redis semantics, so **agent code does not change.**
+- Parquet paths are relative to a configurable root, so local → object storage is a config change.
 
 ---
 
-## 14. Open Schema Questions
+## 16. Open Schema Questions
 
 - [ ] Do parameter sweeps get one `experiment` row each, or one row with a child `sweep_runs` table? (Affects trial counting.)
 - [ ] Should `trades` live in SQLite at all, or Parquet-only with SQLite holding aggregates?
-- [ ] Versioning strategy for `knowledge_entries` when A5 revises a lesson — supersede chain vs in-place with history table
-- [ ] Portfolio-level tables (multi-strategy allocation, correlation matrix) — deferred to a future portfolio-construction capability, explicitly **not** A4 (App-Flow §6, PRD §3, Implementation_Plan §18)
-- [ ] Retention policy for `evaluations.metrics_json` at millions of rows
-
----
-
-## 15. Integrity Tables
-
-Added alongside the integrity work (TRD §8A), which precedes any real-data result.
-
-### `vault_access_log`
-Every opening of the locked holdout. The vault is the one defence that does not depend on honestly counting trials, so its own bookkeeping must be exact.
-
-| Column | Type | Notes |
-|---|---|---|
-| id, uid | | |
-| strategy_id, family | FK / TEXT | Budget is consumed **per family**, not per strategy |
-| vault_segment | TEXT | Which locked span/instruments/market was opened |
-| opened_at | TEXT | |
-| opened_by | TEXT | `human` \| `promotion_gate` — never the research loop |
-| reason | TEXT | |
-| promotion_id | FK → promotions | The decision this unlock served |
-| budget_before, budget_after | INTEGER | Remaining lifetime opens for this family |
-| result_score | REAL | What the vault said |
-| outcome | TEXT | `confirmed` \| `contradicted` |
-
-> A family whose budget reaches zero cannot be promoted again until genuinely new data exists.
-
-### `null_world_runs`
-The headline integrity metric (PRD §4.5). Re-run after any change to `evaluate.py`, the scoring rule, or a profile.
-
-| Column | Type | Notes |
-|---|---|---|
-| id, uid | | |
-| run_label | TEXT | |
-| null_model | TEXT | `permuted_returns` \| `block_bootstrap` \| `synthetic_gbm` \| `synthetic_fat_tail` |
-| replications | INTEGER | |
-| eval_engine_version | TEXT | What was being calibrated |
-| scoring_rule_version | TEXT | |
-| experiments_run | INTEGER | |
-| **discoveries_reported** | INTEGER | The number that matters |
-| **false_discovery_rate** | REAL | discoveries / replications |
-| max_score_observed | REAL | The best "strategy" found in pure noise — a useful bar for real results |
-| verdict | TEXT | `pipeline_trusted` \| `pipeline_suspect` |
-| notes | TEXT | |
-| created_at | | |
-
-### `acceptance_bars`
-The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it cannot be adjusted after seeing results.
-
-| Column | Type |
-|---|---|
-| id, uid | |
-| campaign_label | TEXT |
-| min_score, max_drawdown, min_trades, min_breadth, max_complexity | REAL/INTEGER |
-| cost_stress_multiple | REAL |
-| z_multiplier | REAL |
-| **plateau_patience** | INTEGER | Consecutive **bar failures** (never a score comparison — clearing the bar is an immediate stop, App-Flow §5.0) before a PLATEAU verdict. **Default 5** |
-| **hard_iteration_cap** | INTEGER | Outer backstop independent of plateau detection. **Default ~20–25** |
-| locked_at | TEXT |
-| locked_by | TEXT |
-| superseded_by | FK |
-
-> Written at campaign start. Changing a bar mid-campaign creates a new row and marks the campaign's prior results incomparable.
+- [ ] Versioning strategy for `knowledge_entries` when A5 revises a lesson — supersede chain vs in-place with a history table
+- [ ] Retention policy for `evaluations.metrics_json` and `fold_metrics` at millions of rows
+- [ ] Portfolio-level tables (multi-strategy allocation, correlation matrix) — deferred to a future portfolio-construction capability, explicitly **not** A4 (PRD §3)
 
 ---
 
@@ -807,14 +815,8 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 
 | Date | Change |
 |---|---|
-| 2026-07-27 | Initial schema. Experiments as the central table with full provenance columns, trial-count support for deflated Sharpe, spec hashing for duplicate detection, knowledge graph edges with evidence counts, lease-based job queue. |
-| 2026-07-27 | Added §0A (build 3 tables first, not 15; code stays in git with `code_commit` linking) and §15 integrity tables — `vault_access_log`, `null_world_runs`, `acceptance_bars`. |
-| 2026-07-27 | Added timing columns to `evaluations` — wall clock vs CPU seconds, worker count, and `timed_out` for experiments killed by the per-experiment budget. |
-| 2026-07-27 | Added walk-forward columns to `evaluations` — `wf_scheme` (hashed into provenance), window sizes, `n_folds`, `folds_profitable`, per-fold `fold_metrics` stored but non-gating, and `params_refit_per_fold`. |
-| 2026-07-27 | Added `wf_config_hash` to `experiments` provenance and to the comparability index — hashes `{scheme, train_years, test_years}` together, since train window length carries the same hidden-multiple-testing risk as scheme choice. Split `wf_train_bars`/`wf_test_bars` into explicit `wf_train_years` (configurable 1/2/3) and `wf_test_years` (always 1) on `evaluations`. |
-| 2026-07-27 | Added the honest-score column group to `evaluations` — `honest_score` plus every input to it (`sr_oos`, `se_sr`, `z_multiplier`, `trials_haircut`, skew/kurtosis/n, embargo vs holding period) and the `bar_result` gate columns. Added `min_breadth` and `z_multiplier` to `acceptance_bars`. |
-| 2026-07-28 | Defined the plateau rule precisely: `plateau_counter` only resets on an improvement exceeding a noise margin (`plateau_margin_factor × se_sr`), and a bar failure also counts as non-improvement. Added `plateau_patience` (default 5), `plateau_margin_factor` (default 0.5), and `hard_iteration_cap` (default ~20-25) to `acceptance_bars`. Added `plateaued_below_bar` to the `failure_reason` enum, for strategies that plateau without ever having cleared the bar (App-Flow §5.1a). |
-| 2026-07-27 | Split `strategy_specs.source_knowledge_ids` into `source_external_knowledge_ids` and `source_internal_knowledge_ids`, matching the two-trust-tier distinction — a spec can now be traced separately back to the untested candidate ideas it drew on and the tested lessons it respected or overrode (App-Flow §2.2). |
-| 2026-07-27 | Added **`document_chunks`** table and rewrote `external_knowledge` as the Librarian Agent's formal output schema: `source_chunk_ids` for exact-passage traceability, one row per idea rather than per document, `extraction_confidence` renamed and clarified to mean reading accuracy (not truth of the claim), and a new `evidence_tier` column fixed to `external_claim` so this table can never be mistaken for tested, internal evidence. `external_documents` gained `chunk_count` and a `chunked` extraction status. |
-| 2026-07-28 | **Superseded the 2026-07-28 plateau entry above.** Clearing the bar is now an immediate, unconditional stop (App-Flow §5.0) — there is never more than one passing evaluation per strategy, so score-to-score comparison is gone. Removed `acceptance_bars.plateau_margin_factor`. Redefined `plateau_counter` and `plateau_patience` as counting **consecutive bar failures** only. Removed `promotions.correlation_with_live` — A4 no longer assesses portfolio fit; that's deferred, out-of-scope-for-v1 portfolio-construction work, not A4's job. Portfolio correlation is now documented as a dashboard-computed display value only. Added `capacity_liquidity_ok` to `promotions` in its place. |
-| 2026-07-28 | Added the git branch/merge convention (TRD §2A.4a/b): `git_branch` and `code_path` on `strategies`, `merge_commit` on `promotions` (set only on approval, cross-referencing the git history back to this row), `deploy_branch` on `deployments`, and a note on `lifecycle_events.evidence` for the removal commit on retirement. |
+| 2026-07-27 | Initial schema — experiments as the central table with full provenance, trial-count support for the deflated Sharpe, spec hashing for duplicate detection, evidence-backed knowledge graph edges, lease-based job queue. |
+| 2026-07-27 | Added the build-three-tables-first guidance, the honest-score column group, walk-forward columns, timing columns, and the integrity tables. |
+| 2026-07-28 | Added `wf_config_hash` to provenance and the comparability index. Added the Librarian's output schema — `document_chunks`, and `external_knowledge` as one row per idea with `evidence_tier` and traceability back to exact passages. Added the git branch/merge columns. |
+| 2026-07-28 | Removed `promotions.correlation_with_live` (portfolio fit is out of scope for A4) and `acceptance_bars.plateau_margin_factor` (clearing the bar is an immediate stop, so score-to-score comparison no longer exists). |
+| 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential numbering (§0–§16) replacing the patched §0A/§15 scheme; internal and external knowledge separated into clearly-labelled trust tiers; all cross-references updated to the renumbered TRD, PRD and App-Flow; `in_vault` added to `data_snapshots`; changelog consolidated. No schema decisions changed in this pass. |
