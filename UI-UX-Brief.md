@@ -118,7 +118,7 @@ A dedicated red-bordered panel:
 - Which tests came closest to failing (with margin)
 - Which regimes it performed worst in
 - Cost breakeven multiplier ("edge disappears at 2.3× assumed costs")
-- Correlation with existing live strategies
+- Correlation with existing live strategies — ★ computed independently by the dashboard backend, not sourced from A4. A4 judges the strategy alone (App-Flow §6); this is deliberately *more* than A4 itself saw
 - Any contradicting knowledge entries ("we have 3 prior lessons saying ATR > 3.0 overfits in this family; this uses 2.8")
 
 This inversion is the single most important UI decision in the product. Standard dashboards lead with green metrics and bury caveats. **We lead with the reasons to say no.**
@@ -431,3 +431,4 @@ Deliberately sparse. The system should be quiet enough that a notification means
 | 2026-07-27 | Initial brief. "Make it easy to reject" premise, case-against-first review layout, health-not-profit color semantics, laboratory self-measurement screen, sparse notification policy. |
 | 2026-07-27 | Added §0 — v1 has no dashboard; `results.tsv` plus a review CLI is the interface until Stage 12. Added the null-world false discovery rate panel to the Laboratory screen. |
 | 2026-07-27 | Restructured navigation: paper/live are no longer top-level tabs — replaced with a single lifecycle-track Pipeline screen (§7) using deployment (`strategy×market×mode`) as the atomic unit and a strategy/market grouping toggle, with family trial count surfaced on group headers (§7.3) so cross-market re-runs of one idea are never mistaken for independent discoveries. Health stays flat and concern-ranked, deliberately ignoring the new grouping. Added **§7a Observability** — a live agent activity feed and a read-only data explorer with a raw SQL box, both shipped as soon as the job queue exists rather than waiting for Stage 12, with the activity feed carved out as the one named exception to the no-polling rule. |
+| 2026-07-28 | Clarified that the review screen's portfolio-correlation item is computed independently by the dashboard, not sourced from A4 — A4 no longer assesses portfolio fit (App-Flow §6). |

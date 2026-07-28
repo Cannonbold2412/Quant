@@ -28,14 +28,17 @@
 │            │    │ evaluate.py │  P0→P1→P2→P3                     │
 │            │    └──────┬──────┘                                  │
 │            │           ▼                                         │
-│            │    ┌─────────────┐                                  │
-│            └────┤  A3 Review  │  Research Reviewer               │
-│      iterate    └──────┬──────┘                                  │
-│                        │ done / plateau                          │
-│                        ▼                                         │
-│                 ┌─────────────┐                                  │
-│                 │ A4 Promote  │  Promotion Committee             │
-│                 └──────┬──────┘                                  │
+│            │      bar cleared? ── YES ─────────────────┐         │
+│            │           │ NO                             │         │
+│            │           ▼                                │         │
+│            │    ┌─────────────┐                          │        │
+│            └────┤  A3 Review  │  Research Reviewer        │        │
+│      iterate    └──────┬──────┘                            │      │
+│                        │ plateau/reject → A5 (skip A4)      │      │
+│                        ▼                                    ▼      │
+│                                              ┌─────────────┐       │
+│                                              │ A4 Promote  │       │
+│                                              └──────┬──────┘       │
 │                        ├──────────────► A5 Knowledge Manager ────┤
 │                        ▼                                         │
 │                 ╔═════════════╗                                  │
@@ -53,6 +56,8 @@
 ```
 
 Every arrow into and out of an agent passes through the **job queue** and the **database**. No agent calls another agent directly.
+
+**Clearing the bar skips A3 entirely and goes straight to A4** (§5.0) — the first passing iteration is the last iteration, by rule, not by A3's judgment.
 
 ---
 
@@ -301,16 +306,46 @@ A failure at any phase skips all later phases. This is the entire economic argum
 
 ## 5. Flow 4 — Review & Iteration (A3)
 
-**Trigger:** `REVIEW` job.
+**Trigger:** `REVIEW` job — but only when the evaluation just completed **failed the hard bar.** The worker checks `bar_result` the instant `evaluate.py` returns, *before* deciding whether to invoke Claude at all (App-Flow §5.0).
+
+### 5.0 Clearing the bar is an immediate, unconditional stop ★
+
+**The moment any iteration clears the acceptance bar, iteration on that strategy stops — permanently, right then.** Not "stop if it also fails to improve further." Not "try a few more times to see if it can do even better." The first pass is the last iteration. A3 is not even invoked for that iteration's stop/continue decision — the worker checks `bar_result` in Python and routes straight to `PROMOTE` before any Claude session is spent.
+
+```
+evaluate.py returns
+        │
+        ▼
+   bar_result?
+        │
+   ┌────┴────┐
+  PASS       FAIL
+   │            │
+   ▼            ▼
+enqueue      enqueue REVIEW (A3) — this is Flow 4 proper, below
+PROMOTE      │
+(A4) —       ▼
+skip A3   A3 decides: ITERATE, or give up (§5.1)
+entirely
+```
+
+**Why this is a hard rule, not a judgment call:** this *is* satisficing (PRD §13.2) — take the first strategy that clears a pre-registered bar, never the best after many tries. Leaving "should I keep pushing for a higher score" as something A3 could decide would let an LLM quietly override the whole principle, one plausible-sounding justification at a time. So it isn't offered as a choice at all: the worker enforces it before Claude is ever asked.
+
+**A consequence worth stating plainly: `acceptance_bars.min_score` already sets the floor.** Since the bar itself includes a minimum score requirement, clearing the bar already means "good enough by the standard set in advance." There is nothing left to optimize for on this strategy — continuing would only mean spending more of this family's trial budget and more of its irreplaceable out-of-sample data (TRD §4A.3c) chasing a number nobody asked for.
+
+### 5.1 Below the bar — this is where A3 actually operates
+
+Everything past this point in Flow 4 only ever happens **before** a strategy has cleared the bar. Once it clears, this flow is done — see §5.0.
 
 ```
 Worker assembles context:
         ├── strategy_spec (the original hypothesis)
         ├── all prior experiments for this strategy (full history)
-        ├── current evaluation report + per-test results
+        ├── current evaluation report — bar_failed_on + the raw diagnostic metrics
+        │      (no honest_score exists on a bar failure — see TRD §4A.3a)
         ├── regime breakdown
         ├── relevant knowledge_entries (has this failure been seen before?)
-        └── remaining budget + iteration count + plateau counter
+        └── remaining budget + iteration count + consecutive-bar-failure count
         │
         ▼
 Claude session (A3)
@@ -320,63 +355,45 @@ Verdict:
    ├── ITERATE  → research_plan with ordered proposed_changes
    │              → enqueue IMPLEMENT (iteration n+1)
    │
-   ├── PLATEAU  → 5 consecutive tries with no real improvement (§5.1a)
-   │              │
-   │              ├── best-so-far ever cleared the bar? ──► enqueue PROMOTE
-   │              │                                          (A4 reviews the best passing iteration)
-   │              │
-   │              └── bar never cleared, not once ──────────► enqueue ARCHIVE (A5) directly, skip A4
-   │                                                           (failure_reason = plateaued_below_bar)
+   ├── PLATEAU  → 5 consecutive bar failures, never once cleared it (§5.1a)
+   │              → enqueue ARCHIVE (A5) directly, skip A4
+   │              (failure_reason = plateaued_below_bar)
    │
-   ├── PROMOTE  → criteria met
-   │              → enqueue PROMOTE
-   │
-   └── REJECT   → hopeless
+   └── REJECT   → hopeless before even reaching patience
                   → enqueue ARCHIVE (A5) directly, skip A4
 ```
 
-### 5.1 Stop conditions — evidence-based, not a fixed count
+**Note what's missing:** there is no `PROMOTE` verdict here anymore, and no path from this flow to A4. The only way to A4 is clearing the bar (§5.0). A3's job below the bar is narrower than it looks — decide whether to try again, or give up.
 
-Checked by the worker *before* invoking Claude, so budget is never wasted:
+#### Stop conditions, checked by the worker before invoking Claude
 
 | Condition | Action |
 |---|---|
-| All promotion criteria met | → A4 |
-| **Plateau: 5 consecutive iterations with no real improvement** | → §5.1a decides A4 vs A5 |
-| Iteration/token/compute budget exhausted | → A4 with best-so-far, **only if** it ever cleared the bar; otherwise → A5 |
-| A3 judges further modification futile | → reject → A5 |
-| Hard iteration cap (backstop, default ~20–25) | → forced plateau |
+| **Bar cleared** | → A4 immediately, A3 not invoked for this decision (§5.0) |
+| **5 consecutive bar failures, never cleared** | → PLATEAU → A5, `plateaued_below_bar` |
+| Iteration/token/compute budget exhausted before ever clearing the bar | → A5, same reason |
+| A3 judges further modification futile | → REJECT → A5 |
+| Hard iteration cap (backstop, default ~20–25) | → forced PLATEAU → A5 |
 
-### 5.1a Plateau, precisely — the 2026-07-28 rule ★
+### 5.1a Plateau, precisely — only ever a below-the-bar concept ★
 
-**Two problems with "stop after 5 tries with no improvement" as a literal rule, both fixed here.**
-
-**Problem 1 — `honest_score` is noisy, so comparing raw floats is wrong.** The score already carries its own error bar (`se_sr`, TRD §4A). Iteration 4 scoring 0.39 after iteration 3 scored 0.41 is not necessarily "worse" — it can just be noise. So "improvement" is defined against that noise, not against the raw number:
+Since clearing the bar is now an immediate stop (§5.0), there is never more than one *passing* evaluation for a given strategy — so there is nothing to compare passing scores against, and no notion of "improvement between passing attempts" is needed. Plateau counting is purely about the climb **toward** the bar:
 
 ```
-counts as a REAL improvement, resets plateau_counter to 0:
-    new_honest_score  >  best_score_so_far + margin
-    margin = 0.5 × se_sr          (half the measured noise band — configurable)
+Each iteration that FAILS the bar:
+    consecutive_bar_failures += 1
 
-otherwise:
-    plateau_counter += 1
+Each iteration that CLEARS the bar:
+    → immediate PROMOTE (§5.0). Counting stops; it never reaches here again.
+
+5 consecutive bar failures, without ever clearing it once → PLATEAU
 ```
 
-A **bar failure** (`bar_result = fail`, no score computed at all) also increments `plateau_counter` — it is strictly not an improvement, and must count.
+A bar-failing evaluation has **no `honest_score`** to compare (TRD §4A.3a — the score is only computed after the bar passes), so A3 reasons over the raw diagnostic instead: `bar_failed_on`, and the underlying metrics that fed that check (how far below `min_trades`, how far over `max_drawdown`, etc.) — the same data already stored on every `evaluations` row regardless of pass/fail. That's enough for A3 to judge "getting closer" from "stuck" without needing a synthetic score for failing attempts.
 
-**5 consecutive increments → PLATEAU verdict**, checked by the worker before invoking Claude, same as every other stop condition.
+**PLATEAU always routes to A5, never to A4.** The earlier two-destination version of this rule (§5.1a, prior revision) assumed a plateau could happen *after* clearing the bar — that possibility no longer exists once §5.0 is the rule, so the routing collapses to one destination.
 
-**Problem 2 — "stop" is not one destination.** What plateauing means depends entirely on whether the strategy ever actually worked:
-
-| | Best-so-far cleared the acceptance bar at least once | Never cleared the bar |
-|---|---|---|
-| **What it means** | A working strategy that stopped getting better — not a failure | Never actually succeeded |
-| **Routes to** | **A4**, with the best passing iteration, as a real promotion candidate | **A5** directly, skipping A4 — nothing bar-passing exists for A4 to review |
-| **failure_reason** | n/a — this is a candidate, not a rejection | `plateaued_below_bar` |
-
-Same trigger, two different destinations. Sending a never-passing strategy to A4 anyway would waste a review on a candidate that structurally cannot exist yet.
-
-**The count is configurable per campaign** (`acceptance_bars.plateau_patience`, Backend-Schema §15) — 5 is the default, not a universal constant. The hard iteration cap (§9.2 of the PRD) remains as an outer backstop in case something dodges the noise-margin check.
+**The count is configurable per campaign** (`acceptance_bars.plateau_patience`, Backend-Schema §15) — 5 is the default. The hard iteration cap remains as an outer backstop in case something dodges this logic.
 
 ### 5.2 The research plan is not code
 
@@ -386,17 +403,16 @@ A3 says *"replace the fixed stop with an ATR trailing stop because exits are cut
 
 ## 6. Flow 5 — Promotion (A4)
 
-**Trigger:** `PROMOTE` job.
+**Trigger:** `PROMOTE` job — fired the instant an evaluation clears the bar (§5.0). A3 is not necessarily involved in getting here at all; A4 reads the winning evaluation directly.
 
 ```
 Worker assembles the ENTIRE research history:
         ├── original hypothesis
         ├── every iteration and what changed
-        ├── every evaluation report
-        ├── best experiment + its full metrics
+        ├── every evaluation report (all the bar-failing attempts too, not just the winner)
+        ├── the passing experiment + its full metrics
         ├── iteration_count and total_trials  ← the overfitting signal
-        ├── correlation with currently-live strategies
-        └── capacity/liquidity assessment
+        └── capacity/liquidity assessment — can THIS strategy trade at real size, alone
         │
         ▼
 Claude session (A4)
@@ -410,7 +426,9 @@ Decision:
                   → enqueue ARCHIVE (A5) in parallel
 ```
 
-**A4 must weigh iteration count.** A strategy that reached Sharpe 2.1 after 47 iterations is a fundamentally different object from one that hit 1.6 on the second try. More iterations = more multiple testing = higher overfitting risk, and A4 sees that explicitly.
+**A4 must weigh iteration count.** A strategy that cleared the bar on iteration 31 of 47 tries is a fundamentally different object from one that cleared it on try 2. More attempts = more multiple testing = higher overfitting risk, and A4 sees that explicitly.
+
+**A4 does not check correlation with the existing portfolio.** ★ That question — "is this a genuinely new source of profit, or the same bet you already have?" — is portfolio-construction work, and multi-strategy portfolio construction is explicitly out of scope for v1 (PRD §3, Implementation_Plan §18). A4 judges a strategy **on its own merits only**: is it real, is it tradeable, does the evidence hold up. Portfolio fit is a separate, later capability — see the note in Flow 7 (§8) for where correlation still shows up, and why that's different from A4 assessing it.
 
 **A4 never has trading credentials.** It produces a recommendation record. Nothing moves without the human gate.
 
@@ -502,6 +520,11 @@ Human sees:
    ├── the ENTIRE iteration history (how much tinkering happened)
    ├── overfitting risk assessment
    └── correlation with the existing live portfolio
+         ★ computed fresh by plain Python from stored return series —
+           NOT part of A4's brief or decision (App-Flow §6). A4 judges
+           the strategy alone; the human gets this as extra context A4
+           never saw, matching the "give the human more than the agent
+           used" principle (UI-UX-Brief §1.1)
         │
         ├── REJECT  → back to A5 with human reasoning recorded
         ├── DEFER   → request more research (creates a new goal)

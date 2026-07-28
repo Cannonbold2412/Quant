@@ -193,9 +193,10 @@ Agents do not poll in a `while True` loop burning compute. State transitions emi
 Strategy spec saved      → enqueue IMPLEMENT job
 Code passed static checks → enqueue EVALUATE job
 Code failed static checks → enqueue FIX_CODE job (bounded retries, then quarantine)
-Evaluation completed     → enqueue REVIEW job
+Evaluation CLEARS the bar → enqueue PROMOTE job directly, skip REVIEW/A3 entirely (App-Flow §5.0)
+Evaluation FAILS the bar  → enqueue REVIEW job (A3 only ever sees below-bar attempts)
 Review says "iterate"    → enqueue IMPLEMENT job (n+1)
-Review says "done"       → enqueue PROMOTE job
+Review says "plateau"    → enqueue ARCHIVE job (A5), never PROMOTE (App-Flow §5.1a)
 Promotion decided        → enqueue ARCHIVE job + notify dashboard
 Paper trading milestone  → enqueue MONITOR job
 Health check trips Red   → enqueue lifecycle action + notify dashboard
@@ -918,6 +919,7 @@ Deliberately boring. The novelty budget is spent on the research loop, not the i
 |---|---|
 | 2026-07-27 | Initial document. Execution model, single-`evaluate.py` decision with Market/Timeframe profile factoring, provenance hashing, validation battery, operator library, knowledge subsystem, safety controls. |
 | 2026-07-27 | Added §2A nanoAQRL (the actual v1 shape, file permissions, SQLite+git split, 3-table minimum), §4A the honest score and ranked criteria, §8A adversarial integrity (reward hacking, the vault, null-world calibration, autonomy ratchet). Evaluator is now unreadable as well as unwritable by the agent. |
+| 2026-07-28 | Updated the §3.1 event table: clearing the bar now enqueues PROMOTE directly, bypassing REVIEW/A3 entirely (App-Flow §5.0); "review says done" replaced with "review says plateau," which now only ever enqueues ARCHIVE (A5) since A3 can no longer produce a PROMOTE verdict. |
 | 2026-07-27 | Added **§2A.3a — required contents of `program.md`**: the reveal/hide split (correctness rules are shown since they are not gameable; the scoring formula and bar numbers are hidden since they are), the full anti-look-ahead rule set the agent must follow, and behavioural rules including "a P0 rejection is a bug, not an obstacle". Instructions reduce the error rate; P0 still enforces. |
 | 2026-07-27 | Added **§4B Performance & Parallelism** — throughput targets, vectorise-the-maths/JIT-the-path, process-level parallelism across folds and replications (threads are useless here under the GIL), determinism requirements under parallelism, per-experiment time budget, and the tension that vectorisation is the top source of look-ahead bias. |
 | 2026-07-27 | Added the two missing events in §3.1's event table — code passing/failing static checks — matching the Flow 2 rewrite in `App-Flow.md`. |

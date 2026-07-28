@@ -110,7 +110,7 @@ The durable identity of a research thread. One strategy has many experiments (it
 | iteration_count | INTEGER | **Feeds the multiple-testing correction** |
 | total_trials | INTEGER | Iterations + parameter combinations swept |
 | best_score | REAL | Primary composite score |
-| plateau_counter | INTEGER | Consecutive iterations with no gain beyond noise (App-Flow §5.1a). Resets to 0 only when `new_honest_score > best_score_so_far + margin`; a bar failure also increments it |
+| plateau_counter | INTEGER | Consecutive **bar failures**, below the bar (App-Flow §5.1a). Only ever increments — clearing the bar is an immediate stop (§5.0), so this counter never has an "improvement" case to reset against |
 | tokens_spent, compute_seconds | INTEGER | Cost accounting |
 | quarantined | INTEGER (bool) | Poison-pill protection (TRD §3.3) |
 | quarantine_reason | TEXT | |
@@ -330,7 +330,7 @@ A3's output. **Never contains code** — it is a research instruction (PRD §6.1
 ## 6. Promotion & Deployment
 
 ### `promotions`
-A4's decision. Sees the **entire** research history, not just the final result.
+A4's decision. Sees the **entire** research history, not just the final result. **Judges the strategy on its own merits only — no portfolio-correlation field on this table by design** (App-Flow §6); that check is deferred, multi-strategy portfolio construction being out of scope for v1 (PRD §3, Implementation_Plan §18).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -341,16 +341,18 @@ A4's decision. Sees the **entire** research history, not just the final result.
 | decision | TEXT | `approve` \| `reject` \| `defer` |
 | rationale | TEXT | |
 | evidence_summary | TEXT (JSON) | |
-| iterations_considered | INTEGER | **Overfitting signal** |
+| iterations_considered | INTEGER | **Overfitting signal** — attempts spent before clearing the bar |
 | overfitting_risk | TEXT | `low` \| `medium` \| `high` |
 | confidence | REAL | |
-| correlation_with_live | REAL | vs existing portfolio |
-| recommended_allocation_pct | REAL | |
+| capacity_liquidity_ok | INTEGER (bool) | Can *this* strategy alone trade at real size — a single-strategy property, unlike portfolio correlation |
+| recommended_allocation_pct | REAL | Sized from this strategy's own robustness only, not from portfolio fit |
 | requires_human_approval | INTEGER (bool) | Always 1 for paper and live gates |
 | human_decision | TEXT | `approved` \| `rejected` \| `pending` |
 | human_decided_by, human_decided_at, human_notes | TEXT | |
 | prompt_version | TEXT | |
 | created_at | | |
+
+> **Portfolio correlation is a dashboard display value, not a column here.** It's computed on demand by plain Python from stored return series and shown to the human at review time (App-Flow §8) — deliberately more than A4 itself used, never fed back into A4's own decision.
 
 ### `deployments`
 A strategy running in paper or live mode.
@@ -731,7 +733,7 @@ These drove the design. Each must be a simple indexed query, not a scan.
 - [ ] Do parameter sweeps get one `experiment` row each, or one row with a child `sweep_runs` table? (Affects trial counting.)
 - [ ] Should `trades` live in SQLite at all, or Parquet-only with SQLite holding aggregates?
 - [ ] Versioning strategy for `knowledge_entries` when A5 revises a lesson — supersede chain vs in-place with history table
-- [ ] Portfolio-level tables (multi-strategy allocation, correlation matrix) — deferred until A4 handles portfolios
+- [ ] Portfolio-level tables (multi-strategy allocation, correlation matrix) — deferred to a future portfolio-construction capability, explicitly **not** A4 (App-Flow §6, PRD §3, Implementation_Plan §18)
 - [ ] Retention policy for `evaluations.metrics_json` at millions of rows
 
 ---
@@ -787,8 +789,7 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 | min_score, max_drawdown, min_trades, min_breadth, max_complexity | REAL/INTEGER |
 | cost_stress_multiple | REAL |
 | z_multiplier | REAL |
-| **plateau_patience** | INTEGER | Consecutive non-improving iterations before a PLATEAU verdict. **Default 5** (App-Flow §5.1a) |
-| **plateau_margin_factor** | REAL | Fraction of `se_sr` a new score must exceed the running best by to count as real improvement. **Default 0.5** |
+| **plateau_patience** | INTEGER | Consecutive **bar failures** (never a score comparison — clearing the bar is an immediate stop, App-Flow §5.0) before a PLATEAU verdict. **Default 5** |
 | **hard_iteration_cap** | INTEGER | Outer backstop independent of plateau detection. **Default ~20–25** |
 | locked_at | TEXT |
 | locked_by | TEXT |
@@ -811,3 +812,4 @@ The satisficing bar (PRD §13.2), recorded **before** a campaign begins so it ca
 | 2026-07-28 | Defined the plateau rule precisely: `plateau_counter` only resets on an improvement exceeding a noise margin (`plateau_margin_factor × se_sr`), and a bar failure also counts as non-improvement. Added `plateau_patience` (default 5), `plateau_margin_factor` (default 0.5), and `hard_iteration_cap` (default ~20-25) to `acceptance_bars`. Added `plateaued_below_bar` to the `failure_reason` enum, for strategies that plateau without ever having cleared the bar (App-Flow §5.1a). |
 | 2026-07-27 | Split `strategy_specs.source_knowledge_ids` into `source_external_knowledge_ids` and `source_internal_knowledge_ids`, matching the two-trust-tier distinction — a spec can now be traced separately back to the untested candidate ideas it drew on and the tested lessons it respected or overrode (App-Flow §2.2). |
 | 2026-07-27 | Added **`document_chunks`** table and rewrote `external_knowledge` as the Librarian Agent's formal output schema: `source_chunk_ids` for exact-passage traceability, one row per idea rather than per document, `extraction_confidence` renamed and clarified to mean reading accuracy (not truth of the claim), and a new `evidence_tier` column fixed to `external_claim` so this table can never be mistaken for tested, internal evidence. `external_documents` gained `chunk_count` and a `chunked` extraction status. |
+| 2026-07-28 | **Superseded the 2026-07-28 plateau entry above.** Clearing the bar is now an immediate, unconditional stop (App-Flow §5.0) — there is never more than one passing evaluation per strategy, so score-to-score comparison is gone. Removed `acceptance_bars.plateau_margin_factor`. Redefined `plateau_counter` and `plateau_patience` as counting **consecutive bar failures** only. Removed `promotions.correlation_with_live` — A4 no longer assesses portfolio fit; that's deferred, out-of-scope-for-v1 portfolio-construction work, not A4's job. Portfolio correlation is now documented as a dashboard-computed display value only. Added `capacity_liquidity_ok` to `promotions` in its place. |

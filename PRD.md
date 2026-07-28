@@ -59,6 +59,7 @@ Explicitly **out of scope**, permanently or for now:
 - ❌ Claude performing mechanical work (downloading PDFs, renaming files, moving data). Claude reasons; Python does everything else.
 - ❌ Free-form formula invention by the LLM. Strategies are composed from a vetted operator library.
 - ❌ Building for 100,000 experiments/day on day one. The architecture must *allow* that scale; v1 runs on a laptop.
+- ❌ **Multi-strategy portfolio construction and correlation-aware allocation.** A4 (§6.1) judges each strategy on its own merits only. Portfolio fit is shown to the human as dashboard context, computed independently, never fed into any agent's decision. A dedicated portfolio-construction capability is future scope.
 
 ---
 
@@ -257,16 +258,17 @@ Idea → Spec → Code → Backtest → Statistical Validation → Stress Testin
 
 ### 9.2 The iteration stop rule (A2↔A3 loop)
 
-**Evidence-based, not a fixed count.** Stop when *any* of:
+**Rule #1, and it overrides everything else: clearing the acceptance bar is an immediate, unconditional stop.** ★ Not "stop if it also fails to improve after that." The moment any iteration clears the bar, that strategy stops iterating — permanently, right then — and goes straight to A4. This is not a judgment call A3 gets to make; the worker enforces it in Python before A3 is even invoked for that decision (App-Flow §5.0).
 
-- All promotion criteria are met
-- No meaningful improvement for *N* consecutive iterations (plateau) — **default N = 5**, precise definition and routing in TRD/App-Flow §5.1a
-- Iteration/compute budget exhausted
-- A3 judges further modification unlikely to produce a robust result
+This is what satisficing (§13.2) actually means in practice: the acceptance bar already includes a minimum score requirement, so clearing it already means "good enough by the standard set in advance, on purpose, before searching." There is nothing left to optimize for — every further iteration would only spend more of this family's finite trial budget and more of its irreplaceable out-of-sample data (§13.2) chasing a number nobody asked for.
 
-A hard iteration cap (default ~20–25) exists as a backstop only, for the rare case something dodges the plateau logic. **Iteration count is recorded and passed to A4 as an overfitting signal** — more iterations means more multiple-testing burden, which must be reflected in the deflated Sharpe calculation.
+**Below the bar**, A3 does operate, and stops for any of:
 
-**Plateauing at 5 with no improvement is not automatically a rejection.** It means one of two different things, and they route differently: a strategy whose best attempt already cleared the acceptance bar is a real candidate that simply stopped improving — it goes to A4. A strategy that never cleared the bar, not once, in 5 tries, actually failed — it goes straight to A5 as a lesson, skipping A4 entirely, since there is nothing bar-passing for A4 to review.
+- 5 consecutive bar failures without ever clearing it (plateau) — **default N = 5**, always routes to A5, never A4 (there is nothing bar-passing to send A4). Precise definition in TRD/App-Flow §5.1a
+- Iteration/compute budget exhausted before ever clearing the bar — same routing, straight to A5
+- A3 judges further modification unlikely to produce a robust result — reject, to A5
+
+A hard iteration cap (default ~20–25) exists as a further backstop only, for the rare case something dodges the plateau logic. **Iteration count is recorded and passed to A4 as an overfitting signal** — a strategy that cleared the bar on try 31 of a 47-try grind is a fundamentally different object from one that cleared it on try 2, and A4 must be able to tell them apart.
 
 ### 9.3 Paper trading promotion — trades, not calendar
 
@@ -465,9 +467,9 @@ Tracked here until resolved in a session, then moved into the body of the docs.
 - [ ] The numeric acceptance bar for §13.2, written before the search begins. *Owner: human*
 - [ ] Which specific statistical tests are gating (hard fail) vs advisory in Phase III?
 - [ ] Numeric thresholds for each promotion gate (deflated Sharpe floor, PBO ceiling, MC 5th-percentile floor)
-- [ ] How is "genuinely different" measured for Phase B admission (correlation ceiling, and over which window)?
+- [ ] How is "genuinely different" measured for Phase B admission (correlation ceiling, and over which window)? — **future portfolio-construction capability, explicitly not A4 (§3, §9.2)**
 - [ ] Broker/data-feed choice for paper trading per market
-- [ ] Correlation ceiling for admitting a new strategy to the live portfolio
+- [ ] Correlation ceiling for admitting a new strategy to the live portfolio — **same future capability as above**
 - [ ] Whether A1 hypothesis generation is scheduled (nightly batch) or purely event-driven
 - [ ] Capacity/AUM modelling — at what point does liquidity invalidate a backtest
 - [ ] Human review SLA — how long may a candidate sit in the dashboard queue
@@ -483,4 +485,5 @@ Tracked here until resolved in a session, then moved into the body of the docs.
 | 2026-07-27 | Reconciled against karpathy/autoresearch (§14). Added null-world false discovery rate as the headline integrity metric (§4.5), the two-phase search objective, satisficing over maximising, ranked acceptance criteria with a simplicity penalty, and the diversification-as-anti-overfitting argument (§13). |
 | 2026-07-27 | Honest score resolved (TRD §4A). §13.2 updated: the bar is stated in `program.md` and enforced in `evaluate.py`; failing it returns `discard` with no score; out-of-sample data noted as a consumable resource. |
 | 2026-07-28 | **§9.2 resolved.** Plateau count set to a default of 5 consecutive non-improving iterations, with the precise noise-margin definition and two-destination routing (A4 if the bar was ever cleared, A5 if not) moved to App-Flow §5.1a. Hard iteration cap default set to ~20–25. |
+| 2026-07-28 | **§9.2 superseded above.** Clearing the acceptance bar is now an immediate, unconditional stop — the first passing iteration is the last, enforced by the worker before A3 is even asked. Plateau (§5.1a) is now purely a below-the-bar concept, always routing to A5. Added §3 non-goal explicitly excluding portfolio-correlation checks from A4 — deferred to a future portfolio-construction capability; correlation is now a dashboard-computed display value only. |
 | 2026-07-27 | Added **§6.2 — the Librarian**, a sixth role formalizing external-knowledge extraction, explicitly kept outside the five-agent research loop. §8.2 rewritten: one paper yields several structured ideas, not one blob; and a claim from a paper is never a fact — only internal, tested evidence is. |

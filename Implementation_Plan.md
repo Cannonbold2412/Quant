@@ -275,14 +275,15 @@ Before trusting it, `evaluate.py` must be tested against **known-answer cases**:
 | Deliverable | Notes |
 |---|---|
 | Context assembler | Spec, **full** iteration history, evaluation report, per-test results, regime breakdown, related knowledge |
-| Verdict logic | `iterate` / `plateau` / `promote` / `reject` |
+| **Bar-clear short-circuit** ★ | Worker checks `bar_result` before invoking A3 at all — a pass routes straight to `PROMOTE`, skipping A3 for that decision entirely (App-Flow §5.0) |
+| Verdict logic (below the bar only) | `iterate` / `plateau` / `reject` — **no `promote` verdict from A3**; the only path to A4 is the bar-clear short-circuit above |
 | Research plan output | **Plain-language changes, never code** (PRD §6.1) |
 | Stop-condition evaluation | Checked in Python *before* invoking Claude, so budget is never wasted |
-| Plateau detection | **5 consecutive iterations with no improvement beyond a noise margin** (`0.5 × se_sr`, default), not raw score comparison. A bar failure counts as non-improvement too (App-Flow §5.1a) |
-| Plateau routing | Best-so-far cleared the bar at least once → A4. Never cleared it → A5 directly, `failure_reason = plateaued_below_bar` |
-| Loop wiring | A3 → A2 → evaluate → A3 |
+| Plateau detection | **5 consecutive bar failures**, never a score comparison — there is only ever one passing evaluation per strategy, since passing stops the loop immediately (App-Flow §5.1a) |
+| Plateau routing | Always → A5, `failure_reason = plateaued_below_bar`. Never A4 — that route no longer exists once passing is an immediate stop |
+| Loop wiring | (below bar) A3 → A2 → evaluate → A3. (bar cleared) evaluate → A4 directly |
 
-**Done when:** a hand-written spec runs autonomously through 10+ iterations, improves measurably, and stops for a principled reason rather than a hard cap — **and** a deliberately-stuck spec correctly plateaus at 5 non-improving tries and routes to the right agent depending on whether it ever cleared the bar.
+**Done when:** a hand-written spec runs autonomously through several below-bar iterations, then correctly stops the instant one clears the bar — **without** attempting a further iteration to chase a higher score — **and** a deliberately-stuck spec plateaus at 5 bar failures and routes to A5.
 
 > **This is the first real milestone.** At this point the system iterates on research without a human. Everything before it is infrastructure; everything after it is amplification.
 
@@ -314,7 +315,8 @@ Before trusting it, `evaluate.py` must be tested against **known-answer cases**:
 ### A4 — Promotion Committee
 - Context = the **entire** research history, not just the winner
 - Explicit weighing of iteration count as an overfitting signal
-- Correlation check against live portfolio
+- Capacity/liquidity check — can *this strategy alone* trade at real size
+- **No portfolio-correlation check** ★ — judges the strategy on its own merits only; correlation with the live portfolio is a dashboard-computed display value shown to the human, never part of A4's brief or decision (App-Flow §6, PRD §3)
 - Outputs a recommendation record; **no credentials, no execution authority**
 
 ### A5 — Knowledge Manager
@@ -517,3 +519,4 @@ Not in the one-shot build:
 | 2026-07-27 | Added **Stage 4a — Observability**, pulled out of Stage 12 and placed immediately after the job queue exists: live agent activity feed and a read-only database explorer, built to debug the system rather than to make decisions. Stage 12 is now decision-layer only. Stage 0.1 updated to name the configurable train window (TRD §4A.2f-a). |
 | 2026-07-27 | Rewrote **Stage 10** around the formalized **Librarian Agent** (PRD §6.2): a single unified ingestion pipeline for every source type, explicit chunk/per-chunk-extract/synthesize steps, one `external_knowledge` row per idea rather than per document, and trust tagging (`evidence_tier = external_claim`) so extracted claims are never confused with tested internal evidence. Dropped the earlier idea of separate code-graph tooling for GitHub sources — GitHub text flows through the same pipeline as everything else. |
 | 2026-07-28 | Resolved the plateau rule for Stage 6: default 5 consecutive non-improving iterations, defined against a noise margin rather than raw score comparison, with two-destination routing depending on whether the bar was ever cleared. Added the corresponding done-when criterion. |
+| 2026-07-28 | **Superseded above.** Clearing the acceptance bar is now an immediate, unconditional stop — Stage 6's A3 verdict logic drops `promote` entirely, since the only path to A4 is a bar-clear short-circuit the worker enforces before A3 is invoked. Plateau collapses to a single below-the-bar concept, always routing to A5. Removed the portfolio-correlation deliverable from Stage 8's A4 — out of scope for v1 (PRD §3), replaced with a capacity/liquidity check and a note that correlation is dashboard-only. |
