@@ -1,0 +1,4 @@
+commit	score	n_trades	status	description
+0eac1e9d377fad23c256bdc001153f86b18e6d7a		69	discard	dual MA crossover, demo run | bar failed on min_trades | honest_score=0.1444 | plateau=1
+0eac1e9d377fad23c256bdc001153f86b18e6d7a		69	discard	determinism check run 1 | bar failed on min_trades | honest_score=0.1444 | plateau=1
+0eac1e9d377fad23c256bdc001153f86b18e6d7a		69	discard	determinism check run 2 | bar failed on min_trades | honest_score=0.1444 | plateau=1

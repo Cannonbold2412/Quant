@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+*.pyc
+nanoaqrl/*.db
+nanoaqrl/results.tsv.bak
