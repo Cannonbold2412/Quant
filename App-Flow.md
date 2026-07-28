@@ -195,33 +195,58 @@ Emit event → enqueue IMPLEMENT job
 
 ## 3. Flow 2 — Implementation (A2)
 
-**Trigger:** `IMPLEMENT` job (new spec) or `FIX_CODE` job (P0 failure) or iteration from A3.
+**Trigger:** the previous flow's write is the trigger. A `strategy_specs` insert (Flow 1) or an A3 `research_plans` insert (Flow 4) fires an event; the scheduler turns that event into an `IMPLEMENT` job. A2 never receives a call from A1 or A3 directly — it only ever picks up a job the scheduler queued because it noticed a row appear.
+
+### 3.1 The Implementation Brief — what A2 receives
+
+Same pattern as A1's Research Brief (§2.1): a focused packet, not the database.
 
 ```
-Worker assembles context:
-        ├── strategy_spec
+Worker assembles the IMPLEMENTATION BRIEF:
+        ├── strategy_spec (hypothesis, operator DAG, parameters, universe)
         ├── research_plan (if iteration ≥ 2) — WHAT to change, not HOW
         ├── previous code_version + diff history
         ├── previous evaluation report
-        ├── operator implementations available
-        └── static-check rules (look-ahead patterns to avoid)
-        │
-        ▼
-Claude session (A2) writes/edits strategy module
+        ├── operator implementations available (actual code, so it knows how to call each block)
+        └── anti-look-ahead rules from program.md (TRD §2A.3a)
+```
+
+**A2 never receives `evaluate.py`.** It knows the correctness rules it must follow, but not how its score will be computed — same reasoning as everywhere else this boundary appears: an agent that can see the scorer eventually aims at the scorer instead of the market.
+
+### 3.2 What A2 does — translation, not invention
+
+It assembles operator-library building blocks into runnable code exactly as the spec's plain-language logic describes. It is not free to invent new logic:
+
+```
+entry_logic: "JMA slope turns positive AND ATR expands beyond 20-day average"
+        ↓
+def entry_signal(df):
+    jma = jma_slope(df.close, period=14)
+    atr_exp = atr_expansion(df, lookback=20)
+    return (jma > 0) & atr_exp
+```
+
+### 3.3 A2's output
+
+```
+INSERT code_versions row (Backend-Schema §4):
+        code_path, code_hash, git_commit
+        diff_from_parent        — empty on iteration 1
+        change_summary          — plain-language: what changed and why
+        implements_plan_id      — which research_plan this responds to (null on iteration 1)
+        compile_ok, static_check_results
         │
         ▼
 Static checks (Python): compile, lint, look-ahead scan, leakage scan
         │
         ├── FAIL ──► enqueue FIX_CODE with diagnostics (bounded retries)
+        │            a static-check failure is a BUG in the code, never a research finding
         │            after k failures → quarantine strategy for human inspection
         │
-        └── PASS ──► INSERT code_version
-        │
-        ▼
-Emit event → enqueue EVALUATE job
+        └── PASS ──► Emit event → enqueue EVALUATE job
 ```
 
-**Boundary:** A2 implements. It does not decide research direction. If A2 believes the plan is wrong, it records the objection in `change_summary` and implements anyway — the objection surfaces to A3.
+**Boundary:** A2 implements. It does not decide research direction. If A2 believes the plan is wrong, it records the objection in `change_summary` and implements anyway — the objection surfaces to A3, not acted on unilaterally.
 
 ---
 
@@ -731,6 +756,7 @@ Check vault budget for this FAMILY (not this strategy)
 | 2026-07-27 | Initial document. All 11 flows mapped, evidence-based stop conditions, trial counting, curiosity loop closure, two human gates, error/edge cases, traceability chain. |
 | 2026-07-27 | Added §1A Flow 0 (the nanoAQRL loop that actually runs first), §15 null-world calibration, §16 vault access. |
 | 2026-07-27 | Flow 0 now points at TRD §2A.3a for the required contents of `program.md`. |
+| 2026-07-27 | Rewrote **Flow 2** with the same treatment as Flow 1: named the **Implementation Brief**, made explicit that a job only ever begins because the scheduler noticed a database row (never a direct call from A1 or A3), stated plainly that A2 never receives `evaluate.py`, and pulled the `code_versions` output into an explicit schema block. |
 | 2026-07-27 | Rewrote **Flow 1** around the **Research Brief**: made explicit that A1 is stateless and performs a fresh relevance search over the whole combined knowledge pool on every run rather than tracking "new vs old"; added the high-novelty push trigger so a standout new idea doesn't wait for the nightly batch; clarified that combining external (candidate) and internal (tested) knowledge happens in A1's own reasoning, not a database join, with a worked example; split A1's output traceability into `source_external_knowledge_ids` and `source_internal_knowledge_ids`. |
 | 2026-07-27 | Rewrote **Flow 10** around the Librarian Agent: a single unified pipeline for every source type (no separate code-repository branch), explicit chunk → per-chunk extraction → cross-chunk synthesis → classify steps, and confirmation that the Librarian sits outside the five-agent loop and never blocks an experiment. |
 | 2026-07-27 | Flow 0 updated for the resolved honest score — the hard bar now gates inside `evaluate.py` before any score is computed, and one float drives keep/discard. |
