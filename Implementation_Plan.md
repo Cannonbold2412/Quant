@@ -125,7 +125,9 @@ Plus three SQLite tables (`strategies`, `experiments`, `evaluations`) with `expe
 | **Cost models keyed on `(market, asset_class)`** | Not market alone — NSE charges cash equity, ETFs and futures differently (TRD §6.3a). Asset classes: cash equity, ETF, future, CFD, spot crypto, perpetual |
 | Timeframe range | Profiles must span **1 second → 1 month**; no hardcoded annualisation anywhere |
 | First profiles | Market/timeframe is **not** fixed to one pilot — all six markets are in scope from the start, so profile loading must be generic before any single profile is filled in |
-| Data snapshot manager | Ingest CSV/Parquet → immutable versioned snapshot + content hash |
+| Data snapshot manager | Ingest Parquet → immutable **raw** snapshot + content hash. Raw is never rewritten |
+| **Corporate-action adjustment pipeline** ★ | Source data is **unadjusted** (TRD §13.2). Build: the `corporate_actions` table, back-adjustment applied **at load time** (not persisted), and volume adjusted inversely. Without this every Indian equity backtest is meaningless — a 1:2 split reads as a −50% move |
+| **Unexplained-jump validator** | Flag any \|return\| > ~20% with no matching corporate action; a human resolves each before the snapshot is valid (TRD §13.2d). This is the only thing that catches *missing* actions |
 | Per-market data validators | Run **at ingest**, not at experiment time |
 | Structured logging | Correlation IDs threading `strategy → experiment → job` |
 
@@ -438,6 +440,8 @@ Only after the loop is proven and producing candidates.
 | **Human rubber-stamps approvals** | 🟠 High | Case-against-first UI; mandatory typed justification |
 | **Scaling requires a rewrite** | 🟡 Medium | No SQLite-specific SQL; lease-based queue from day one |
 | **NIFTY-50 survivorship bias** ⚠️ | 🔴 Critical, **currently unmitigated** | No point-in-time index membership exists. Backtesting today's constituents from 2000 assumes foreknowledge of index survival. **Indian equity results must not reach live capital until resolved** (TRD §20.1). Index-level research is unaffected |
+| **Unadjusted source data** ⚠️ | 🔴 Critical | Splits and bonuses appear as phantom ±50% moves, corrupting every price-based indicator. Mitigated by the Stage 1 adjustment pipeline (TRD §13.2) — but that pipeline is only as complete as the corporate-actions data behind it, hence the unexplained-jump validator as a second line of defence |
+| **Incomplete corporate-actions history** | 🟠 High | A missing split silently corrupts one instrument's entire series. The jump validator catches large ones; small bonuses may slip through. Prefer vendor-adjusted data if obtainable |
 | **Cost model sourced from public rates, not contract notes** | 🟠 High | ~22 bps statutory on NSE delivery is a *starting default*. Re-derive from a real broker contract note before live capital — stale rates are a silent systematic bias in every backtest |
 | **Sub-minute backtest fidelity** | 🟠 High | Below ~1 minute, fills depend on queue position and latency that bar data cannot represent. Supported ≠ trustworthy (TRD §6.4) |
 | **Data quality corrupts everything silently** | 🟡 Medium | Validators at ingest; immutable hashed snapshots |
@@ -509,3 +513,4 @@ Not in the v1 build:
 | 2026-07-28 | Stage 6 gained the bar-clear short-circuit and lost A3's `promote` verdict; Stage 8's A4 lost the portfolio-correlation deliverable; Stage 5 and 9 gained the git branch and merge-on-approve steps. |
 | 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential section numbering; Stage 0 expanded with the parallelisation step in its proper order; all cross-references updated to the renumbered TRD, PRD and App-Flow; changelog consolidated. No plan decisions changed in this pass. |
 | 2026-07-28 | **Design decisions locked in.** Stage 0.1 now specifies best-of-three train windows with the ×3 trial count and per-fold tuning. Stage 1 gained per-`(market, asset_class)` cost models and the 1s–1month profile range, and no longer pilots a single market. Added three risks: NIFTY-50 survivorship (critical, unmitigated), cost models sourced from public rates rather than contract notes, and sub-minute backtest fidelity. |
+| 2026-07-28 | Stage 1 gained the corporate-action adjustment pipeline and the unexplained-jump validator. Added two risks: unadjusted source data (critical, mitigated by the pipeline) and incomplete corporate-actions history (high — the pipeline is only as good as the action data behind it). |

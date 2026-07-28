@@ -677,13 +677,50 @@ Immutable dataset versions. An experiment references a snapshot, never "the file
 | asset_class | TEXT | `cash_equity` \| `etf` \| `future` \| `cfd` \| `spot_crypto` \| `perpetual` — keys the cost model with `market` (TRD §6.3a) |
 | period_start, period_end | TEXT |
 | instrument_count, bar_count | INTEGER |
-| storage_path, content_hash | TEXT |
-| adjustment_method | TEXT |
+| storage_path | TEXT | Path to the **raw, unadjusted** OHLCV — never rewritten (TRD §13.2a) |
+| **raw_content_hash** | TEXT | Hash of the raw files alone |
+| **corporate_actions_version** | TEXT | The actions-table version this snapshot resolves against. Together with `raw_content_hash` this forms the snapshot's true identity — a new split bumps *this*, not the price hash |
+| adjustment_method | TEXT | `back_ratio_price` \| `back_ratio_total_return` \| `none`. Versioned, since the choice changes results |
+| **adjusted** | INTEGER (bool) | ⚠️ A snapshot with `false` is **rejected at P0**, not merely warned about |
 | **survivorship_handled** | INTEGER (bool) | ⚠️ Currently **false** for Indian equities — no point-in-time NIFTY-50 membership exists (TRD §20.1). Snapshots with this false must not back a live promotion |
 | point_in_time_membership | INTEGER (bool) | Whether index constituents are historically accurate rather than today's list projected backwards |
 | in_vault | INTEGER (bool) — if true, the research loop has no read path (TRD §14.2) |
 | validation_status, validation_report | TEXT |
 | created_at | TEXT |
+
+### `corporate_actions` ★
+Splits, bonuses and dividends. **Append-only and versioned** — this table exists so raw price history never has to be rewritten (TRD §13.2a).
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| instrument | TEXT | |
+| market | TEXT | |
+| action_type | TEXT | `split` \| `bonus` \| `dividend` \| `consolidation` |
+| ex_date | TEXT | The date from which the adjustment applies backwards |
+| ratio | REAL | Split 1:N → `1/N`. Bonus a:b → `b/(a+b)`. Dividend D at price P → `(P−D)/P` |
+| raw_terms | TEXT | As published, e.g. `"1:2"` — kept so the ratio is auditable |
+| source | TEXT | Where this record came from (exchange filing, vendor feed, manual) |
+| verified_by | TEXT | `human` or null — unverified actions must not silently affect prices |
+| created_at | | |
+
+> **Why this is separate from the price files:** back-adjusting in place rewrites all historical prices, so a single new split would change every snapshot hash and mark the entire archive `comparable = 0`. Keeping actions in their own versioned table means adjustment is applied **at load time** and only the actions version changes.
+
+### `data_validation_flags`
+Unexplained price jumps caught at ingest (TRD §13.2d) — the safety net for *missing* corporate actions, which the adjustment pipeline cannot detect on its own.
+
+| Column | Type | Notes |
+|---|---|---|
+| id, uid | | |
+| snapshot_id | FK → data_snapshots | |
+| instrument, bar_date | TEXT | |
+| flag_type | TEXT | `unexplained_jump` \| `zero_volume` \| `stale_price` \| `gap` |
+| observed_value | REAL | e.g. the −49.8% single-bar return |
+| threshold | REAL | |
+| resolution | TEXT | `pending` \| `genuine_move` \| `missing_action_added` \| `data_error` |
+| resolved_by, resolved_at | TEXT | |
+
+> **A snapshot with `pending` flags cannot be marked valid.** Every flag is either a real market event or a missing adjustment, and a human must say which.
 
 ### `market_profiles` / `timeframe_profiles`
 Registry of resolved profiles (TRD §6). Content-hashed so experiments can pin them.
@@ -832,3 +869,4 @@ Each must be a simple indexed query, not a scan. These drove the design.
 | 2026-07-28 | Removed `promotions.correlation_with_live` (portfolio fit is out of scope for A4) and `acceptance_bars.plateau_margin_factor` (clearing the bar is an immediate stop, so score-to-score comparison no longer exists). |
 | 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential numbering (§0–§16) replacing the patched §0A/§15 scheme; internal and external knowledge separated into clearly-labelled trust tiers; all cross-references updated to the renumbered TRD, PRD and App-Flow; `in_vault` added to `data_snapshots`; changelog consolidated. No schema decisions changed in this pass. |
 | 2026-07-28 | **Design decisions locked in.** `evaluations` now stores all three train-window scores plus the winner and the spread; `n_trials_used` documented as including the ×3 selection factor; `params_grid_size` and `tuned_params_per_fold` added. `acceptance_bars` carries the concrete pre-registered values. `data_snapshots` gained `asset_class` and `point_in_time_membership`, and `survivorship_handled` now carries the warning that it is currently false for Indian equities. |
+| 2026-07-28 | Added `corporate_actions` (append-only, versioned) and `data_validation_flags`. `data_snapshots` restructured so identity is `(raw_content_hash, corporate_actions_version)` rather than a single hash over adjusted prices — a new split now bumps the actions version instead of invalidating every prior experiment. Added the `adjusted` flag, rejected at P0 when false. |

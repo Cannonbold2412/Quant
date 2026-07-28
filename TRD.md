@@ -735,6 +735,8 @@ Look-ahead bias and data leakage are the dominant failure modes of LLM-written s
 - No survivorship-biased universe construction
 - No use of point-in-time-unavailable fundamentals
 - Signal → order → fill ordering respects the fill model
+- **No absolute price thresholds** — back-adjusted series make absolute levels forward-looking (§13.2c). Rules must be ratio or percentage based
+- **Snapshot is corporate-action adjusted** — an unadjusted series is rejected outright, not merely warned about (§13.2)
 
 **A strategy that fails P0 is a bug**, routed back to A2 with the diagnostic. It is not a research finding and must never pollute the knowledge base as one.
 
@@ -869,7 +871,64 @@ Edges carry **evidence counts and confidence** and link back to the experiments 
 - **Immutable, versioned snapshots.** An experiment references a snapshot ID, never "whatever was on disk that day."
 - **Point-in-time correctness** — no restated data leaking backward.
 - Per-market validators run **at ingest**, not at experiment time.
-- Adjustments (splits/dividends) recorded as a **versioned method**, since the choice affects results.
+- Adjustments recorded as a **versioned method**, since the choice affects results.
+
+### 13.2 Corporate-action adjustment — mandatory pre-processing ★
+
+**Source data for Indian equities is unadjusted.** Splits and bonus issues therefore appear as violent phantom gaps: a 1:2 split halves the price overnight, and every indicator reads a **−50% move that never occurred.** Left unhandled this corrupts returns, volatility, drawdown and every price-based signal — and across ~50 instruments over 25 years there will be hundreds of such events.
+
+This is not optional cleanup. **An unadjusted series makes every backtest on it meaningless.**
+
+#### 13.2a Store raw, adjust at load — never rewrite history
+
+The naive approach — back-adjust the price files once and store the result — has a serious operational flaw. Back-adjustment rewrites *all* historical prices, so **every new split changes the entire past**, which changes `content_hash`, which marks every prior experiment on that snapshot `comparable = 0`. A single corporate action would invalidate the archive.
+
+The correct factoring:
+
+| Stored | Mutability |
+|---|---|
+| **Raw OHLCV** | Immutable. Never rewritten |
+| **`corporate_actions` table** | Append-only, versioned |
+| **Adjusted series** | **Computed at load time**, never persisted as the source of truth |
+
+A new split appends one row to `corporate_actions` and bumps its version; raw prices are untouched. The snapshot's identity becomes `(raw_content_hash, corporate_actions_version)`, so comparability is scoped to what actually changed.
+
+#### 13.2b The adjustment itself
+
+Walking backwards from the newest bar, accumulating a factor:
+
+```
+cumulative_factor = 1.0
+for each bar, newest → oldest:
+    if an unapplied action has ex_date > bar.date:
+        cumulative_factor *= action.ratio
+    adjusted_price  = raw_price  × cumulative_factor
+    adjusted_volume = raw_volume ÷ cumulative_factor
+```
+
+| Action | Ratio |
+|---|---|
+| Split 1:N | `1/N` |
+| Bonus a:b (a free per b held) | `b/(a+b)` |
+| Dividend D at price P *(total-return only)* | `(P−D)/P` |
+
+**Volume must be adjusted too**, in the opposite direction — a 1:2 split doubles share count. Volume-based operators break silently otherwise, and this is the most commonly forgotten half.
+
+#### 13.2c The look-ahead caveat nobody mentions ⚠️
+
+**Back-adjustment is itself mildly forward-looking.** The adjusted price shown for 2015 depends on splits that happened in 2020 — information no 2015 trader had.
+
+This is harmless for anything **ratio-based** (returns, percentage moves, moving-average crossovers, volatility) because ratios are preserved exactly. It is **contaminating for anything using absolute price levels** — a rule like *"enter when price < ₹500"* means something different on an adjusted series than it did in reality.
+
+Consequence, enforced in `program.md` (§2.4) and checked at P0: **strategies must be expressed in ratio or percentage terms, never in absolute price thresholds.** This is good practice independently — absolute-level rules do not transfer across instruments anyway — but here it is a correctness requirement, not a style preference.
+
+#### 13.2d Validator — the safety net for missing actions
+
+Adjustment is only as good as the corporate-actions data behind it, and that data will have gaps. So at ingest, independently of the adjustment:
+
+**Flag any single-bar move beyond a threshold (e.g. |return| > 20%) that has no corresponding corporate-action record.** Every flag is either a genuine market event or a missing adjustment, and each must be resolved by a human before the snapshot is marked valid. This catches exactly the errors the adjustment pipeline cannot catch itself.
+
+> **Cheaper alternative worth weighing:** sourcing an already-adjusted series (or a vendor-supplied corporate-actions feed) is usually far less work than building and validating this pipeline — because the hard part is not the arithmetic, it is obtaining complete and correct corporate-action history. Build this only if adjusted data genuinely is not obtainable.
 
 ---
 
@@ -1046,3 +1105,4 @@ This inflates every Indian equity backtest, and it is precisely the class of sel
 | 2026-07-28 | Train window fixed as configurable 1/2/3 years with test always 1 year, folded into `wf_config_hash`. Clearing the bar became an immediate stop. Git branching and merge convention added. |
 | 2026-07-28 | **Full rewrite for clarity and consistency.** Collapsed the patched §2A/§4A/§4B/§8A numbering into sequential sections 1–20; merged all superseded rules into their final form; removed duplicated material between the honest score, walk-forward and validation sections; consolidated the changelog. No decisions changed in this pass. |
 | 2026-07-28 | **Design decisions locked in.** `z` = 1.65; bar values set (min score 0.50, max DD 15% / 20% crypto, min trades 100). Walk-forward now evaluates **all three train windows and reports the best**, with `N_trials` ×3 so the deflated Sharpe absorbs the selection (§8.2). Parameter tuning enabled, with §8.6 defining precisely what does and does not count as a trial — train-only tuning does not inflate the haircut, but raises internal fold overfitting instead. Cost models re-keyed on `(market, asset_class)` with NSE delivery costs derived (§6.3a). Timeframe range set to 1 second–1 month with an explicit fidelity warning below 1 minute. Added §4.5 continuous operation and the idle-by-design vs idle-by-bug distinction, and §20.1 recording the unmitigated NIFTY-50 survivorship bias. |
+| 2026-07-28 | **Corporate-action adjustment added (§13.2).** Source prices are unadjusted, so splits and bonuses appear as phantom ±50% moves that corrupt every price-based indicator. Design: raw prices stay immutable, corporate actions live in their own append-only versioned table, and adjustment is applied **at load time** — so a new split bumps the actions version rather than rewriting history and invalidating the whole archive. Volume adjusts inversely. Documented the back-adjustment look-ahead caveat: adjusted series preserve ratios exactly but distort absolute price levels, so absolute price thresholds are now forbidden and checked at P0. Added the unexplained-jump validator as the safety net for *missing* actions. |

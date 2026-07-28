@@ -477,11 +477,18 @@ Cash indices are not directly tradeable — every index exposure is via a future
 
 At ₹10 lakh, a full 50-stock basket is thin — roughly ₹20,000 per position. Concentrated baskets (10–20 names) or index instruments are the more realistic starting shape. Capacity is not a binding constraint at this size, but **transaction costs are**: at ~30 bps round trip (TRD §6.3a), small positions are disproportionately eroded.
 
-### 12.4 Known data gap ⚠️
+### 12.4 Known data gaps ⚠️
 
-**No delisted-stock or point-in-time NIFTY-50 membership dataset exists.** This is an unresolved survivorship bias on all Indian equity research — see TRD §20.1. Index-level work is unaffected.
+Market data is supplied manually as offline Parquet. Two quality problems affect Indian equities, and they compound — both inflate backtest results in the same direction.
 
-Market data is supplied manually as offline Parquet. Seed knowledge for both the internal and external stores is hand-written by the Research Director, which resolves the cold-start problem for A1.
+| Gap | Status | Consequence |
+|---|---|---|
+| **No point-in-time NIFTY-50 membership** | ⚠️ **Unresolved** | Survivorship bias — backtesting today's constituents from 2000 assumes foreknowledge of index survival. **Blocks live capital on Indian equities** (TRD §20.1) |
+| **Source prices are unadjusted** | ✅ **Mitigated by design** | Splits and bonuses read as phantom ±50% moves. Handled by the Stage 1 corporate-action pipeline plus an unexplained-jump validator (TRD §13.2) |
+
+Index-level research (NIFTY futures, ETFs) is unaffected by both and can proceed without either fix.
+
+Seed knowledge for the internal and external stores is hand-written by the Research Director, which resolves the cold-start problem for A1.
 
 A prior prototype exists in git history at `d08e812`, mapped to the stages that reuse it in Implementation_Plan §19.
 
@@ -551,3 +558,4 @@ Owner marked where the decision is the human's to make.
 | 2026-07-28 | Clearing the acceptance bar became an immediate, unconditional stop. Plateau became purely a below-the-bar concept, always routing to A5. Portfolio-correlation checks removed from A4 and added to non-goals. |
 | 2026-07-28 | **Full rewrite for clarity and consistency.** Sequential section numbering throughout; all superseded rules resolved into their final form rather than layered as amendments; internal knowledge documented as two layers (automatic raw record + A5 synthesis); changelog consolidated. No decisions changed in this pass. |
 | 2026-07-28 | **Design decisions locked in.** Bar values set (min score 0.50, max DD 15% / 20% crypto, min trades 100, z = 1.65). §10.1 rewritten: the lab runs continuously and never stops on success — Phase B layers onto Phase A rather than replacing it. §12 rewritten with the final market and instrument list (Indian equities/indices, US indices, forex, commodities, crypto via CFDs, ETFs, futures, spot and perpetuals), the 1s–1month timeframe range, ₹10 lakh initial live capital, and the NIFTY-50 survivorship gap. |
+| 2026-07-28 | §12.4 rewritten as two compounding data gaps — unresolved NIFTY-50 survivorship (blocks live equity capital) and unadjusted source prices (mitigated by the Stage 1 adjustment pipeline). Index-level research is unaffected by both. |
