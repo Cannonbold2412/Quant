@@ -629,6 +629,159 @@ def _null_world_default_days() -> int:
 _NULL_WORLD_DEFAULT_DAYS = _null_world_default_days()
 
 
+# -- jobs (Stage 4 — Implementation_Plan §6) ------------------------------------
+
+
+def cmd_jobs_list(args: argparse.Namespace) -> int:
+    from .db.repositories import JobRepository
+
+    conn = connect()
+    filters: dict[str, Any] = {}
+    if args.status:
+        filters["status"] = args.status
+    if args.type:
+        filters["job_type"] = args.type
+    if args.strategy_id:
+        filters["strategy_id"] = args.strategy_id
+    rows = JobRepository(conn).find(order_by="id DESC", limit=args.limit, **filters)
+    print(_table(rows, ["id", "uid", "job_type", "status", "priority", "attempts", "strategy_id", "experiment_id", "created_at"]))
+    return 0
+
+
+def cmd_jobs_show(args: argparse.Namespace) -> int:
+    from .db.repositories import JobRepository
+
+    conn = connect()
+    job = JobRepository(conn).get_by_uid(args.uid)
+    if job is None:
+        print(f"no job {args.uid}", file=sys.stderr)
+        return 1
+    for key, value in job.items():
+        print(f"  {key:<20} {value}")
+    return 0
+
+
+def cmd_jobs_enqueue(args: argparse.Namespace) -> int:
+    from .db.repositories import JobRepository
+
+    conn = connect()
+    payload = json.loads(args.payload) if args.payload else {}
+    jobs = JobRepository(conn)
+    with transaction(conn, immediate=True):
+        job_id = jobs.enqueue(
+            args.type,
+            payload,
+            strategy_id=args.strategy_id,
+            experiment_id=args.experiment_id,
+            priority=args.priority,
+            dedupe_key=args.dedupe_key,
+        )
+    job = jobs.get(job_id)
+    print(f"enqueued job {job_id}  uid={job['uid']}")
+    return 0
+
+
+def cmd_jobs_cancel(args: argparse.Namespace) -> int:
+    from .db.repositories import JobRepository
+
+    conn = connect()
+    jobs = JobRepository(conn)
+    job = jobs.get_by_uid(args.uid)
+    if job is None:
+        print(f"no job {args.uid}", file=sys.stderr)
+        return 1
+    jobs.cancel(job["id"], reason=args.reason or "cancelled via CLI")
+    print(f"cancelled job {job['id']}")
+    return 0
+
+
+def cmd_jobs_retry(args: argparse.Namespace) -> int:
+    """Manually return a terminally-failed job to `pending`.
+
+    Distinct from `failures.handle_job_failure`'s automatic transient retry —
+    this is a human override for a job the operator has decided is worth
+    another attempt regardless of how it was classified.
+    """
+    from .db.repositories import JobRepository
+
+    conn = connect()
+    jobs = JobRepository(conn)
+    job = jobs.get_by_uid(args.uid)
+    if job is None:
+        print(f"no job {args.uid}", file=sys.stderr)
+        return 1
+    if job["status"] not in ("failed", "timed_out", "cancelled"):
+        print(f"job {args.uid} is {job['status']!r}, not a terminal failure state", file=sys.stderr)
+        return 1
+    jobs.update(
+        job["id"], status="pending", claimed_by=None, lease_expires_at=None, heartbeat_at=None,
+        error_message=None, error_trace=None, failure_class=None, completed_at=None, scheduled_for=None,
+    )
+    print(f"requeued job {job['id']}")
+    return 0
+
+
+# -- scheduler (Stage 4) ---------------------------------------------------------
+
+
+def cmd_scheduler_run(args: argparse.Namespace) -> int:
+    import os
+
+    from .orchestration.dispatch import Dispatcher
+    from .orchestration.scheduler import run_forever, tick
+
+    conn = connect()
+    dispatcher = Dispatcher(
+        conn,
+        worker_id=f"scheduler:{os.getpid()}",
+        max_concurrent=args.max_workers,
+        time_budget_seconds=args.time_budget_seconds,
+    )
+    if args.once:
+        report = tick(conn, dispatcher)
+        print(report)
+        return 0
+    run_forever(conn, dispatcher, tick_seconds=args.tick_seconds)
+    return 0
+
+
+def cmd_scheduler_status(args: argparse.Namespace) -> int:
+    from .db.repositories import JobRepository
+    from .orchestration.budgets import check_global
+
+    conn = connect()
+    jobs = JobRepository(conn)
+    print(f"pending      {jobs.pending_count()}")
+    print(f"running      {jobs.running_count()}")
+    back_pressure = check_global(conn)
+    print(f"budgets      {'ok' if back_pressure.allowed else back_pressure.reason}")
+    print("by status:")
+    for row in conn.execute("SELECT status, COUNT(*) AS n FROM jobs GROUP BY status ORDER BY status"):
+        print(f"  {row['status']:<12} {row['n']}")
+    return 0
+
+
+# -- budgets (Stage 4) -----------------------------------------------------------
+
+
+def cmd_budgets_list(args: argparse.Namespace) -> int:
+    conn = connect()
+    rows = [dict(row) for row in conn.execute("SELECT * FROM budgets ORDER BY scope, budget_type, period")]
+    print(_table(rows, ["scope", "scope_id", "budget_type", "period", "limit_value", "used_value", "exhausted"]))
+    return 0
+
+
+def cmd_budgets_set(args: argparse.Namespace) -> int:
+    from .orchestration.budgets import BudgetRepository
+
+    conn = connect()
+    row_id = BudgetRepository(conn).upsert(
+        args.scope, args.type, args.period, args.limit, scope_id=args.scope_id
+    )
+    print(f"budget {row_id} set: {args.scope}:{args.type}:{args.period} limit={args.limit}")
+    return 0
+
+
 # -- wiring --------------------------------------------------------------------
 
 
@@ -788,6 +941,54 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--replications", type=int, default=30)
     p.add_argument("--days", type=int, default=_NULL_WORLD_DEFAULT_DAYS)
     p.set_defaults(func=cmd_evaluate_null_world)
+
+    jobs = subs.add_parser("jobs", help="the Stage 4 job queue").add_subparsers(dest="cmd", required=True)
+    p = jobs.add_parser("list", help="list jobs")
+    p.add_argument("--status")
+    p.add_argument("--type")
+    p.add_argument("--strategy-id", type=int, dest="strategy_id")
+    p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(func=cmd_jobs_list)
+    p = jobs.add_parser("show", help="show one job")
+    p.add_argument("uid")
+    p.set_defaults(func=cmd_jobs_show)
+    p = jobs.add_parser("enqueue", help="manually enqueue a job")
+    p.add_argument("type")
+    p.add_argument("--payload", help="JSON payload")
+    p.add_argument("--strategy-id", type=int, dest="strategy_id")
+    p.add_argument("--experiment-id", type=int, dest="experiment_id")
+    p.add_argument("--priority", type=int, default=0)
+    p.add_argument("--dedupe-key", dest="dedupe_key")
+    p.set_defaults(func=cmd_jobs_enqueue)
+    p = jobs.add_parser("cancel", help="cancel a pending/claimed/running job")
+    p.add_argument("uid")
+    p.add_argument("--reason")
+    p.set_defaults(func=cmd_jobs_cancel)
+    p = jobs.add_parser("retry", help="manually return a failed job to pending")
+    p.add_argument("uid")
+    p.set_defaults(func=cmd_jobs_retry)
+
+    scheduler = subs.add_parser("scheduler", help="the always-on tick loop").add_subparsers(
+        dest="cmd", required=True
+    )
+    p = scheduler.add_parser("run", help="run the scheduler")
+    p.add_argument("--once", action="store_true", help="run a single tick and exit")
+    p.add_argument("--tick-seconds", type=int, dest="tick_seconds")
+    p.add_argument("--max-workers", type=int, dest="max_workers")
+    p.add_argument("--time-budget-seconds", type=int, default=1800, dest="time_budget_seconds")
+    p.set_defaults(func=cmd_scheduler_run)
+    p = scheduler.add_parser("status", help="queue depth, running, idle cause, budgets")
+    p.set_defaults(func=cmd_scheduler_status)
+
+    budgets = subs.add_parser("budgets", help="back-pressure caps").add_subparsers(dest="cmd", required=True)
+    budgets.add_parser("list", help="list configured budgets").set_defaults(func=cmd_budgets_list)
+    p = budgets.add_parser("set", help="create or re-limit a budget")
+    p.add_argument("--scope", required=True, choices=["global", "strategy", "goal"])
+    p.add_argument("--scope-id", type=int, dest="scope_id")
+    p.add_argument("--type", required=True, choices=["tokens", "experiments", "iterations", "compute_seconds", "usd"])
+    p.add_argument("--period", required=True, choices=["day", "week", "lifetime"])
+    p.add_argument("--limit", required=True, type=int)
+    p.set_defaults(func=cmd_budgets_set)
 
     return parser
 

@@ -1,7 +1,7 @@
 # AQRL — Autonomous Quantitative Research Laboratory
 
-> **Status: Stages 0–3 built.**
-> `nanoaqrl/` is the original research loop (Stage 0); `aqrl/` is the foundation layer (Stage 1), operator library (Stage 2), and now the single productionised evaluation engine (Stage 3) it all runs on. Stages 4–13 remain design only.
+> **Status: Stages 0–4 built.**
+> `nanoaqrl/` is the original research loop (Stage 0); `aqrl/` is the foundation layer (Stage 1), operator library (Stage 2), the single productionised evaluation engine (Stage 3), and now the job queue and scheduler (Stage 4, `aqrl/orchestration/`) that runs it unattended. Stages 4a–13 remain design only.
 >
 > ```bash
 > pip install -e .            # Python 3.11+
@@ -9,7 +9,10 @@
 > aqrl profile show nse_equity --timeframe daily
 > aqrl evaluate run --spec strategy.json --market nse_equity --timeframe daily \
 >     --asset-class cash_equity --snapshot-id 1
-> pytest                      # 752 tests
+> aqrl jobs enqueue EVALUATE --payload '{"asset_class": "cash_equity"}' \
+>     --strategy-id 1 --experiment-id 1
+> aqrl scheduler run --once  # or omit --once for the always-on loop
+> pytest                      # 832 tests
 > ```
 
 ---

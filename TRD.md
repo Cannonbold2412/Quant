@@ -1,7 +1,7 @@
 # TRD — AQRL Technical Requirements
 
-> **Status:** Design complete for v1. **Stages 0-1 built** (`nanoaqrl/`, `aqrl/`); Stages 2-13 not started.
-> **Last updated:** 2026-07-28
+> **Status:** Design complete for v1. **Stages 0-4 built** (`nanoaqrl/`, `aqrl/` — foundations, operator library, the evaluation engine, and `aqrl/orchestration/`); Stages 4a-13 not started.
+> **Last updated:** 2026-07-29
 > **Companion docs:** `PRD.md` (why) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences) · `Implementation_Plan.md` (build order)
 
 ---
@@ -1084,3 +1084,4 @@ Deliberately boring. **The novelty budget is spent on the research loop, not the
 | 2026-07-28 | **Design decisions locked in** — z = 1.65, bar values, best-of-three train windows with `N_trials` ×3, parameter tuning with precise trial-counting rules, per-`(market, asset_class)` cost models with NSE figures derived, 1s–1month timeframe range, continuous operation. |
 | 2026-07-28 | **Data integrity added** — corporate-action adjustment at load time, and point-in-time index membership. |
 | 2026-07-28 | **Full rewrite.** Promoted data integrity to its own section (§14) beside adversarial integrity (§15), with an explicit statement of why they are different threats — §15 defends against the agent fooling us, §14 against the data fooling us, and **null-world calibration cannot catch the latter** because the null generator inherits the same corrupted assumptions. Renumbered sequentially §1–§21; folded the locked-in decisions into the body rather than leaving them as appended edits; consolidated the changelog. No decisions changed in this pass. |
+| 2026-07-29 | **§4 (Execution Model) built** as `aqrl/orchestration/` (Stage 4) — the event-driven job queue, atomic lease/heartbeat claiming, the state machines, transient/deterministic failure classification with backoff, poison-pill quarantine, budget back-pressure, and the scheduler tick. This is also the first time two processes write the metadata database concurrently: `aqrl/db/connection.py` gained WAL mode, a configurable `busy_timeout`, and an `immediate=True` `BEGIN IMMEDIATE` path for every claim/complete write, so §3.2's later PostgreSQL swap stays a backend change rather than a concurrency redesign. No §4 decisions changed — this is the section built as specified, not revised. |

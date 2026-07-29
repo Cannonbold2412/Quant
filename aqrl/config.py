@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     log_format: LogFormat = Field(default="json")
 
+    # -- Stage 4: the nervous system (Implementation_Plan §6) -------------------
+    busy_timeout_ms: int = Field(
+        default=5000, description="SQLite busy_timeout — how long a writer waits under contention."
+    )
+    scheduler_tick_seconds: int = Field(default=60, description="Scheduler tick interval.")
+    default_lease_seconds: int = Field(default=300, description="Job lease duration before it is reclaimable.")
+    max_concurrent_workers: int = Field(default=4, description="Scheduler dispatch concurrency cap.")
+    quarantine_after_failures: int = Field(
+        default=3, description="Consecutive job failures on one strategy before it is quarantined."
+    )
+
     @classmethod
     def settings_customise_sources(
         cls,

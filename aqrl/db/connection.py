@@ -109,17 +109,30 @@ def split_statements(sql: str) -> list[str]:
     return [stripped for statement in statements if (stripped := statement.strip())]
 
 
-def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
+def connect(db_path: Path | str | None = None, *, busy_timeout_ms: int | None = None) -> sqlite3.Connection:
     """Open the metadata database with the invariants AQRL depends on.
 
     `isolation_level=None` disables the driver's implicit transaction
     management so `transaction()` below is the single, explicit place where
     commit boundaries are decided.
+
+    Stage 4 (Implementation_Plan §6) is the first time two processes write
+    this database at once — the scheduler and its dispatched worker
+    subprocesses. Two pragmas make that survivable: **WAL** lets readers and
+    the single writer proceed without blocking each other, and
+    **`busy_timeout`** makes a writer that loses the race retry for a bounded
+    window instead of failing immediately with `SQLITE_BUSY`. Both are
+    connection-time pragmas, not schema, so the eventual PostgreSQL swap
+    (TRD §3.2) is unaffected.
     """
-    if db_path is None:
+    if db_path is None or busy_timeout_ms is None:
         from ..config import get_settings
 
-        db_path = get_settings().db_path
+        settings = get_settings()
+        if db_path is None:
+            db_path = settings.db_path
+        if busy_timeout_ms is None:
+            busy_timeout_ms = settings.busy_timeout_ms
 
     path = Path(db_path)
     if path.parent and not path.parent.exists():
@@ -128,13 +141,25 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")  # Backend-Schema §0: FKs are enforced
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
     return conn
 
 
 @contextmanager
-def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    """Explicit transaction. Commits on success, rolls back on any exception."""
-    conn.execute("BEGIN")
+def transaction(conn: sqlite3.Connection, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+    """Explicit transaction. Commits on success, rolls back on any exception.
+
+    `immediate=True` issues `BEGIN IMMEDIATE`, taking the write lock up front
+    instead of the default deferred `BEGIN`, which only upgrades to a write
+    lock on the first write *inside* the transaction. Under concurrent
+    writers, a deferred `BEGIN` lets two connections both start read-only and
+    then race for the write lock mid-transaction — the classic SQLite
+    "database is locked" deadlock. Every claim/complete path in the job queue
+    (`aqrl/orchestration/queue.py`) uses `immediate=True` for exactly this
+    reason.
+    """
+    conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
     try:
         yield conn
     except BaseException:

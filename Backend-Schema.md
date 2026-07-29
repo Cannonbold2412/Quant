@@ -1,7 +1,7 @@
 # Backend Schema — AQRL
 
-> **Status:** Design complete for v1. **Implemented in `aqrl/db/migrations/`** as of Stage 1 — every table below exists, most still empty.
-> **Last updated:** 2026-07-28
+> **Status:** Design complete for v1. **Implemented in `aqrl/db/migrations/`** as of Stage 1 — every table below exists, most still empty. `jobs` is driven for real as of Stage 4 (`aqrl/orchestration/`).
+> **Last updated:** 2026-07-29
 > **Target:** SQLite for v1, PostgreSQL-compatible by design. No SQLite-only features.
 > **Companion docs:** `TRD.md` (architecture) · `App-Flow.md` (who writes what, when)
 
@@ -743,6 +743,7 @@ The queue. **Lease-based claiming**, so the v1→v3 migration is a backend swap 
 | error_message, error_trace | TEXT | |
 | tokens_spent, duration_seconds | INTEGER | |
 | created_at, started_at, completed_at | | |
+| **dedupe_key** | TEXT UNIQUE, nullable | Stage 4 addition (migration 0008). Makes `enqueue` idempotent — a re-run producer gets the existing job's id back instead of a second row. `NULL` is exempt from the unique index, so ad-hoc jobs without a natural dedupe identity are unaffected. |
 
 > Index on `(status, priority, scheduled_for)` — the scheduler's hot path.
 > This table also backs the live activity feed (UI-UX-Brief §8.1).
@@ -896,3 +897,4 @@ Each must be a simple indexed query, not a scan. These drove the design.
 | 2026-07-28 | **Design decisions locked in** — all three train-window scores plus winner and spread on `evaluations`; `n_trials_used` documented as including the ×3 selection factor; `params_grid_size` and `tuned_params_per_fold`; concrete pre-registered values on `acceptance_bars`. |
 | 2026-07-28 | Added `corporate_actions`, `index_membership` and `data_validation_flags`; `data_snapshots` restructured so identity is `(raw_content_hash, corporate_actions_version)`. |
 | 2026-07-28 | **Full rewrite.** Split the data-quality tables out of Infrastructure into their own **§12 Data Integrity** section, beside §11 Research Integrity — they defend against different threats (the data fooling us vs the process fooling us), and null-world calibration cannot catch the former. Renumbered §12–§17; added two data-integrity queries to §15; updated all cross-references to the renumbered TRD. No schema decisions changed in this pass. |
+| 2026-07-29 | **`jobs` driven for real (Stage 4).** Added `jobs.dedupe_key` (migration 0008, `UNIQUE`, nullable) so `enqueue` is idempotent — the property `aqrl/orchestration/events.py`'s single-transaction state-change-plus-enqueue and TRD §4.2's period-stamped time-driven jobs both depend on. No other column changes; the rest of §13 shipped exactly as designed in Stage 1. |

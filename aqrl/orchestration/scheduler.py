@@ -1,0 +1,212 @@
+"""The one always-on tick loop (App-Flow §13).
+
+```
+every ~60 seconds:
+        expire dead leases -> return orphaned jobs to pending
+        check budgets -> back-pressure gates dispatch, not a separate flag store
+        fire due time-based jobs
+        select pending jobs, respecting concurrency + budget caps, dispatch
+        reap completed workers, record cost + duration
+```
+
+**Restart safety is the point.** Nothing here keeps state outside the
+database except which subprocesses *this* scheduler process spawned — an
+optimisation `dispatch.Dispatcher` uses to reap quickly, never a source of
+truth. Killing the scheduler loses nothing: claimed jobs' leases expire, the
+next scheduler (or the next tick of this one, after a restart) reclaims them.
+
+**Idle-cause reporting (TRD §4.5)** is not an afterthought bolted on after
+the loop — it is the return value of every tick that dispatched nothing, so
+"the lab is quiet" is never ambiguous between *healthy and throttled* and
+*broken and stalled*.
+"""
+from __future__ import annotations
+
+import signal
+import sqlite3
+import time
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+
+from ..db import transaction
+from ..db.repositories import JobRepository
+from ..logging import get_logger
+from .budgets import check_global
+from .dispatch import Dispatcher
+
+__all__ = [
+    "TIME_DRIVEN_SCHEDULE",
+    "TickReport",
+    "TimeDrivenJob",
+    "diagnose_idle",
+    "fire_due_time_jobs",
+    "run_forever",
+    "tick",
+]
+
+_log = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class TimeDrivenJob:
+    """One entry in TRD §4.2's cadence table."""
+
+    name: str
+    job_type: str
+    cadence: str  # "hourly" | "daily" | "weekly" | "weekend"
+    payload: dict = field(default_factory=dict)
+
+
+#: TRD §4.2's cadence table, encoded — empty for now. Every one of its rows
+#: (collectors, the A1 nightly batch, A5's weekly mining, weekend sweeps)
+#: needs a producer that does not exist until Stage 5+. Declaring the
+#: mechanism now and leaving the schedule empty means Stage 5 registers a
+#: `TimeDrivenJob` rather than building the firing logic — and means Stage 4
+#: never enqueues a job type nothing can service (`NotImplementedHandler`
+#: would just fail it immediately, which is worse than not queuing at all).
+TIME_DRIVEN_SCHEDULE: list[TimeDrivenJob] = []
+
+
+@dataclass(frozen=True)
+class TickReport:
+    expired_leases: list[int]
+    time_jobs_fired: list[int]
+    dispatched: list[int]
+    terminated_for_timeout: list[int]
+    reaped: list[int]
+    idle_cause: str | None
+
+
+def _period_key(cadence: str, now: datetime) -> str:
+    if cadence == "hourly":
+        return now.strftime("%Y-%m-%dT%H")
+    if cadence == "daily":
+        return now.strftime("%Y-%m-%d")
+    if cadence == "weekly":
+        iso = now.isocalendar()
+        return f"{iso.year}-W{iso.week:02d}"
+    if cadence == "weekend":
+        iso = now.isocalendar()
+        return f"{iso.year}-W{iso.week:02d}-weekend"
+    raise ValueError(f"unknown cadence {cadence!r}")
+
+
+def fire_due_time_jobs(
+    conn: sqlite3.Connection, schedule: list[TimeDrivenJob] | None = None, *, now: datetime | None = None
+) -> list[int]:
+    """Enqueue each schedule entry due this period. Idempotent per period via
+    `dedupe_key` — safe to call every tick even if ticks overlap."""
+    schedule = TIME_DRIVEN_SCHEDULE if schedule is None else schedule
+    if not schedule:
+        return []
+    now = now or datetime.now(UTC)
+    jobs = JobRepository(conn)
+    fired: list[int] = []
+    with transaction(conn, immediate=True):
+        for entry in schedule:
+            key = f"time:{entry.name}:{_period_key(entry.cadence, now)}"
+            fired.append(jobs.enqueue(entry.job_type, entry.payload, dedupe_key=key))
+    return fired
+
+
+def diagnose_idle(conn: sqlite3.Connection, dispatcher: Dispatcher) -> str:
+    """Why did this tick dispatch nothing? TRD §4.5's table, evaluated in
+    priority order — the first true condition is reported."""
+    if dispatcher.running_count >= dispatcher.max_concurrent:
+        return "concurrency_cap"
+
+    back_pressure = check_global(conn)
+    if not back_pressure.allowed:
+        return back_pressure.reason or "budget_exhausted"
+
+    jobs = JobRepository(conn)
+    pending = jobs.pending_count()
+    if pending == 0:
+        # TRD §4.5: "queue empty, budget available, no limit hit" is the one
+        # idle cause the table calls a bug, not a rest state — logged as such
+        # by the caller, never silently treated as healthy.
+        return "queue_empty"
+
+    unresolved_flags = conn.execute(
+        "SELECT COUNT(*) AS n FROM data_validation_flags WHERE resolution = 'pending'"
+    ).fetchone()["n"]
+    if unresolved_flags:
+        return "blocked_on_validation_flags"
+
+    # Pending work exists, nothing is claimable: everything due is either on
+    # a retry backoff (`scheduled_for` in the future) or waiting on a
+    # dependency that has not succeeded yet.
+    return "blocked_on_schedule_or_dependencies"
+
+
+def tick(
+    conn: sqlite3.Connection,
+    dispatcher: Dispatcher,
+    *,
+    schedule: list[TimeDrivenJob] | None = None,
+    now: datetime | None = None,
+) -> TickReport:
+    """One pass of the loop. Safe to call repeatedly; every step is either
+    idempotent or operates only on rows genuinely due."""
+    now = now or datetime.now(UTC)
+    jobs = JobRepository(conn)
+
+    with transaction(conn, immediate=True):
+        expired = jobs.expire_leases(now=now.isoformat())
+
+    time_jobs = fire_due_time_jobs(conn, schedule, now=now)
+    dispatched = dispatcher.dispatch_pending()
+    terminated = dispatcher.enforce_time_budgets()
+    reaped = dispatcher.reap()
+
+    idle_cause = None
+    if not dispatched and dispatcher.running_count == 0:
+        idle_cause = diagnose_idle(conn, dispatcher)
+        level = _log.warning if idle_cause in ("queue_empty",) else _log.info
+        level("scheduler idle", extra={"idle_cause": idle_cause})
+
+    return TickReport(expired, time_jobs, dispatched, terminated, reaped, idle_cause)
+
+
+def run_forever(
+    conn: sqlite3.Connection,
+    dispatcher: Dispatcher,
+    *,
+    tick_seconds: int | None = None,
+    schedule: list[TimeDrivenJob] | None = None,
+    max_ticks: int | None = None,
+) -> None:
+    """The always-on loop. `max_ticks` exists only for tests — production
+    callers omit it and rely on `SIGINT`/`SIGTERM` for graceful shutdown.
+
+    Shutdown does not kill running workers: it stops claiming new jobs and
+    returns once the signal is observed, so the caller can wait on already-
+    dispatched subprocesses (or simply exit — their leases expire and the
+    next scheduler reclaims them, same as any other crash).
+    """
+    from ..config import get_settings
+
+    interval = tick_seconds or get_settings().scheduler_tick_seconds
+    stop = {"requested": False}
+
+    def _handle_signal(signum, frame) -> None:  # noqa: ANN001 - signal handler signature
+        _log.info("shutdown requested", extra={"signal": signum})
+        stop["requested"] = True
+
+    previous_handlers = {}
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        previous_handlers[sig] = signal.signal(sig, _handle_signal)
+
+    ticks = 0
+    try:
+        while not stop["requested"]:
+            report = tick(conn, dispatcher, schedule=schedule)
+            _log.debug("tick complete", extra={"report": report})
+            ticks += 1
+            if max_ticks is not None and ticks >= max_ticks:
+                break
+            if not stop["requested"]:
+                time.sleep(interval)
+    finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
