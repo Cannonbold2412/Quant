@@ -310,6 +310,132 @@ def cmd_flags_resolve(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- operators -----------------------------------------------------------------
+
+
+def cmd_operators_list(args: argparse.Namespace) -> int:
+    from .operators import all_operators
+
+    rows = []
+    for operator in all_operators():
+        if args.category and operator.category != args.category:
+            continue
+        if args.market and operator.valid_markets and args.market not in operator.valid_markets:
+            continue
+        if (
+            args.timeframe
+            and operator.valid_timeframes
+            and args.timeframe not in operator.valid_timeframes
+        ):
+            continue
+        rows.append(
+            {
+                "name": operator.name,
+                "version": operator.version,
+                "category": operator.category,
+                "inputs": ",".join(operator.inputs),
+                "params": ",".join(spec.name for spec in operator.params) or "-",
+                "description": operator.description,
+            }
+        )
+    print(_table(rows, ["name", "version", "category", "inputs", "params", "description"]))
+    print(f"\n{len(rows)} operator(s)")
+    return 0
+
+
+def cmd_operators_show(args: argparse.Namespace) -> int:
+    from .operators import OperatorError, get
+
+    try:
+        operator = get(args.name, args.operator_version)
+    except OperatorError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps(operator.descriptor(), indent=2, sort_keys=True))
+    if operator.description:
+        print(f"\n{operator.description}")
+    if operator.references:
+        print(f"reference: {operator.references}")
+    return 0
+
+
+def cmd_operators_version(args: argparse.Namespace) -> int:
+    from .operators import all_operators, operator_library_version
+
+    print(operator_library_version())
+    print(f"{len(all_operators())} operator(s) registered", file=sys.stderr)
+    return 0
+
+
+def cmd_operators_sync(args: argparse.Namespace) -> int:
+    from .db.repositories import OperatorRepository
+
+    conn = connect()
+    with transaction(conn):
+        counts = OperatorRepository(conn).sync()
+    print(
+        f"inserted {counts['inserted']}, updated {counts['updated']}, "
+        f"unchanged {counts['unchanged']}"
+    )
+    return 0
+
+
+def cmd_operators_approve(args: argparse.Namespace) -> int:
+    from .db.repositories import OperatorRepository
+
+    conn = connect()
+    try:
+        with transaction(conn):
+            count = OperatorRepository(conn).approve(args.name, args.operator_version, args.by)
+    except (LookupError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"approved {count} version(s) of {args.name} by {args.by}")
+    return 0
+
+
+# -- specs ---------------------------------------------------------------------
+
+
+def _load_spec(path: Path):
+    from .operators import StrategySpec
+
+    return StrategySpec(**json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def cmd_spec_hash(args: argparse.Namespace) -> int:
+    from .operators import SpecError
+
+    try:
+        spec = _load_spec(args.path)
+        print(spec.spec_hash())
+    except SpecError as exc:
+        print(f"invalid spec: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_spec_compile(args: argparse.Namespace) -> int:
+    """Compile a spec and report what it will compute, without running a backtest."""
+    from .operators import SpecError, compile_spec, node_operators, spec_warmup
+
+    try:
+        spec = _load_spec(args.path)
+        compiled = compile_spec(spec)
+    except SpecError as exc:
+        print(f"invalid spec: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"spec_hash   {compiled.spec_hash}")
+    print(f"warmup      {spec_warmup(spec)} bars")
+    for role in ("entry", "exit", "filter", "risk"):
+        roots = [node.id for node in spec.roots(role)]
+        used = sorted(node_operators(spec, role))
+        if used:
+            print(f"{role:<11} roots={', '.join(roots)}  nodes={', '.join(used)}")
+    return 0
+
+
 # -- wiring --------------------------------------------------------------------
 
 
@@ -390,6 +516,40 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--index", required=True)
     p.add_argument("--date", required=True)
     p.set_defaults(func=cmd_membership_resolve)
+
+    operators = subs.add_parser("operators", help="the vetted operator library").add_subparsers(
+        dest="cmd", required=True
+    )
+    p = operators.add_parser("list", help="list registered operators")
+    p.add_argument("--category", choices=["transformation", "signal", "risk", "portfolio"])
+    p.add_argument("--market", help="only operators valid for this market")
+    p.add_argument("--timeframe", help="only operators valid for this timeframe")
+    p.set_defaults(func=cmd_operators_list)
+    p = operators.add_parser("show", help="show one operator's full declaration")
+    p.add_argument("name")
+    p.add_argument("--operator-version", help="defaults to the newest registered version")
+    p.set_defaults(func=cmd_operators_show)
+    operators.add_parser(
+        "version", help="print operator_library_version (TRD 6.6)"
+    ).set_defaults(func=cmd_operators_version)
+    operators.add_parser(
+        "sync", help="mirror the registry into the operators table"
+    ).set_defaults(func=cmd_operators_sync)
+    p = operators.add_parser("approve", help="record human sign-off on an operator")
+    p.add_argument("name")
+    p.add_argument("--by", required=True, help="who is approving")
+    p.add_argument("--operator-version", help="defaults to the newest registered version")
+    p.set_defaults(func=cmd_operators_approve)
+
+    spec = subs.add_parser("spec", help="strategy specs (operator DAGs)").add_subparsers(
+        dest="cmd", required=True
+    )
+    p = spec.add_parser("hash", help="print a spec's canonical hash")
+    p.add_argument("path", type=Path)
+    p.set_defaults(func=cmd_spec_hash)
+    p = spec.add_parser("compile", help="validate a spec and describe what it computes")
+    p.add_argument("path", type=Path)
+    p.set_defaults(func=cmd_spec_compile)
 
     flags = subs.add_parser("flags", help="data validation flags").add_subparsers(
         dest="cmd", required=True
