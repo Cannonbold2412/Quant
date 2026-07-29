@@ -1,13 +1,15 @@
 # AQRL — Autonomous Quantitative Research Laboratory
 
-> **Status: Stages 0–1 built.**
-> `nanoaqrl/` is the working research loop (Stage 0); `aqrl/` is the foundation layer it now runs on (Stage 1). Stages 2–13 remain design only.
+> **Status: Stages 0–3 built.**
+> `nanoaqrl/` is the original research loop (Stage 0); `aqrl/` is the foundation layer (Stage 1), operator library (Stage 2), and now the single productionised evaluation engine (Stage 3) it all runs on. Stages 4–13 remain design only.
 >
 > ```bash
 > pip install -e .            # Python 3.11+
 > aqrl db migrate             # create the schema
 > aqrl profile show nse_equity --timeframe daily
-> pytest                      # 179 tests
+> aqrl evaluate run --spec strategy.json --market nse_equity --timeframe daily \
+>     --asset-class cash_equity --snapshot-id 1
+> pytest                      # 752 tests
 > ```
 
 ---

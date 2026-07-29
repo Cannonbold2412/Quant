@@ -1,122 +1,89 @@
-"""The walk-forward protocol — TRD §8.
+"""Stage 0's walk-forward entry point. **The protocol lives elsewhere.**
 
-Rolling windows, test always 1 year, train evaluated at all three lengths
-(1/2/3yr) with the best reported, purged with embargo >= holding period,
-folds concatenated (never averaged) before scoring. Parameter tuning, when
-enabled, is re-run from scratch inside each fold on the training slice only —
-it never inflates `N_trials` (TRD §8.6) because it never sees the test window.
+Stage 3 moved the protocol — fold geometry, purge and embargo, tuning on the
+training window only, chronological concatenation, best-of-three — into
+`aqrl/eval/walk_forward.py`, where it is shared with the panel engine. TRD §6.1
+requires exactly that: two implementations of the same statistical procedure
+diverge silently, and then a Sharpe of 1.4 stops meaning the same thing in two
+rows of the same table.
+
+What stays here is the **adapter**: nanoAQRL evaluates one pandas series with a
+`generate_signals(df, params)` function, so this module turns a date range into
+a return series in those terms and hands the protocol that callable. The
+protocol never learns which shape of data it is scoring, which is the point.
 """
 from __future__ import annotations
 
-import itertools
+import dataclasses
 from dataclasses import dataclass
+from datetime import date
 
 import numpy as np
 import pandas as pd
 
-from .backtest import BacktestResult, SignalFn, run_backtest
-from .cost_models import CostModel
-from .honest_score import HonestScoreResult, compute_honest_score, sharpe_ratio
+from aqrl.eval.walk_forward import (
+    MAX_GRID_COMBINATIONS,
+    BestOfThreeResult,
+    FoldResult,
+    FoldWindow,
+    SliceOutcome,
+    WindowResult,
+    generate_rolling_folds,
+)
+from aqrl.eval.walk_forward import run_best_of_three as _run_best_of_three
+from aqrl.eval.walk_forward import run_window as _run_window
+from aqrl.profiles.models import CostModel
 
-MAX_GRID_COMBINATIONS = 50  # TRD §8.6: "recommended starting grid: <=50 per fold"
+from .backtest import SignalFn, run_backtest
+
+__all__ = [
+    "MAX_GRID_COMBINATIONS",
+    "BestOfThreeResult",
+    "FoldResult",
+    "FoldWindow",
+    "WindowResult",
+    "generate_rolling_folds",
+    "run_best_of_three",
+    "run_window",
+]
+
+#: Stage 0's floor: never shorter than a working week, whatever the estimate
+#: says. A one-day embargo on a strategy that holds for three would leak.
+MIN_EMBARGO_DAYS = 5
 
 
 @dataclass(frozen=True)
-class FoldResult:
-    train_start: pd.Timestamp
-    train_end: pd.Timestamp
-    test_start: pd.Timestamp
-    test_end: pd.Timestamp
-    chosen_params: dict
-    in_sample_sharpe: float
-    test_result: BacktestResult
+class _PandasEvaluator:
+    """Turn `(start, end, params)` into a return series over one pandas frame."""
+
+    df: pd.DataFrame
+    generate_signals: SignalFn
+    cost_model: CostModel
+    cost_multiplier: float
+
+    def __call__(self, start: date, end: date, params: dict) -> SliceOutcome:
+        window = self.df.loc[str(start) : str(end)]
+        if window.empty:
+            return SliceOutcome(np.array([]), np.array([], dtype="datetime64[D]"), 0)
+        result = run_backtest(
+            window, self.generate_signals, params, self.cost_model, self.cost_multiplier
+        )
+        return SliceOutcome(
+            returns=result.returns,
+            dates=result.dates.to_numpy().astype("datetime64[D]"),
+            n_trades=result.n_trades,
+        )
 
 
-@dataclass(frozen=True)
-class WindowResult:
-    train_years: int
-    folds: list[FoldResult]
-    concatenated_returns: np.ndarray
-    concatenated_dates: pd.DatetimeIndex
-    total_trades: int
-    wf_efficiency: float
-    score: HonestScoreResult
+def _with_pandas_dates(window: WindowResult) -> WindowResult:
+    """Re-wrap the concatenated dates as a `DatetimeIndex`.
 
-
-@dataclass(frozen=True)
-class BestOfThreeResult:
-    windows: dict[int, WindowResult]
-    winning_train_years: int
-
-    @property
-    def winning_window(self) -> WindowResult:
-        return self.windows[self.winning_train_years]
-
-    @property
-    def score(self) -> HonestScoreResult:
-        return self.winning_window.score
-
-    @property
-    def score_spread(self) -> dict[int, float]:
-        return {ty: w.score.honest_score for ty, w in self.windows.items()}
-
-
-def generate_rolling_folds(
-    dates: pd.DatetimeIndex,
-    train_years: int,
-    test_years: int,
-    embargo_days: int,
-) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
-    """Rolling (not anchored): train length is fixed and slides forward by
-    `test_years` each time, so every fold is comparable to every other (TRD
-    §8.1)."""
-    folds = []
-    data_start, data_end = dates[0], dates[-1]
-    start = data_start
-    while True:
-        train_end = start + pd.DateOffset(years=train_years)
-        test_start = train_end + pd.Timedelta(days=embargo_days)
-        test_end = test_start + pd.DateOffset(years=test_years)
-        if test_end > data_end:
-            break
-        folds.append((start, train_end, test_start, test_end))
-        start = start + pd.DateOffset(years=test_years)
-    return folds
-
-
-def _grid_combinations(param_grid: dict[str, list]) -> list[dict]:
-    keys = list(param_grid.keys())
-    combos = [dict(zip(keys, values)) for values in itertools.product(*param_grid.values())]
-    if len(combos) > MAX_GRID_COMBINATIONS:
-        rng = np.random.default_rng(0)
-        idx = rng.choice(len(combos), size=MAX_GRID_COMBINATIONS, replace=False)
-        combos = [combos[i] for i in sorted(idx)]
-    return combos
-
-
-def _tune_on_training(
-    train_df: pd.DataFrame,
-    generate_signals: SignalFn,
-    base_params: dict,
-    param_grid: dict[str, list] | None,
-    cost_model: CostModel,
-    cost_multiplier: float,
-    periods_per_year: float,
-) -> tuple[dict, float]:
-    """Selects on training performance only — the test window is never
-    touched, so this never counts toward N_trials (TRD §8.6)."""
-    if not param_grid:
-        result = run_backtest(train_df, generate_signals, base_params, cost_model, cost_multiplier)
-        return base_params, sharpe_ratio(result.returns, periods_per_year)
-
-    best_params, best_sharpe = base_params, -np.inf
-    for combo in _grid_combinations(param_grid):
-        candidate = {**base_params, **combo}
-        result = run_backtest(train_df, generate_signals, candidate, cost_model, cost_multiplier)
-        sr = sharpe_ratio(result.returns, periods_per_year)
-        if sr > best_sharpe:
-            best_params, best_sharpe = candidate, sr
-    return best_params, best_sharpe
+    The engine works in `datetime64` arrays; Stage 0 and its tests expect a
+    pandas index. Converting at this boundary keeps both honest.
+    """
+    return dataclasses.replace(
+        window, concatenated_dates=pd.DatetimeIndex(window.concatenated_dates)
+    )
 
 
 def run_window(
@@ -133,58 +100,20 @@ def run_window(
     periods_per_year: float = 252.0,
     z_multiplier: float = 1.65,
 ) -> WindowResult:
-    fold_windows = generate_rolling_folds(df.index, train_years, test_years, embargo_days)
-    folds: list[FoldResult] = []
-    all_returns: list[np.ndarray] = []
-    all_dates: list[pd.DatetimeIndex] = []
-
-    for train_start, train_end, test_start, test_end in fold_windows:
-        train_df = df.loc[train_start:train_end]
-        test_df = df.loc[test_start:test_end]
-        if len(train_df) < 30 or len(test_df) < 5:
-            continue
-        chosen_params, is_sharpe = _tune_on_training(
-            train_df, generate_signals, base_params, param_grid, cost_model, cost_multiplier, periods_per_year
+    evaluator = _PandasEvaluator(df, generate_signals, cost_model, cost_multiplier)
+    return _with_pandas_dates(
+        _run_window(
+            dates=df.index,
+            evaluate=evaluator,
+            base_params=base_params,
+            train_years=train_years,
+            test_years=test_years,
+            embargo_days=embargo_days,
+            n_trials=n_trials,
+            param_grid=param_grid,
+            periods_per_year=periods_per_year,
+            z_multiplier=z_multiplier,
         )
-        test_result = run_backtest(test_df, generate_signals, chosen_params, cost_model, cost_multiplier)
-        folds.append(
-            FoldResult(
-                train_start=train_start,
-                train_end=train_end,
-                test_start=test_start,
-                test_end=test_end,
-                chosen_params=chosen_params,
-                in_sample_sharpe=is_sharpe,
-                test_result=test_result,
-            )
-        )
-        all_returns.append(test_result.returns)
-        all_dates.append(test_result.dates)
-
-    if all_returns:
-        # Concatenate strictly in chronological order (TRD §8.3, §9.5) — folds
-        # are already generated in time order, so a plain concat preserves it.
-        concatenated = np.concatenate(all_returns)
-        concatenated_dates = pd.DatetimeIndex(np.concatenate([d.values for d in all_dates]))
-    else:
-        concatenated = np.array([])
-        concatenated_dates = pd.DatetimeIndex([])
-
-    total_trades = sum(f.test_result.n_trades for f in folds)
-    oos_sharpe_mean = float(np.mean([sharpe_ratio(f.test_result.returns, periods_per_year) for f in folds])) if folds else 0.0
-    is_sharpe_mean = float(np.mean([f.in_sample_sharpe for f in folds])) if folds else 0.0
-    wf_efficiency = oos_sharpe_mean / is_sharpe_mean if is_sharpe_mean not in (0.0, np.nan) and np.isfinite(is_sharpe_mean) else 0.0
-
-    score = compute_honest_score(concatenated, periods_per_year, n_trials, z_multiplier)
-
-    return WindowResult(
-        train_years=train_years,
-        folds=folds,
-        concatenated_returns=concatenated,
-        concatenated_dates=concatenated_dates,
-        total_trades=total_trades,
-        wf_efficiency=wf_efficiency,
-        score=score,
     )
 
 
@@ -201,27 +130,22 @@ def run_best_of_three(
     periods_per_year: float = 252.0,
     z_multiplier: float = 1.65,
 ) -> BestOfThreeResult:
-    """TRD §8.2: run all three train windows, N_trials tripled because
-    taking the best of three is itself a selection on the reported metric."""
-    embargo_days = max(holding_period_days, 5)
-    n_trials = n_trials_base * 3
-
-    windows = {
-        train_years: run_window(
-            df,
-            generate_signals,
-            base_params,
-            cost_model,
-            train_years,
-            test_years,
-            embargo_days,
-            n_trials,
-            param_grid,
-            cost_multiplier,
-            periods_per_year,
-            z_multiplier,
-        )
-        for train_years in (1, 2, 3)
-    }
-    winning_train_years = max(windows, key=lambda ty: windows[ty].score.honest_score)
-    return BestOfThreeResult(windows=windows, winning_train_years=winning_train_years)
+    """TRD §8.2: run all three train windows, `N_trials` tripled because taking
+    the best of three is itself a selection on the reported metric."""
+    evaluator = _PandasEvaluator(df, generate_signals, cost_model, cost_multiplier)
+    result = _run_best_of_three(
+        dates=df.index,
+        evaluate=evaluator,
+        base_params=base_params,
+        holding_period_bars=holding_period_days,
+        n_trials=n_trials_base * 3,
+        param_grid=param_grid,
+        test_years=test_years,
+        periods_per_year=periods_per_year,
+        z_multiplier=z_multiplier,
+        embargo_days=max(holding_period_days, MIN_EMBARGO_DAYS),
+    )
+    return dataclasses.replace(
+        result,
+        windows={years: _with_pandas_dates(window) for years, window in result.windows.items()},
+    )

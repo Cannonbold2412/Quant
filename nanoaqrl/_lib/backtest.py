@@ -1,4 +1,4 @@
-"""The backtest core + P0 checks (TRD §6, §10.1, §9.4).
+"""Stage 0's single-series backtest core.
 
 Strategy contract (`strategy.py`):
 
@@ -11,19 +11,37 @@ here** — `position[t] = signal[t-1]` always — so a strategy cannot accidenta
 trade on same-bar information even if it forgets to lag (TRD §2.4: "acted on
 at t+1 or later"). This does not make P0 redundant: a strategy can still leak
 by fitting on the whole series, `bfill()`-ing, or reading `shift(-n)` directly,
-none of which the central lag can catch — hence the static + empirical checks
-below.
+none of which the central lag can catch.
+
+**The P0 scanners moved out at Stage 3.** They are re-exported below and now
+live in `aqrl/eval/p0.py`, where the panel engine runs the same code — a second
+copy of a look-ahead scanner is a scanner that stops catching things in one of
+the two places, and nobody notices which.
+
+What stays is the one-instrument, one-cost-model backtest Stage 0 was built
+around. Stage 3's `aqrl/eval/backtest.py` is the panel-native engine; this
+remains the reference the five-file loop runs on.
 """
 from __future__ import annotations
 
-import ast
 from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from .cost_models import CostModel
+from aqrl.eval.backtest import max_drawdown_from_returns
+from aqrl.eval.p0 import empirical_leakage_scan, static_lookahead_scan
+from aqrl.profiles.models import CostModel
+
+__all__ = [
+    "BacktestResult",
+    "SignalFn",
+    "empirical_leakage_scan",
+    "max_drawdown_from_returns",
+    "run_backtest",
+    "static_lookahead_scan",
+]
 
 SignalFn = Callable[[pd.DataFrame, dict], pd.Series]
 
@@ -35,130 +53,6 @@ class BacktestResult:
     n_trades: int
     max_drawdown: float
     equity: pd.Series
-
-
-# ---------------------------------------------------------------------------
-# P0a — static look-ahead scan (AST-based, TRD §9.4 / §10.1)
-# ---------------------------------------------------------------------------
-
-_FORBIDDEN_CALL_NAMES = {"bfill", "backfill"}
-_UNROLLED_STAT_METHODS = {"mean", "std", "var", "zscore", "rank"}
-
-
-class _LookaheadVisitor(ast.NodeVisitor):
-    def __init__(self) -> None:
-        self.violations: list[str] = []
-
-    def visit_Call(self, node: ast.Call) -> None:
-        func = node.func
-        name = None
-        if isinstance(func, ast.Attribute):
-            name = func.attr
-        elif isinstance(func, ast.Name):
-            name = func.id
-
-        if name in _FORBIDDEN_CALL_NAMES:
-            self.violations.append(f"line {node.lineno}: forbidden call `{name}()` (pulls the future backwards)")
-
-        if name == "shift" and node.args:
-            arg = node.args[0]
-            # Kept as two explicit branches. Collapsing them into one
-            # `A and B or C and D` chain relies on operator precedence, and this
-            # is the look-ahead scanner — the one place in the codebase where a
-            # subtly misread condition silently stops catching leaks.
-            if isinstance(arg, ast.UnaryOp) and isinstance(arg.op, ast.USub):
-                self.violations.append(f"line {node.lineno}: `shift(-n)` is forbidden anywhere")
-            elif isinstance(arg, ast.Constant) and isinstance(arg.value, (int, float)) and arg.value < 0:
-                self.violations.append(f"line {node.lineno}: `shift(-n)` is forbidden anywhere")
-
-        if name == "fillna":
-            for kw in node.keywords:
-                if kw.arg == "method" and isinstance(kw.value, ast.Constant) and kw.value.value in ("backfill", "bfill"):
-                    self.violations.append(f"line {node.lineno}: `fillna(method='{kw.value.value}')` is forbidden")
-
-        if name in ("rolling", "expanding", "ewm"):
-            for kw in node.keywords:
-                if kw.arg == "center" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
-                    self.violations.append(f"line {node.lineno}: centred windows (`center=True`) are forbidden")
-
-        # Whole-series stats: `.mean()/.std()/...` NOT chained off `.rolling(/.expanding(/.ewm(`.
-        if name in _UNROLLED_STAT_METHODS and isinstance(func, ast.Attribute):
-            receiver = func.value
-            chained_on_window = isinstance(receiver, ast.Call) and (
-                isinstance(receiver.func, ast.Attribute) and receiver.func.attr in ("rolling", "expanding", "ewm")
-            )
-            if not chained_on_window:
-                self.violations.append(
-                    f"line {node.lineno}: whole-series `.{name}()` — rolling statistics only, never over the full series"
-                )
-
-        self.generic_visit(node)
-
-
-def static_lookahead_scan(source: str) -> list[str]:
-    """P0a. Returns a list of violation strings; empty means the scan passed."""
-    tree = ast.parse(source)
-    visitor = _LookaheadVisitor()
-    visitor.visit(tree)
-    return visitor.violations
-
-
-# ---------------------------------------------------------------------------
-# P0b — empirical leakage scan: truncation invariance
-# ---------------------------------------------------------------------------
-
-
-def empirical_leakage_scan(
-    df: pd.DataFrame,
-    generate_signals: SignalFn,
-    params: dict,
-    checkpoints: tuple[float, ...] = (0.5, 0.7, 0.85),
-    tolerance: float = 1e-9,
-) -> list[str]:
-    """P0b. A signal computed with only data up to bar t must be identical
-    whether or not the strategy was ever shown bars after t. Truncate the
-    frame at several checkpoints and compare against the full-sample signal
-    over the overlapping region — any mismatch means the strategy peeked at
-    the future somewhere the static scan didn't catch."""
-    violations: list[str] = []
-    full_signal = generate_signals(df, params)
-    n = len(df)
-
-    for frac in checkpoints:
-        k = int(n * frac)
-        if k < 10:
-            continue
-        truncated = generate_signals(df.iloc[:k], params)
-        overlap = min(len(truncated), k)
-        a = full_signal.iloc[:overlap].to_numpy(dtype=float)
-        b = truncated.iloc[:overlap].to_numpy(dtype=float)
-        # Ignore the tail of the truncated window — a rolling window's most
-        # recent points can legitimately differ once enough of it is missing
-        # relative to the warm-up; compare only the stable prefix.
-        stable = max(overlap - 5, 0)
-        if stable == 0:
-            continue
-        a, b = a[:stable], b[:stable]
-        mask = ~(np.isnan(a) & np.isnan(b))
-        if not np.allclose(np.nan_to_num(a[mask]), np.nan_to_num(b[mask]), atol=tolerance):
-            violations.append(
-                f"truncation at {frac:.0%} of history changed earlier signal values — future data leaked backwards"
-            )
-    return violations
-
-
-# ---------------------------------------------------------------------------
-# Backtest core
-# ---------------------------------------------------------------------------
-
-
-def max_drawdown_from_returns(returns: np.ndarray) -> float:
-    if returns.size == 0:
-        return 0.0
-    equity = np.cumprod(1.0 + returns)
-    running_max = np.maximum.accumulate(equity)
-    drawdown = (equity - running_max) / running_max
-    return float(-drawdown.min())
 
 
 def run_backtest(
