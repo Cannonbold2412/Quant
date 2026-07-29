@@ -231,6 +231,27 @@ def test_lookup_defaults_to_the_newest_version():
         assert get(name).version == resolve_version(name)
 
 
+def test_versions_are_ordered_semantically_not_lexicographically():
+    """`1.10.0` is newer than `1.9.0`, and string sorting disagrees.
+
+    Not cosmetic: a spec node with `version=None` pins the newest version **at
+    hash time**, so resolving to a stale implementation would silently change
+    what a stored `spec_hash` means.
+    """
+    from aqrl.operators.registry import _version_key
+
+    ordered = sorted(["1.9.0", "1.10.0", "1.2.0", "2.0.0"], key=_version_key)
+    assert ordered == ["1.2.0", "1.9.0", "1.10.0", "2.0.0"]
+    assert sorted(["1.9.0", "1.10.0"])[-1] == "1.9.0", "the naive sort really is wrong"
+
+
+def test_a_non_numeric_version_segment_does_not_break_resolution():
+    from aqrl.operators.registry import _version_key
+
+    assert _version_key("1.0.0-rc1") != _version_key("1.0.0")
+    sorted(["1.0.0", "1.0.0-rc1", "1.1.0"], key=_version_key)  # must not raise
+
+
 def test_an_unknown_operator_names_the_alternatives():
     with pytest.raises(OperatorError, match="no operator named"):
         get("definitely_not_an_operator")

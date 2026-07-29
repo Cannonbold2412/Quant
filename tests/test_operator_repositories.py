@@ -14,6 +14,7 @@ import pytest
 from aqrl.db.repositories import (
     DuplicateSpecError,
     OperatorRepository,
+    SpecOperatorRepository,
     SpecRepository,
     StrategyRepository,
 )
@@ -183,14 +184,8 @@ def test_operator_usage_is_recorded_transitively(conn, strategy_id):
 
 
 def test_usage_rows_carry_the_role_and_bound_parameters(conn, strategy_id):
-    from aqrl.db.repositories import Repository
-
     spec_id = SpecRepository(conn).insert_spec(dual_ma(), strategy_id)
-
-    join = Repository(conn)
-    join.table = "spec_operators"
-    join.json_columns = frozenset({"parameters_used"})
-    rows = join.find(spec_id=spec_id, order_by="id")
+    rows = SpecOperatorRepository(conn).for_spec(spec_id)
 
     assert {row["role"] for row in rows} == {"entry"}
     windows = sorted(
@@ -209,11 +204,7 @@ def test_usage_is_recorded_per_role(conn, strategy_id):
     )
     spec_id = SpecRepository(conn).insert_spec(spec, strategy_id)
 
-    from aqrl.db.repositories import Repository
-
-    join = Repository(conn)
-    join.table = "spec_operators"
-    roles = {row["role"] for row in join.find(spec_id=spec_id)}
+    roles = {row["role"] for row in SpecOperatorRepository(conn).for_spec(spec_id)}
     assert roles == {"entry", "risk"}
 
 

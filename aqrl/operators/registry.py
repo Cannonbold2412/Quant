@@ -63,14 +63,38 @@ def all_operators() -> list[Operator]:
     return [_REGISTRY[key] for key in sorted(_REGISTRY)]
 
 
+def _version_key(version: str) -> tuple:
+    """Sort key that orders `1.10.0` after `1.9.0`.
+
+    Sorting version strings directly is lexicographic, which puts `1.9.0` last
+    and would silently resolve a node to a stale implementation the first time
+    any operator reached a double-digit minor. That is not a cosmetic ordering
+    bug: `version=None` pins the newest version **at hash time**, so picking the
+    wrong one changes what a stored `spec_hash` means.
+
+    Non-numeric segments (`1.0.0-rc1`) fall back to string comparison within
+    their position rather than raising — an unparseable version should order
+    oddly, not break the registry.
+    """
+    parts: list[tuple[int, int, str]] = []
+    for segment in version.split("."):
+        if segment.isdigit():
+            parts.append((0, int(segment), ""))
+        else:
+            parts.append((1, 0, segment))
+    return tuple(parts)
+
+
 def resolve_version(name: str) -> str:
-    """The newest registered version of `name`.
+    """The newest registered version of `name`, by semantic ordering.
 
     Used when a spec node leaves `version` unset: the version is pinned **at
     hash time**, so the stored `spec_hash` always names a concrete
     implementation even though the author did not.
     """
-    versions = sorted(version for registered, version in _REGISTRY if registered == name)
+    versions = sorted(
+        (version for registered, version in _REGISTRY if registered == name), key=_version_key
+    )
     if not versions:
         raise OperatorError(f"no operator named {name!r} (have: {', '.join(names()) or 'none'})")
     return versions[-1]

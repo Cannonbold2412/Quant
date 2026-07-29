@@ -17,7 +17,12 @@ from .data import (
     SnapshotRepository,
     ValidationFlagRepository,
 )
-from .operators import DuplicateSpecError, OperatorRepository, SpecRepository
+from .operators import (
+    DuplicateSpecError,
+    OperatorRepository,
+    SpecOperatorRepository,
+    SpecRepository,
+)
 from .registry import CostModelRepository, MarketProfileRepository, TimeframeProfileRepository
 from .research import (
     VERDICT_TO_STATUS,
@@ -41,6 +46,7 @@ __all__ = [
     "Repository",
     "Row",
     "SnapshotRepository",
+    "SpecOperatorRepository",
     "SpecRepository",
     "StrategyRepository",
     "TimeframeProfileRepository",

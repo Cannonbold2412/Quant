@@ -23,7 +23,12 @@ from typing import Any
 from ...operators import StrategySpec, all_operators, operator_library_version
 from .base import Repository, Row
 
-__all__ = ["DuplicateSpecError", "OperatorRepository", "SpecRepository"]
+__all__ = [
+    "DuplicateSpecError",
+    "OperatorRepository",
+    "SpecOperatorRepository",
+    "SpecRepository",
+]
 
 
 class DuplicateSpecError(ValueError):
@@ -116,6 +121,25 @@ class OperatorRepository(Repository):
         return operator_library_version()
 
 
+class SpecOperatorRepository(Repository):
+    """The `spec_operators` join — which operators a spec used, in which role.
+
+    A declared class rather than a generic `Repository` with its attributes
+    reassigned per call: this table has neither `uid` nor `created_at`, so the
+    base class's defaults must be switched off, and doing that at four call
+    sites is one forgotten line away from an insert against a column that does
+    not exist.
+    """
+
+    table = "spec_operators"
+    json_columns = frozenset({"parameters_used"})
+    has_uid = False
+    created_column = None
+
+    def for_spec(self, spec_id: int) -> list[Row]:
+        return self.find(spec_id=spec_id, order_by="id")
+
+
 class SpecRepository(Repository):
     table = "strategy_specs"
     json_columns = frozenset(
@@ -191,11 +215,7 @@ class SpecRepository(Repository):
         must find it.
         """
         operators = OperatorRepository(self.conn)
-        join = Repository(self.conn)
-        join.table = "spec_operators"
-        join.json_columns = frozenset({"parameters_used"})
-        join.has_uid = False
-        join.created_column = None
+        join = SpecOperatorRepository(self.conn)
 
         for role, entries in spec.operators().items():
             for _, operator, bound in entries:
