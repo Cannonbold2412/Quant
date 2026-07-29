@@ -436,6 +436,199 @@ def cmd_spec_compile(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- evaluate --------------------------------------------------------------------
+
+
+def cmd_evaluate_run(args: argparse.Namespace) -> int:
+    """Run one experiment through the Stage 3 engine and persist the report."""
+    from .data import SnapshotManager
+    from .db.repositories import ExperimentRepository, SnapshotRepository, StrategyRepository
+    from .eval.bar import AcceptanceBar
+    from .eval.engine import EvaluationInputs, evaluate_experiment
+    from .eval.panel import PricePanel
+    from .eval.persistence import persist_evaluation
+    from .operators import StrategySpec
+
+    conn = connect()
+    resolved = ProfileLoader().resolve(args.market, args.timeframe, args.asset_class)
+    snapshot = SnapshotRepository(conn).get(args.snapshot_id)
+    if snapshot is None:
+        print(f"no snapshot {args.snapshot_id}", file=sys.stderr)
+        return 1
+
+    frame = SnapshotManager(conn).load(args.snapshot_id)
+    panel = PricePanel.from_frame(frame)
+    spec = StrategySpec(**json.loads(Path(args.spec).read_text(encoding="utf-8")))
+
+    strategies = StrategyRepository(conn)
+    strategy_id = strategies.get_or_create(
+        name=args.name, family=args.family, market=args.market, timeframe=args.timeframe
+    )
+    experiments = ExperimentRepository(conn)
+    iteration = experiments.next_iteration(strategy_id)
+    experiment_id = experiments.start(strategy_id, iteration)
+
+    inputs = EvaluationInputs(
+        spec=spec,
+        panel=panel,
+        resolved=resolved,
+        snapshot=snapshot,
+        acceptance_bar=AcceptanceBar.locked(conn, args.campaign),
+        family_prior_trials=strategies.family_trial_count(args.family),
+        code_commit=args.code_commit,
+        data_snapshot_id=args.snapshot_id,
+        random_seed=args.seed if args.seed is not None else iteration,
+        cost_multiplier=args.cost_multiplier,
+    )
+
+    with transaction(conn):
+        report = evaluate_experiment(inputs)
+        evaluation_id = persist_evaluation(conn, experiment_id, report)
+
+    print(f"experiment {experiment_id}  evaluation {evaluation_id}")
+    print(f"phase_reached={report.phase_reached}  outcome={report.outcome}"
+          + (f"  failure_reason={report.failure_reason}" if report.failure_reason else ""))
+    if report.honest_score is not None:
+        print(f"honest_score={report.honest_score.honest_score:.4f}")
+    return 0 if report.outcome != "error" else 1
+
+
+def cmd_evaluate_show(args: argparse.Namespace) -> int:
+    from .db.repositories import EvaluationRepository, EvaluationTestRepository, ExperimentRepository
+
+    conn = connect()
+    experiment = ExperimentRepository(conn).get(args.experiment_id)
+    if experiment is None:
+        print(f"no experiment {args.experiment_id}", file=sys.stderr)
+        return 1
+
+    print("## experiment")
+    for key in (
+        "id", "strategy_id", "iteration", "status", "outcome", "phase_reached",
+        "eval_engine_version", "market_profile_hash", "timeframe_profile_hash",
+        "cost_model_hash", "wf_config_hash", "operator_library_version",
+        "code_commit", "data_snapshot_id", "random_seed", "comparable",
+    ):
+        print(f"  {key:<24} {experiment.get(key)}")
+
+    evaluation = EvaluationRepository(conn).latest_for_experiment(args.experiment_id)
+    if evaluation is None:
+        print("\n(no evaluation recorded)")
+        return 0
+
+    print("\n## evaluation")
+    for key in (
+        "phase", "result", "bar_result", "bar_failed_on", "honest_score", "sr_oos",
+        "se_sr", "n_trials_used", "winning_train_years", "train_window_spread",
+        "sharpe", "max_drawdown", "trade_count", "deflated_sharpe", "pbo",
+        "white_rc_pvalue", "cost_breakeven_multiplier",
+    ):
+        if key in evaluation:
+            print(f"  {key:<24} {evaluation[key]}")
+
+    tests = EvaluationTestRepository(conn).for_evaluation(evaluation["id"])
+    if tests:
+        print(f"\n## checks ({len(tests)})")
+        print(_table(tests, ["test_name", "category", "result", "gating", "value", "threshold"]))
+    return 0
+
+
+def cmd_evaluate_null_world(args: argparse.Namespace) -> int:
+    """Re-run null-world calibration through the Stage 3 panel engine.
+
+    Reuses nanoAQRL's generators (permuted returns, block bootstrap, synthetic
+    fat-tailed paths) rather than duplicating them — the null-world claim is
+    about the SCORING PATH, and Stage 0 already measured this generator set at
+    0/40 (`Implementation_Plan.md`, M0). Re-running it here answers whether
+    that result still holds now that the scoring path is the panel engine.
+    """
+    from .db.repositories import NullWorldRunRepository
+    from .eval.bar import AcceptanceBar
+    from .eval.engine import EvaluationInputs, evaluate_experiment
+    from .eval.panel import PricePanel
+    from .eval.version import engine_version
+    from .operators import StrategySpec
+
+    generators = _null_world_generators()
+    if args.generator not in generators:
+        print(f"unknown generator {args.generator!r} (choices: {', '.join(generators)})", file=sys.stderr)
+        return 1
+    gen_fn = generators[args.generator]
+
+    resolved = ProfileLoader().resolve(args.market, args.timeframe, args.asset_class)
+    spec = StrategySpec(**json.loads(Path(args.spec).read_text(encoding="utf-8")))
+    snapshot = {
+        "validation_status": "valid", "in_vault": 0, "adjusted": 1,
+        "adjustment_method": "back_ratio_price", "point_in_time_membership": 1,
+    }
+    bar = AcceptanceBar()
+
+    discoveries = 0
+    max_score = float("-inf")
+    for replication in range(args.replications):
+        frame = gen_fn(args.days, seed=1000 + replication)
+        panel = PricePanel.from_pandas_ohlcv(frame)
+        inputs = EvaluationInputs(
+            spec=spec, panel=panel, resolved=resolved, snapshot=snapshot,
+            acceptance_bar=bar, family_prior_trials=0, random_seed=replication,
+        )
+        report = evaluate_experiment(inputs)
+        if report.outcome == "passed":
+            discoveries += 1
+        if report.honest_score is not None:
+            max_score = max(max_score, report.honest_score.honest_score)
+
+    # `null_world_runs.null_model` uses a different vocabulary from this
+    # command's `--generator` (Backend-Schema §11) — the CLI flag names the
+    # nanoAQRL function reused, the column names the null-world MODEL it
+    # implements. `synthetic_path` is Student-t fat-tailed, not GBM.
+    null_model = {
+        "permuted": "permuted_returns",
+        "block_bootstrap": "block_bootstrap",
+        "synthetic_path": "synthetic_fat_tail",
+    }[args.generator]
+
+    conn = connect()
+    with transaction(conn):
+        NullWorldRunRepository(conn).record(
+            null_model=null_model,
+            replications=args.replications,
+            discoveries_reported=discoveries,
+            max_score_observed=max_score if max_score != float("-inf") else 0.0,
+            eval_engine_version=engine_version(),
+        )
+
+    print(f"generator={args.generator}  replications={args.replications}  "
+          f"discoveries={discoveries}  fdr={discoveries / args.replications:.4f}")
+    return 0
+
+
+def _null_world_generators() -> dict[str, Any]:
+    from nanoaqrl._lib.synthetic_data import (
+        block_bootstrap_ohlcv,
+        permuted_returns_ohlcv,
+        synthetic_path_ohlcv,
+    )
+
+    return {
+        "permuted": permuted_returns_ohlcv,
+        "block_bootstrap": block_bootstrap_ohlcv,
+        "synthetic_path": synthetic_path_ohlcv,
+    }
+
+
+def _null_world_default_days() -> int:
+    """Six years of trading days — derived, not a bare annualisation literal,
+    per the same rule `test_no_hardcoded_annualisation_constant_in_the_package`
+    enforces everywhere else in this package."""
+    from nanoaqrl._lib.synthetic_data import TRADING_DAYS_PER_YEAR
+
+    return TRADING_DAYS_PER_YEAR * 6
+
+
+_NULL_WORLD_DEFAULT_DAYS = _null_world_default_days()
+
+
 # -- wiring --------------------------------------------------------------------
 
 
@@ -564,6 +757,37 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["genuine_move", "missing_action_added", "data_error"])
     p.add_argument("--by", required=True, help="who is making this call")
     p.set_defaults(func=cmd_flags_resolve)
+
+    evaluate = subs.add_parser("evaluate", help="the Stage 3 evaluation engine").add_subparsers(
+        dest="cmd", required=True
+    )
+    p = evaluate.add_parser("run", help="run one experiment and persist the report")
+    p.add_argument("--spec", required=True, type=Path, help="path to a StrategySpec JSON file")
+    p.add_argument("--market", required=True)
+    p.add_argument("--timeframe", required=True)
+    p.add_argument("--asset-class", required=True)
+    p.add_argument("--snapshot-id", required=True, type=int, dest="snapshot_id")
+    p.add_argument("--family", default="unnamed_family")
+    p.add_argument("--name", default="unnamed_strategy")
+    p.add_argument("--campaign", help="acceptance_bars.campaign_label to lock against")
+    p.add_argument("--seed", type=int, help="defaults to the experiment's iteration number")
+    p.add_argument("--cost-multiplier", type=float, default=2.0, dest="cost_multiplier")
+    p.add_argument("--code-commit", dest="code_commit")
+    p.set_defaults(func=cmd_evaluate_run)
+
+    p = evaluate.add_parser("show", help="show a stored experiment and its latest evaluation")
+    p.add_argument("experiment_id", type=int)
+    p.set_defaults(func=cmd_evaluate_show)
+
+    p = evaluate.add_parser("null-world", help="re-run null-world calibration through the panel engine")
+    p.add_argument("--spec", required=True, type=Path)
+    p.add_argument("--market", default="nse_equity")
+    p.add_argument("--timeframe", default="daily")
+    p.add_argument("--asset-class", default="cash_equity")
+    p.add_argument("--generator", choices=["permuted", "block_bootstrap", "synthetic_path"], required=True)
+    p.add_argument("--replications", type=int, default=30)
+    p.add_argument("--days", type=int, default=_NULL_WORLD_DEFAULT_DAYS)
+    p.set_defaults(func=cmd_evaluate_null_world)
 
     return parser
 

@@ -18,6 +18,10 @@ dependencies = [
     "numpy>=1.26",
     "pandas>=2.0",
     "scipy>=1.11",
+    # Stage 3: JIT for the one profiled, genuinely path-dependent hot loop
+    # (stationary-bootstrap resampling) — TRD §9.2, applied on evidence, not
+    # speculatively (see aqrl/eval/stats/monte_carlo.py).
+    "numba>=0.59",
 ]
 
 [project.optional-dependencies]

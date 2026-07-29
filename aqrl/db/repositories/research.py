@@ -186,6 +186,29 @@ class EvaluationRepository(Repository):
         return self._decode(self.conn.execute(sql, params).fetchone())
 
 
+class EvaluationTestRepository(Repository):
+    """One row per test within a phase — `evaluation_tests` has no `uid` or
+    `created_at`, so both Repository conventions are switched off."""
+
+    table = "evaluation_tests"
+    has_uid = False
+    created_column = None
+
+    def for_evaluation(self, evaluation_id: int) -> list[Row]:
+        return self.find(evaluation_id=evaluation_id)
+
+
+class RegimePerformanceRepository(Repository):
+    """Per-regime performance rows — same no-`uid`/no-timestamp shape."""
+
+    table = "regime_performance"
+    has_uid = False
+    created_column = None
+
+    def for_evaluation(self, evaluation_id: int) -> list[Row]:
+        return self.find(evaluation_id=evaluation_id)
+
+
 class NullWorldRunRepository(Repository):
     table = "null_world_runs"
 

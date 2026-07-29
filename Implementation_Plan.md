@@ -1,6 +1,6 @@
 # Implementation Plan — AQRL
 
-> **Status:** **Stages 0–2 are built** (nanoAQRL, Foundations, Operator Library). Stages 3–13 not started.
+> **Status:** **Stages 0–3 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised). Stages 4–13 not started.
 > **Last updated:** 2026-07-29
 > **Companion docs:** `PRD.md` (why) · `TRD.md` (how) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences)
 
@@ -230,6 +230,55 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 - The same experiment **single-threaded vs parallel** → bit-identical `honest_score` (TRD §9.5)
 
 **Done when:** all known-answer cases behave correctly, and identical inputs reproduce identical outputs bit-for-bit.
+
+> ✅ **Built.** `aqrl/eval/`: a single panel-native engine (`(n_bars × n_instruments)`, so a
+> single instrument is a panel of one) driven entirely by a `ResolvedProfile`, running the ordered
+> funnel — complexity → P0 → P1 → P2 → P3 → market gates → the bar — with a failure at any phase
+> short-circuiting everything after it. `engine.py` orchestrates; `panel.py`/`fills.py`/`costs.py`/
+> `backtest.py` are 3a; `p0.py`/`bar.py` are 3b; `metrics.py` is 3c; `walk_forward.py` plus
+> `stats/{honest_score,deflated,monte_carlo,reality_check,cscv}.py` and `regimes.py` are 3d;
+> `gates/{equities,crypto,commodities,forex}.py` are 3e; `report.py`/`persistence.py`/`version.py`
+> are 3f. Persists into the schema Stage 1 already migrated — no new migration was needed.
+>
+> **One statistical layer, not per-market forks (TRD §6.1).** The honest score and walk-forward
+> protocol moved out of `nanoaqrl/_lib/` into `aqrl/eval/`; `nanoaqrl/_lib/honest_score.py` and
+> `walk_forward.py` are now thin re-export shims, so Stage 0's loop runs unchanged against the one
+> canonical implementation rather than a diverging copy.
+>
+> **The known-answer suite passed — M1 cleared.** All seven §5.2 cases, run through the actual
+> engine funnel: a `shift(-1)` look-ahead and a whole-sample-normalised, backfilled **vectorised**
+> leak are both caught at P0 (the vectorised case mandatory per TRD §9.4); pure noise fails before
+> or at P3 across every seed tried; a strategy overfit to one regime collapses `wf_efficiency` well
+> below 1.0 (TRD §8.6's own diagnostic — PBO itself proved too noisy with few folds to gate on
+> reliably, and is reported rather than asserted on for that reason); a small genuine edge survives
+> 1× costs and dies exactly at the 2× default; Sharpe, max drawdown and round-trip cost all match
+> closed-form derivations; and single-threaded vs 4-worker runs, and repeated runs of the same
+> experiment, are bit-identical. The "known-good published strategy" case is replaced by the
+> analytic ground-truth case — no real price history exists yet (§21) — and stays open below.
+>
+> **Profiled, then optimised on evidence, per §9.7.** A 20-year, 5-instrument, 500-replication
+> evaluation ran at 4.29s; `cProfile` placed 46% of it in the Monte Carlo stationary-bootstrap
+> index walk and 24% in an O(n²) expanding-median recomputation inside regime labelling — the rest
+> (spec evaluation, all three walk-forward windows) was already fast. The bootstrap walk is
+> exactly TRD §9.2's "genuinely path-dependent logic," so it is the one place Numba lands, applied
+> only after profiling named it (Stage 2 left the seam open for precisely this decision); the
+> expanding median was an algorithmic bug, not a JIT candidate, and became a proper O(n log n)
+> two-heap running median instead, verified numerically identical to the O(n²) version it
+> replaced. Together: 4.29s → 0.92s, a 4.7× reduction, entirely evidence-driven.
+>
+> **Determinism (TRD §9.5) is real, not asserted.** Fold-level parallelism runs through
+> `parallel.map_ordered` — a process pool at the fold level, submission-ordered regardless of
+> completion order — and 1 vs 4 workers on the same experiment produce a bit-identical
+> `honest_score` and an identical concatenated OOS series, checked directly rather than assumed.
+>
+> **Stated, not papered over:** only `nse_equity` × `daily` has a shipped profile, so the crypto/
+> commodities/forex gates are implemented generically and exercised against synthetic profile
+> variants — real profiles land with the markets (§21). Breadth and capacity/ADV are provisional,
+> measured-and-reported defaults pending the human-owned definitions §21 asks for. Market gates and
+> the breadth bar item are computed from the full-history P2 backtest rather than fold-by-fold,
+> since the walk-forward's per-instrument breakdown collapses to one portfolio series by design.
+> `experiments.failure_reason` has no dedicated "data-provenance rejected" value, so a P0 rejection
+> on adjustment/vault/point-in-time grounds is recorded as `code_error`, the closest existing bucket.
 
 ---
 
@@ -527,8 +576,8 @@ Not in the v1 build:
 - [ ] Vault composition and per-family peek budget. *Owner: human*
 - [ ] Which market/timeframe is the first fully-supported profile? (Leaning `nse_equity` × `daily`)
 - [ ] Do we port existing JMA+ATR work into the operator library, or rewrite clean against the new base class?
-- [ ] Known-answer test corpus — which published strategies serve as ground truth?
-- [ ] Does Stage 3 ship all six markets' profiles, or one market first and the rest after M2?
+- [ ] Known-answer test corpus — which published strategies serve as ground truth? *Stage 3 covers the mandatory look-ahead/leakage/noise/regime/cost/determinism cases via analytic ground truth instead (§5.2); a real published-strategy comparison is still open, blocked on the same real price history as everything else.*
+- [x] Does Stage 3 ship all six markets' profiles, or one market first and the rest after M2? — **One market first.** `nse_equity` × `daily` ships; the crypto/commodities/forex gates are implemented generically against TRD §6.5's "extra gates, not extra engines" and exercised against synthetic profile variants, so a real profile is a YAML file away rather than new engine code.
 - [ ] Paper trading: internal simulator vs broker paper API, per market?
 
 ---
@@ -547,3 +596,4 @@ Not in the v1 build:
 | 2026-07-28 | **Stage 1 built.** The `aqrl/` package: config, content hashing, correlation-ID logging, migrations covering every `Backend-Schema.md` table, a thin repository layer, content-hashed profiles with **derived** annualisation across 1s–1month, and the data layer (snapshots, load-time adjustment, point-in-time universe, ingest validators) plus the `aqrl` CLI. `nanoaqrl` ported onto the canonical schema; its hardcoded `PERIODS_PER_YEAR = 252` and duplicate cost model are gone. Point-in-time membership remains blocked on data collection. |
 | 2026-07-29 | **Stage 1's data layer restored** (PR #3). A bare `data/` pattern in `.gitignore` matches a directory of that name at *any* depth, so it silently excluded the entire `aqrl/data/` package from the Stage 1 commit — the CLI's snapshot commands crashed and four test modules failed at import on a clean checkout, while every working tree that had the files locally passed. Pattern anchored to `/data/`. Worth remembering as a class of bug: the tooling reported success because the artefact under test was never the artefact committed. |
 | 2026-07-29 | **Stage 2 built.** `aqrl/operators/`: the base class and registry, **32 operators** across all four TRD §11 categories, the spec DAG with canonical structural hashing, and a compiler producing the signal function `nanoaqrl/evaluate.py` already accepts — verified bar-for-bar identical to the hand-written `strategy.py`. Node ids, declaration order, defaults, float spelling, commutative operand order and hypothesis wording all leave `spec_hash` unchanged; a genuine change does not. Causality is a registry-wide property test with negative controls, and `operator_library_version` is derived by content hash. No new dependencies. |
+| 2026-07-29 | **Stage 3 built.** `aqrl/eval/` — the single, profile-driven, panel-native evaluation engine: the ordered funnel (complexity → P0 → P1 → P2 → P3 → market gates → the bar), the walk-forward protocol and honest score moved out of `nanoaqrl/_lib/` so exactly one implementation exists (TRD §6.1), market-specific gates as appended phases per TRD §6.5, and full TRD §6.6 provenance persisted into Stage 1's schema with no new migration needed. The known-answer suite (§5.2) passed — **M1 cleared** — with the published-strategy case replaced by analytic ground truth. Profiling drove two evidence-based optimisations (Numba on the one genuinely path-dependent hot loop; an O(n²) expanding-median bug fixed algorithmically) for a measured 4.7× speedup, and fold-level parallelism was verified bit-identical across worker counts, not merely designed to be. One new dependency: `numba`, applied on profiled evidence per TRD §9.7, not speculatively. |

@@ -60,9 +60,23 @@ class CompiledSpec:
 
     def signals(self, frame: pd.DataFrame, params: dict[str, Any] | None = None) -> pd.Series:
         """Evaluate the DAG over `frame` and return the directional signal."""
-        overrides = params or {}
         columns = {name: frame[name].to_numpy(dtype=float) for name in frame.columns}
-        n = len(frame)
+        return pd.Series(self.signals_array(columns, params), index=frame.index)
+
+    def signals_array(
+        self, columns: dict[str, np.ndarray], params: dict[str, Any] | None = None
+    ) -> np.ndarray:
+        """The same evaluation, over plain arrays.
+
+        `signals` is the pandas-shaped contract nanoAQRL's backtest expects;
+        this is the shape Stage 3's engine wants, since it holds a panel of
+        NumPy columns and would otherwise build and discard a DataFrame per
+        instrument per fold. Both paths run identical code — the DAG is
+        evaluated here and `signals` only re-wraps the result.
+        """
+        overrides = params or {}
+        columns = {name: np.asarray(values, dtype=float) for name, values in columns.items()}
+        n = len(next(iter(columns.values()))) if columns else 0
         cache: dict[str, np.ndarray] = {}
 
         entry = self._combine("entry", columns, overrides, cache, n)
@@ -82,7 +96,7 @@ class CompiledSpec:
         position = self._apply_risk(position, columns, overrides, cache, n)
 
         # NaN means "warm-up not finished". Flat is the honest position there.
-        return pd.Series(np.nan_to_num(position, nan=0.0), index=frame.index).clip(-1.0, 1.0)
+        return np.clip(np.nan_to_num(position, nan=0.0), -1.0, 1.0)
 
     def to_signal_fn(self) -> SignalFn:
         """The `(df, params) -> Series` callable nanoAQRL's backtest expects."""

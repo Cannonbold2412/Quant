@@ -27,8 +27,10 @@ from .registry import CostModelRepository, MarketProfileRepository, TimeframePro
 from .research import (
     VERDICT_TO_STATUS,
     EvaluationRepository,
+    EvaluationTestRepository,
     ExperimentRepository,
     NullWorldRunRepository,
+    RegimePerformanceRepository,
     StrategyRepository,
 )
 
@@ -38,11 +40,13 @@ __all__ = [
     "CostModelRepository",
     "DuplicateSpecError",
     "EvaluationRepository",
+    "EvaluationTestRepository",
     "ExperimentRepository",
     "IndexMembershipRepository",
     "MarketProfileRepository",
     "NullWorldRunRepository",
     "OperatorRepository",
+    "RegimePerformanceRepository",
     "Repository",
     "Row",
     "SnapshotRepository",
