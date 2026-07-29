@@ -1,7 +1,7 @@
 # Implementation Plan — AQRL
 
-> **Status:** **Stage 0 (nanoAQRL) and Stage 1 (Foundations) are built.** Stages 2–13 not started.
-> **Last updated:** 2026-07-28
+> **Status:** **Stages 0–2 are built** (nanoAQRL, Foundations, Operator Library). Stages 3–13 not started.
+> **Last updated:** 2026-07-29
 > **Companion docs:** `PRD.md` (why) · `TRD.md` (how) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences)
 
 ---
@@ -155,6 +155,31 @@ Plus three SQLite tables (`strategies`, `experiments`, `evaluations`) with `expe
 | Spec DAG format + canonical hashing | Enables duplicate detection (`spec_hash`) |
 
 **Done when:** a strategy spec is expressible purely as an operator composition, hashed canonically, and two logically identical specs produce the same hash.
+
+> ✅ **Built.** `aqrl/operators/`: an `Operator` base class declaring category, parameters with valid
+> ranges, and valid markets/timeframes; a registry whose `operator_library_version` is **derived** by
+> content hash rather than hand-maintained, so it cannot drift from what it describes; **32 operators**
+> across all four categories; the spec DAG with canonical structural hashing; and a compiler turning a
+> spec into the `(df, params) → Series` callable `nanoaqrl/evaluate.py` already accepts. Persisted via
+> `OperatorRepository.sync` and `SpecRepository.insert_spec` (which rejects duplicates *before* compute
+> is spent), and exercised through `aqrl operators` / `aqrl spec`.
+>
+> **Causality is enforced by construction, not by review.** The causality and contract suites are
+> parametrized over the whole registry, so a new operator is covered the moment it is registered and
+> cannot enter the library untested. Truncation invariance is checked for every operator at several
+> parameter draws, with two deliberately-leaky negative controls proving the scan can actually fail.
+> That mattered: it caught a `rolling_sum` bug where a bare `cumsum` let one warm-up NaN empty the
+> entire downstream series, and an `atr_stop` bug where a trade opened during ATR warm-up got no stop
+> level and never got one afterwards.
+>
+> **Zero new dependencies.** Rolling PCA uses `numpy.linalg.svd` over the trailing window rather than
+> scikit-learn — whose whole-sample fit is precisely the leak TRD §9.4 names — and wavelets are a
+> causal trailing-window à trous transform rather than a whole-series DWT, so `PyWavelets` was not
+> needed either. Correlation clustering uses `scipy.cluster.hierarchy`, already a dependency.
+>
+> **Deferred, deliberately:** Numba. TRD §19 earmarks `@njit` for the path-dependent risk operators,
+> but §9.6 says profile before optimising. They ship as plain NumPy loops with a clean seam; Stage 3's
+> profiling step decides.
 
 ---
 
@@ -520,3 +545,5 @@ Not in the v1 build:
 | 2026-07-28 | **Full rewrite.** Cross-references updated to the renumbered TRD; changelog consolidated. No plan decisions changed. |
 | 2026-07-28 | **Stage 0 built.** nanoAQRL's five files, the honest score, best-of-three walk-forward, the vault, P0 look-ahead scans, and null-world calibration — **FDR measured at 0/40 on all three null models, clearing M0.** |
 | 2026-07-28 | **Stage 1 built.** The `aqrl/` package: config, content hashing, correlation-ID logging, migrations covering every `Backend-Schema.md` table, a thin repository layer, content-hashed profiles with **derived** annualisation across 1s–1month, and the data layer (snapshots, load-time adjustment, point-in-time universe, ingest validators) plus the `aqrl` CLI. `nanoaqrl` ported onto the canonical schema; its hardcoded `PERIODS_PER_YEAR = 252` and duplicate cost model are gone. Point-in-time membership remains blocked on data collection. |
+| 2026-07-29 | **Stage 1's data layer restored.** A bare `data/` pattern in `.gitignore` matches at any depth and had silently excluded the entire `aqrl/data/` package from the Stage 1 commit — the CLI's snapshot commands crashed and four test modules failed at import. Pattern anchored to `/data/`; the package rebuilt against its surviving tests. |
+| 2026-07-29 | **Stage 2 built.** `aqrl/operators/`: the base class and registry, **32 operators** across all four TRD §11 categories, the spec DAG with canonical structural hashing, and a compiler producing the signal function `nanoaqrl/evaluate.py` already accepts — verified bar-for-bar identical to the hand-written `strategy.py`. Node ids, declaration order, defaults, float spelling, commutative operand order and hypothesis wording all leave `spec_hash` unchanged; a genuine change does not. Causality is a registry-wide property test with negative controls, and `operator_library_version` is derived by content hash. No new dependencies. |
