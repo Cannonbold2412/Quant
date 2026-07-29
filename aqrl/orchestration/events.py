@@ -111,13 +111,21 @@ def emit(
     if job_type is None:
         return None
 
-    key = dedupe_key or f"{event.value}:{experiment_id if experiment_id is not None else strategy_id}"
+    # The default key is only safe when there is an id to make it unique per
+    # occurrence. Without one (e.g. a future document-scoped event with
+    # neither a strategy nor an experiment) it would collapse to the same
+    # constant string every time, silently deduping unrelated occurrences
+    # into a single job — so no default applies, and such a caller must pass
+    # its own `dedupe_key` to opt into idempotency.
+    if dedupe_key is None and (experiment_id is not None or strategy_id is not None):
+        dedupe_key = f"{event.value}:{experiment_id if experiment_id is not None else strategy_id}"
+
     return JobRepository(conn).enqueue(
         job_type,
         payload or {},
         strategy_id=strategy_id,
         experiment_id=experiment_id,
         priority=priority,
-        dedupe_key=key,
+        dedupe_key=dedupe_key,
         max_attempts=max_attempts,
     )

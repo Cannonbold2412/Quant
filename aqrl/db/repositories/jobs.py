@@ -106,6 +106,14 @@ class JobRepository(Repository):
         after a crash before its transaction committed) gets back the
         existing row's id rather than a second job — `idx_jobs_dedupe`
         (migration 0008) is what makes that a fast lookup rather than a scan.
+
+        The existence check and the insert below are two statements, not one
+        atomic operation — safe under concurrency only because every current
+        call site (`events.emit`, `scheduler.fire_due_time_jobs`, the `jobs
+        enqueue` CLI command) runs inside a `transaction(conn,
+        immediate=True)` block, which holds SQLite's write lock across both.
+        A caller invoking `enqueue` with a `dedupe_key` outside such a block
+        loses that guarantee.
         """
         if job_type not in JOB_TYPES:
             raise UnknownJobType(f"unknown job_type {job_type!r}; expected one of {sorted(JOB_TYPES)}")

@@ -80,3 +80,27 @@ def test_emit_rejects_unregistered_events(conn):
     with pytest.raises(UnknownEvent):
         with transaction(conn, immediate=True):
             emit(conn, "not_a_real_event", strategy_id=1)
+
+
+def test_emit_without_strategy_or_experiment_id_does_not_collide(conn):
+    """A document-scoped event (no strategy, no experiment) must not fall
+    back to a constant default dedupe key — two occurrences would otherwise
+    silently collapse into one job (the bug this guards against: the naive
+    default was `f"{event}:{None}"` for every id-less call)."""
+    with transaction(conn, immediate=True):
+        first = emit(conn, Event.DOCUMENT_INGESTED, payload={"document_id": 1})
+    with transaction(conn, immediate=True):
+        second = emit(conn, Event.DOCUMENT_INGESTED, payload={"document_id": 2})
+
+    assert first != second
+    assert JobRepository(conn).count(job_type="EXTRACT_KNOWLEDGE") == 2
+
+
+def test_emit_without_ids_still_honours_an_explicit_dedupe_key(conn):
+    with transaction(conn, immediate=True):
+        first = emit(conn, Event.DOCUMENT_INGESTED, dedupe_key="doc:42")
+    with transaction(conn, immediate=True):
+        second = emit(conn, Event.DOCUMENT_INGESTED, dedupe_key="doc:42")
+
+    assert first == second
+    assert JobRepository(conn).count(job_type="EXTRACT_KNOWLEDGE") == 1

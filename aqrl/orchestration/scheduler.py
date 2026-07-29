@@ -127,6 +127,11 @@ def diagnose_idle(conn: sqlite3.Connection, dispatcher: Dispatcher) -> str:
         # by the caller, never silently treated as healthy.
         return "queue_empty"
 
+    # Approximation, not a precise join to the stuck jobs: any unresolved
+    # flag anywhere is reported as the cause once nothing else explains the
+    # stall. A tighter version would trace each pending job back to the
+    # snapshot(s) it needs and check only those — worth doing once idle
+    # causes are surfaced somewhere a human actually watches (Stage 4a).
     unresolved_flags = conn.execute(
         "SELECT COUNT(*) AS n FROM data_validation_flags WHERE resolution = 'pending'"
     ).fetchone()["n"]

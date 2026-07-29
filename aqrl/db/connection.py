@@ -156,7 +156,7 @@ def transaction(conn: sqlite3.Connection, *, immediate: bool = False) -> Iterato
     writers, a deferred `BEGIN` lets two connections both start read-only and
     then race for the write lock mid-transaction — the classic SQLite
     "database is locked" deadlock. Every claim/complete path in the job queue
-    (`aqrl/orchestration/queue.py`) uses `immediate=True` for exactly this
+    (`aqrl/db/repositories/jobs.py`) uses `immediate=True` for exactly this
     reason.
     """
     conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
