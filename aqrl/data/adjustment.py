@@ -1,261 +1,203 @@
-"""Corporate-action adjustment — applied at LOAD time, never persisted.
+"""Corporate-action adjustment, applied AT LOAD TIME (TRD §14.2).
 
-The failure this exists to prevent is not subtle: source data for Indian
-equities is **unadjusted** (TRD §14.2), so a 1:2 split reads as a −50% move that
-never occurred. Every price-based indicator computed downstream — every moving
-average, every volatility estimate, every breakout threshold — is then computed
-on a lie. Across ~50 instruments over 25 years there are hundreds of such
-events, and they do not cancel out.
+Source data for Indian equities is unadjusted, so splits and bonus issues
+appear as violent phantom gaps: a 1:2 split halves the price overnight and
+every indicator reads a **-50% move that never occurred.** Across ~50
+instruments over 25 years there are hundreds of such events.
 
-**Store raw, adjust at load (TRD §14.2a).** Back-adjusting the Parquet files in
-place would change `raw_content_hash` on every new corporate action, marking the
-entire archive incomparable — one split invalidating years of results. So the
-raw bytes are immutable and this module runs on the way out, with the actions
-history carried separately as `corporate_actions_version`.
+**Why this is computed rather than stored.** Back-adjusting the files once
+rewrites *all* historical prices, so every new split changes the entire past,
+changes the content hash, and marks every prior experiment `comparable = 0`. A
+single corporate action would invalidate the archive. Instead raw OHLCV is
+immutable, `corporate_actions` is append-only and versioned, and the adjusted
+series is derived here on every load. A new split appends one row and bumps the
+actions version; the price hash never moves (TRD §14.2a).
 
-**The direction is backwards.** A factor applies to bars *strictly before* the
-ex-date: on the ex-date the market price has already adjusted itself. Multiple
-actions compound multiplicatively, so a bar preceding two 1:2 splits carries
-0.25.
+**Volume is adjusted inversely** — a 1:2 split doubles the share count. TRD
+calls this "the most commonly forgotten half", and volume-based operators break
+silently without it.
 
-**Volume moves inversely** — a 1:2 split doubles the share count, so historical
-volume must double to stay comparable. This is the most commonly forgotten half
-of the operation.
-
-Ratio conventions, as recorded on `corporate_actions.ratio`:
-
-| Action | Terms | Ratio |
-|---|---|---|
-| split | 1:N — one share becomes N | 1/N |
-| bonus | a:b — a free per b held | b/(a+b) |
-| consolidation | N:1 — N shares become one | N |
-| dividend | D per share at price P | (P−D)/P |
-
-> ⚠️ **The look-ahead caveat nobody mentions (TRD §14.2c).** A back-adjusted
-> series encodes knowledge of every future action into past prices, so an
-> *absolute* price level is contaminated: "buy below ₹500" is a rule the past
-> could not have evaluated. Ratios, returns and percentage distances are
-> unaffected, which is why `program.md` forbids absolute price thresholds
-> outright. Adjustment is mandatory; it is not free.
+**The look-ahead caveat (TRD §14.2c).** Back-adjustment is itself mildly
+forward-looking: the adjusted price shown for 2015 depends on splits that
+happened in 2020. Harmless for anything ratio-based — returns, percentage
+moves, crossovers, volatility — because ratios are preserved exactly. But
+*contaminating for absolute price levels*, which is why absolute price
+thresholds are forbidden in `program.md` and enforced at P0.
 """
 from __future__ import annotations
 
-import bisect
-import datetime as dt
-from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from collections.abc import Mapping, Sequence
+from datetime import date, datetime
+from typing import Any, Literal
 
+import numpy as np
 import polars as pl
 
-__all__ = [
-    "AdjustmentError",
-    "UnverifiedActionError",
-    "adjust",
-    "cumulative_factors",
-    "dividend_ratio",
-    "ratio_for",
-]
+AdjustmentMethod = Literal["back_ratio_price", "back_ratio_total_return", "none"]
 
-# The OHLC columns a price factor multiplies, if present.
-PRICE_COLUMNS = ("open", "high", "low", "close")
-# Adjusted inversely: the factor divides it.
-VOLUME_COLUMNS = ("volume",)
+# Which action types each method applies. Dividends move a total-return series
+# but not a price series, so the choice changes results and is versioned on the
+# snapshot alongside the data.
+PRICE_ACTIONS = frozenset({"split", "bonus", "consolidation"})
+TOTAL_RETURN_ACTIONS = PRICE_ACTIONS | {"dividend"}
 
-# Only the total-return method touches dividends. A price-adjusted series answers
-# "what did the chart look like?"; a total-return series answers "what did the
-# holder earn?". Mixing them silently inflates every long-only backtest.
-_PRICE_ACTIONS = frozenset({"split", "bonus", "consolidation"})
-_TOTAL_RETURN_ACTIONS = _PRICE_ACTIONS | {"dividend"}
-
-_ACTIONS_FOR_METHOD: dict[str, frozenset[str]] = {
-    "back_ratio_price": _PRICE_ACTIONS,
-    "back_ratio_total_return": _TOTAL_RETURN_ACTIONS,
-    "none": frozenset(),
-}
+DEFAULT_PRICE_COLUMNS = ("open", "high", "low", "close")
+DEFAULT_VOLUME_COLUMNS = ("volume",)
 
 
 class AdjustmentError(ValueError):
-    """The frame or an action is malformed — adjustment cannot proceed."""
+    """The adjustment cannot be performed as specified."""
 
 
 class UnverifiedActionError(AdjustmentError):
-    """An unverified action was asked to move prices (Backend-Schema §12).
+    """An unverified corporate action would have moved prices.
 
-    `corporate_actions.verified_by` is NULL until a human confirms the terms.
-    Applying an unconfirmed split silently corrupts an instrument's entire
-    series in exactly the way this pipeline exists to prevent, so the default is
-    to refuse. `allow_unverified=True` is the deliberate, explicit override.
+    Backend-Schema §12: *"unverified actions must not silently affect prices."*
+    Silently applying one would let an unreviewed data-entry error rewrite an
+    instrument's entire history.
     """
 
 
-# -- ratio conventions ---------------------------------------------------------
+def ratio_for(action_type: str, terms: str) -> float:
+    """Convert published terms to a back-adjustment ratio (TRD §14.2b).
 
-
-def ratio_for(action_type: str, raw_terms: str) -> float:
-    """Published terms (`'1:2'`) → the price multiplier stored as `ratio`.
-
-    Kept beside the adjustment itself so `ratio` stays auditable against
-    `raw_terms`: a wrong ratio is undetectable once the terms are discarded.
+    * split ``1:N``      -> ``1/N``      (1:2 means one share becomes two)
+    * bonus ``a:b``      -> ``b/(a+b)``  (a free shares per b held)
+    * consolidation ``N:1`` -> ``N``     (reverse split; prices rise)
     """
     try:
-        left_text, _, right_text = raw_terms.partition(":")
-        left, right = float(left_text.strip()), float(right_text.strip())
-    except (AttributeError, ValueError) as exc:
-        raise AdjustmentError(f"cannot parse terms {raw_terms!r} as 'a:b'") from exc
+        left, _, right = terms.partition(":")
+        first, second = float(left.strip()), float(right.strip())
+    except (ValueError, AttributeError) as exc:
+        raise AdjustmentError(f"cannot parse terms {terms!r} for a {action_type}") from exc
+    if first <= 0 or second <= 0:
+        raise AdjustmentError(f"terms {terms!r} must be positive")
 
-    if left <= 0 or right <= 0:
-        raise AdjustmentError(f"terms {raw_terms!r} must have positive parts on both sides")
-
-    if action_type in ("split", "consolidation"):
-        # 1:N -> 1/N shrinks the price; N:1 -> N raises it. Same arithmetic.
-        return left / right
+    if action_type == "split":
+        return first / second
     if action_type == "bonus":
-        # a free shares per b held: the holder ends with a+b where they had b.
-        return right / (left + right)
-    raise AdjustmentError(
-        f"{action_type!r} has no ratio derivable from terms; "
-        "dividends use dividend_ratio(amount, price)"
-    )
+        return second / (first + second)
+    if action_type == "consolidation":
+        return first / second
+    raise AdjustmentError(f"ratio_for does not handle {action_type!r}; dividends need a price")
 
 
-def dividend_ratio(amount: float, price: float) -> float:
-    """Dividend D at cum-price P → (P−D)/P.
-
-    `price` is the close on the bar **before** the ex-date — the last price that
-    still contained the dividend.
-    """
+def dividend_ratio(dividend: float, price: float) -> float:
+    """``(P - D) / P`` — total-return adjustment only."""
     if price <= 0:
-        raise AdjustmentError(f"dividend reference price must be positive, got {price!r}")
-    if amount < 0:
-        raise AdjustmentError(f"dividend amount cannot be negative, got {amount!r}")
-    return (price - amount) / price
+        raise AdjustmentError("dividend adjustment needs a positive reference price")
+    if dividend < 0 or dividend >= price:
+        raise AdjustmentError(f"dividend {dividend} is not sensible against price {price}")
+    return (price - dividend) / price
 
 
-# -- factor construction -------------------------------------------------------
-
-
-def _as_date(value: Any, field: str) -> dt.date:
-    """Coerce whatever the database or a CSV handed us into a `date`."""
-    if isinstance(value, dt.datetime):
-        return value.date()
-    if isinstance(value, dt.date):
-        return value
-    if isinstance(value, str):
-        try:
-            return dt.date.fromisoformat(value[:10])
-        except ValueError as exc:
-            raise AdjustmentError(f"{field} {value!r} is not an ISO-8601 date") from exc
-    raise AdjustmentError(f"{field} must be a date or ISO-8601 string, got {type(value).__name__}")
-
-
-def _applicable(
-    actions: Iterable[Mapping[str, Any]],
-    method: str,
-    allow_unverified: bool,
-) -> list[tuple[dt.date, float]]:
-    """Validate, filter by method, and reduce to `(ex_date, ratio)` pairs."""
-    try:
-        wanted = _ACTIONS_FOR_METHOD[method]
-    except KeyError:
-        raise AdjustmentError(
-            f"unknown adjustment method {method!r}; expected one of {sorted(_ACTIONS_FOR_METHOD)}"
-        ) from None
-
-    pairs: list[tuple[dt.date, float]] = []
-    for action in actions:
-        action_type = action.get("action_type")
-        if action_type not in wanted:
-            continue
-
-        ratio = action.get("ratio")
-        if ratio is None or not isinstance(ratio, (int, float)) or float(ratio) <= 0:
-            raise AdjustmentError(
-                f"{action_type} on {action.get('instrument')} at {action.get('ex_date')} "
-                f"has ratio {ratio!r}; a ratio must be a positive number"
-            )
-
-        if not action.get("verified_by") and not allow_unverified:
-            raise UnverifiedActionError(
-                f"{action_type} on {action.get('instrument')} at {action.get('ex_date')} is "
-                "unverified (verified_by is NULL); unverified actions must not silently affect "
-                "prices. Verify it, or pass allow_unverified=True to accept the risk explicitly."
-            )
-
-        pairs.append((_as_date(action.get("ex_date"), "ex_date"), float(ratio)))
-
-    pairs.sort()
-    return pairs
+def _as_dates(values: Sequence[Any]) -> np.ndarray:
+    parsed: list[date] = []
+    for value in values:
+        if isinstance(value, datetime):
+            parsed.append(value.date())
+        elif isinstance(value, date):
+            parsed.append(value)
+        else:
+            parsed.append(datetime.fromisoformat(str(value)[:19]).date())
+    return np.array(parsed, dtype="datetime64[D]")
 
 
 def cumulative_factors(
-    dates: Sequence[Any],
-    actions: Iterable[Mapping[str, Any]],
-    method: str = "back_ratio_price",
-    allow_unverified: bool = False,
-) -> list[float]:
-    """The back-adjustment factor for each bar date.
+    bar_dates: Sequence[Any],
+    actions: Sequence[Mapping[str, Any]],
+) -> np.ndarray:
+    """The back-adjustment factor for each bar.
 
-    A bar carries the product of every action whose ex-date is **strictly
-    after** it. The ex-date bar itself is already post-action and so carries the
-    factors of later actions only.
+    Implements TRD §14.2b directly::
 
-    Computed as a suffix product plus one binary search per bar rather than the
-    obvious nested loop: a 25-year daily series against a few hundred actions is
-    a hot path on every single load.
+        cumulative_factor = 1.0
+        for each bar, newest -> oldest:
+            if an unapplied action has ex_date > bar.date:
+                cumulative_factor *= action.ratio
+
+    Computed as a suffix product plus a binary search rather than a Python loop,
+    which is the same arithmetic in one pass. A bar *on* the ex-date is already
+    post-action and takes factor 1 — the interval is strictly ``ex_date > bar``.
     """
-    pairs = _applicable(actions, method, allow_unverified)
-    if not pairs:
-        return [1.0] * len(dates)
+    bars = _as_dates(bar_dates)
+    if not len(actions):
+        return np.ones(len(bars), dtype=float)
 
-    ex_dates = [ex_date for ex_date, _ in pairs]
-    # suffix[i] = product of ratios of actions i..end.
-    suffix = [1.0] * (len(pairs) + 1)
-    for i in range(len(pairs) - 1, -1, -1):
-        suffix[i] = suffix[i + 1] * pairs[i][1]
+    ordered = sorted(actions, key=lambda a: str(a["ex_date"]))
+    ex_dates = _as_dates([a["ex_date"] for a in ordered])
+    ratios = np.array([float(a["ratio"]) for a in ordered], dtype=float)
+    if np.any(ratios <= 0):
+        raise AdjustmentError("corporate action ratios must be positive")
 
-    factors = []
-    for value in dates:
-        bar_date = _as_date(value, "bar date")
-        # First action with ex_date > bar_date; everything from there applies.
-        first = bisect.bisect_right(ex_dates, bar_date)
-        factors.append(suffix[first])
-    return factors
+    # suffix[k] = product of ratios from k onwards; suffix[len] = 1.0
+    suffix = np.ones(len(ratios) + 1, dtype=float)
+    for index in range(len(ratios) - 1, -1, -1):
+        suffix[index] = suffix[index + 1] * ratios[index]
+
+    # Number of actions with ex_date <= bar; those are already reflected in the
+    # raw price and must not be applied again.
+    applied = np.searchsorted(ex_dates, bars, side="right")
+    return suffix[applied]
 
 
-# -- the adjustment itself -----------------------------------------------------
+def select_actions(
+    actions: Sequence[Mapping[str, Any]],
+    method: AdjustmentMethod,
+    allow_unverified: bool = False,
+) -> list[Mapping[str, Any]]:
+    """Filter actions to those this method applies, rejecting unverified ones."""
+    if method == "none":
+        return []
+    applicable = PRICE_ACTIONS if method == "back_ratio_price" else TOTAL_RETURN_ACTIONS
+
+    selected = [a for a in actions if a["action_type"] in applicable]
+    unverified = [a for a in selected if not a.get("verified_by")]
+    if unverified and not allow_unverified:
+        summary = ", ".join(f"{a['instrument']} {a['action_type']} {a['ex_date']}" for a in unverified[:5])
+        raise UnverifiedActionError(
+            f"{len(unverified)} unverified corporate action(s) would move prices: {summary}. "
+            "Verify them (or pass allow_unverified) — an unreviewed action must not silently "
+            "rewrite an instrument's history."
+        )
+    return selected
 
 
 def adjust(
     bars: pl.DataFrame,
-    actions: Iterable[Mapping[str, Any]],
-    method: str = "back_ratio_price",
+    actions: Sequence[Mapping[str, Any]],
+    method: AdjustmentMethod = "back_ratio_price",
+    *,
+    date_column: str = "date",
+    price_columns: Sequence[str] = DEFAULT_PRICE_COLUMNS,
+    volume_columns: Sequence[str] = DEFAULT_VOLUME_COLUMNS,
     allow_unverified: bool = False,
+    keep_factor: bool = True,
 ) -> pl.DataFrame:
-    """Back-adjust one instrument's OHLCV bars. Returns a new frame.
+    """Return `bars` back-adjusted for `actions`. The input is never mutated.
 
-    `bars` covers a **single instrument** — the caller filters both the frame
-    and `actions` (see `aqrl.data.SnapshotManager.load`, which groups by
-    instrument). The returned frame gains an `adjustment_factor` column so the
-    operation stays auditable: an unexplained result can always be traced back
-    to the factor that produced it.
+    Adds an `adjustment_factor` column so any adjusted series can be inverted
+    back to the raw prints — without it, "why is this 2015 close not what the
+    exchange printed?" has no answer.
     """
-    if "date" not in bars.columns:
-        raise AdjustmentError(f"bars have no 'date' column (got: {', '.join(bars.columns) or 'none'})")
+    if date_column not in bars.columns:
+        raise AdjustmentError(f"bars have no {date_column!r} column (columns: {bars.columns})")
+    if bars.is_empty():
+        return bars.with_columns(pl.lit(1.0).alias("adjustment_factor")) if keep_factor else bars
 
-    factors = cumulative_factors(bars["date"].to_list(), actions, method, allow_unverified)
-    factor_column = pl.Series("adjustment_factor", factors, dtype=pl.Float64)
+    selected = select_actions(actions, method, allow_unverified=allow_unverified)
+    frame = bars.sort(date_column)
+    factors = cumulative_factors(frame[date_column].to_list(), selected)
 
-    adjustments = [
-        pl.col(column).cast(pl.Float64) * factor_column
-        for column in PRICE_COLUMNS
-        if column in bars.columns
+    factor_series = pl.Series("adjustment_factor", factors)
+    expressions = [
+        (pl.col(column) * factor_series).alias(column) for column in price_columns if column in frame.columns
     ]
-    # Inverse on volume: a 1:2 split doubles the share count, so historical
-    # volume must double for turnover to stay comparable across the event.
-    adjustments += [
-        pl.col(column).cast(pl.Float64) / factor_column
-        for column in VOLUME_COLUMNS
-        if column in bars.columns
+    # The opposite direction: a 1:2 split doubles the share count.
+    expressions += [
+        (pl.col(column) / factor_series).alias(column) for column in volume_columns if column in frame.columns
     ]
+    if keep_factor:
+        expressions.append(factor_series.alias("adjustment_factor"))
 
-    return bars.with_columns([*adjustments, factor_column])
+    return frame.with_columns(expressions)

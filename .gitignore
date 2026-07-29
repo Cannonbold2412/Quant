@@ -14,11 +14,9 @@ __pycache__/
 # content-addressed data, not source; they are reproduced by `aqrl snapshot
 # ingest`, never committed.
 #
-# `/data/` is anchored to the project root ON PURPOSE. A bare `data/` matches a
-# directory of that name at ANY depth, which is how the entire `aqrl/data/`
-# package — the Stage 1 data layer — was silently excluded from the Stage 1
-# commit. `Settings.data_root` defaults to `PROJECT_ROOT / "data"` and nothing
-# else, so the anchored form is also the accurate one.
+# The leading slash on `/data/` is load-bearing: an unanchored `data/` matches a
+# directory of that name at ANY depth, which silently excluded the `aqrl/data/`
+# source package. Only the snapshot store at the repository root is ignored.
 *.db
 /data/
 nanoaqrl/*.db
