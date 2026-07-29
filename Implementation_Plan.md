@@ -1,6 +1,6 @@
 # Implementation Plan — AQRL
 
-> **Status:** **Stages 0–3 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised). Stages 4–13 not started.
+> **Status:** **Stages 0–4 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised, the Nervous System job queue/scheduler). Stages 4a–13 not started.
 > **Last updated:** 2026-07-29
 > **Companion docs:** `PRD.md` (why) · `TRD.md` (how) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences)
 
@@ -282,7 +282,7 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 
 ---
 
-## 6. Stage 4 — Nervous System
+## 6. Stage 4 — Nervous System ✅ built
 
 **Goal:** the coordination layer (TRD §4).
 
@@ -300,6 +300,25 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 | Crash recovery | Lease expiry returns orphaned jobs; `kill -9` loses nothing |
 
 **Done when:** the scheduler survives `kill -9` mid-job with **zero state loss and zero duplicated work.**
+
+> **Built as `aqrl/orchestration/`** — `JobRepository` (atomic `BEGIN IMMEDIATE` claim,
+> lease/heartbeat, `dedupe_key`), `states.transition` (explicit tables for `strategies`/
+> `experiments`, raises `InvalidTransition`, writes `audit_log`), `events.emit` (the TRD §4.1
+> table, one transaction per state-change-plus-enqueue), `budgets` (global day-scoped caps
+> gate dispatch; per-strategy/goal tracked but not yet gated — nothing spends against them
+> until Stage 5's agent calls exist), `failures` (transient/deterministic classification,
+> exponential backoff, quarantine after *k* consecutive failures), `worker.py` (one job, one
+> subprocess, split `run`/`persist` so a multi-minute evaluation never holds SQLite's write
+> lock), `dispatch.Dispatcher` (spawn/reap, per-experiment time budget via SIGTERM→SIGKILL),
+> and `scheduler.tick` (App-Flow §13's loop, plus TRD §4.5 idle-cause reporting). Two
+> deliberate scope cuts: only the `EVALUATE` handler is registered — `NULL_WORLD_RUN` and
+> `GENERATE_REPORT` are real future handlers, not stubs, so an unregistered `job_type` fails
+> loudly (`NotImplementedHandler`, classified deterministic) rather than half-working; and
+> `TIME_DRIVEN_SCHEDULE` (TRD §4.2) is mechanism-only and empty, since every cadence row needs
+> a Stage 5+ producer. A worker-killed time-budget overrun is recorded on the `jobs` row
+> (`error_message`, `failure_class`); `experiments.failure_reason` has no timeout/infra bucket,
+> so the experiment itself is simply left open for the retried attempt to close, the same
+> "closest existing bucket" tradeoff Stage 3 made for P0 provenance rejections above.
 
 ---
 
@@ -597,3 +616,4 @@ Not in the v1 build:
 | 2026-07-29 | **Stage 1's data layer restored** (PR #3). A bare `data/` pattern in `.gitignore` matches a directory of that name at *any* depth, so it silently excluded the entire `aqrl/data/` package from the Stage 1 commit — the CLI's snapshot commands crashed and four test modules failed at import on a clean checkout, while every working tree that had the files locally passed. Pattern anchored to `/data/`. Worth remembering as a class of bug: the tooling reported success because the artefact under test was never the artefact committed. |
 | 2026-07-29 | **Stage 2 built.** `aqrl/operators/`: the base class and registry, **32 operators** across all four TRD §11 categories, the spec DAG with canonical structural hashing, and a compiler producing the signal function `nanoaqrl/evaluate.py` already accepts — verified bar-for-bar identical to the hand-written `strategy.py`. Node ids, declaration order, defaults, float spelling, commutative operand order and hypothesis wording all leave `spec_hash` unchanged; a genuine change does not. Causality is a registry-wide property test with negative controls, and `operator_library_version` is derived by content hash. No new dependencies. |
 | 2026-07-29 | **Stage 3 built.** `aqrl/eval/` — the single, profile-driven, panel-native evaluation engine: the ordered funnel (complexity → P0 → P1 → P2 → P3 → market gates → the bar), the walk-forward protocol and honest score moved out of `nanoaqrl/_lib/` so exactly one implementation exists (TRD §6.1), market-specific gates as appended phases per TRD §6.5, and full TRD §6.6 provenance persisted into Stage 1's schema with no new migration needed. The known-answer suite (§5.2) passed — **M1 cleared** — with the published-strategy case replaced by analytic ground truth. Profiling drove two evidence-based optimisations (Numba on the one genuinely path-dependent hot loop; an O(n²) expanding-median bug fixed algorithmically) for a measured 4.7× speedup, and fold-level parallelism was verified bit-identical across worker counts, not merely designed to be. One new dependency: `numba`, applied on profiled evidence per TRD §9.7, not speculatively. |
+| 2026-07-29 | **Stage 4 built.** `aqrl/orchestration/` — the `jobs` queue (`JobRepository`: atomic `BEGIN IMMEDIATE` claim, lease/heartbeat, `dedupe_key`), explicit state machines for `strategies`/`experiments` that raise on an invalid transition and write `audit_log`, the TRD §4.1 event→job_type table, transient/deterministic failure classification with exponential backoff and *k*-consecutive-failure quarantine, budget back-pressure gating dispatch, a subprocess worker with the `EVALUATE` handler wired end to end (queued job → rebuilt `EvaluationInputs` → Stage 3's engine → persisted report → the bar-clear short-circuit straight to `PROMOTE`, or `REVIEW` on a bar failure — never invoking A3, which doesn't exist yet), and the App-Flow §13 scheduler tick with TRD §4.5 idle-cause reporting. `aqrl.db.connection` gained WAL mode, `busy_timeout`, and `BEGIN IMMEDIATE` for the first time two processes write the database at once. Migration 0008 added `jobs.dedupe_key`. The crash test *is* the done-when: a real subprocess is `SIGKILL`ed mid-job and a re-run produces exactly one evaluation, and losing the scheduler process itself still recovers via lease expiry on the next tick — both proven against real OS processes, not mocks. |

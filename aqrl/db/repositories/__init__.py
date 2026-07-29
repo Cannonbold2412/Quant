@@ -3,13 +3,12 @@
 Hand-written repositories exist for the tables Stage 0 and Stage 1 actually
 exercise. Everything else in the schema is reachable through the generic
 `Repository` base until a felt need arrives — Backend-Schema §1's
-build-on-need principle applied to code rather than to DDL:
-
-    from aqrl.db.repositories import Repository
-    class JobRepository(Repository):
-        table = "jobs"
+build-on-need principle applied to code rather than to DDL. Stage 4
+(Implementation_Plan §6) is the first felt need for `jobs` and `audit_log`,
+hence `JobRepository` and `AuditLogRepository` below.
 """
 
+from .audit import AuditLogRepository
 from .base import Repository, Row, new_uid, utcnow_iso
 from .data import (
     CorporateActionRepository,
@@ -17,6 +16,7 @@ from .data import (
     SnapshotRepository,
     ValidationFlagRepository,
 )
+from .jobs import JOB_STATUSES, JOB_TYPES, JobRepository, LeaseLost, UnknownJobType
 from .operators import (
     DuplicateSpecError,
     OperatorRepository,
@@ -35,7 +35,10 @@ from .research import (
 )
 
 __all__ = [
+    "JOB_STATUSES",
+    "JOB_TYPES",
     "VERDICT_TO_STATUS",
+    "AuditLogRepository",
     "CorporateActionRepository",
     "CostModelRepository",
     "DuplicateSpecError",
@@ -43,6 +46,8 @@ __all__ = [
     "EvaluationTestRepository",
     "ExperimentRepository",
     "IndexMembershipRepository",
+    "JobRepository",
+    "LeaseLost",
     "MarketProfileRepository",
     "NullWorldRunRepository",
     "OperatorRepository",
@@ -54,6 +59,7 @@ __all__ = [
     "SpecRepository",
     "StrategyRepository",
     "TimeframeProfileRepository",
+    "UnknownJobType",
     "ValidationFlagRepository",
     "new_uid",
     "utcnow_iso",

@@ -162,6 +162,29 @@ class SpecRepository(Repository):
             ).fetchone()
         )
 
+    def load_spec(self, spec_id: int) -> StrategySpec:
+        """Reconstitute the `StrategySpec` a stored `strategy_specs` row encodes.
+
+        The inverse of `insert_spec`'s flattening. Stage 4's `EVALUATE` handler
+        (`aqrl/orchestration/handlers/evaluate.py`) is the first caller that
+        needs a spec back out of the database rather than off disk — a queued
+        job carries `spec_id`, not the object itself.
+        """
+        row = self.get(spec_id)
+        if row is None:
+            raise KeyError(f"no strategy_specs row {spec_id}")
+        return StrategySpec(
+            entry_logic=row["entry_logic"] or [],
+            exit_logic=row["exit_logic"] or [],
+            filter_logic=row["filter_logic"] or [],
+            risk_logic=row["risk_logic"] or [],
+            universe=row["universe"] or {},
+            parameters=row["parameters"] or {},
+            hypothesis=row["hypothesis"] or "",
+            rationale=row["rationale"],
+            expected_behavior=row["expected_behavior"],
+        )
+
     def next_version(self, strategy_id: int) -> int:
         row = self.conn.execute(
             "SELECT COALESCE(MAX(version), 0) AS latest FROM strategy_specs WHERE strategy_id = ?",
