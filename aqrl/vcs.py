@@ -15,18 +15,34 @@ guarantees TRD §5.2 states as requirements, not preferences:
   without touching the same file. Enforced by the caller (`render.py`), not
   here — this module writes whatever path it is given.
 
-**One repo, used from possibly many worker processes.** Every write here is a
-single `git` invocation with no long-lived index lock held across Python code,
-so two workers committing to two different strategy branches back-to-back
-never contend for more than the instant one `git commit` takes.
+**One repo, used from possibly many worker processes — genuinely, not just in
+theory.** `Dispatcher.max_concurrent` (Stage 4) defaults to 4, and nothing
+stops two `IMPLEMENT`/`FIX_CODE` jobs for two *different* strategies from
+running in two worker subprocesses at once. Every public method here
+therefore holds an OS file lock (`fcntl.flock`, exclusive, blocking) across
+its *entire* git sequence — `checkout` changes which branch the one shared
+working tree points at, so two processes interleaving a checkout with
+another's add/commit is not a slow-down, it is corruption: writes landing on
+the wrong branch, or `git init`/`checkout --orphan` racing entirely. Verified
+by literally reproducing it — four concurrent processes each committing to
+their own branch, unlocked, left three of the four either crashed or with
+their strategy's file simply absent from the branch it should have been on.
+The lock makes concurrent callers correct by serialising them, not by
+avoiding contention; git itself is fast enough per call that this is not a
+throughput concern at the scale one research lab's worker pool runs at.
 """
 from __future__ import annotations
 
+import fcntl
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 __all__ = ["StrategyRepo", "VcsError"]
+
+_LOCK_FILENAME = ".aqrl-vcs.lock"
 
 
 class VcsError(RuntimeError):
@@ -57,46 +73,39 @@ class StrategyRepo:
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
 
-    def ensure_repo(self) -> None:
-        if (self.root / ".git").exists():
-            return
-        self.root.mkdir(parents=True, exist_ok=True)
-        _run(["init"], self.root)
-        _run(["config", "user.name", "aqrl-agent"], self.root)
-        _run(["config", "user.email", "agent@aqrl.local"], self.root)
-        # An empty repo has no branch to check out yet; the initial commit
-        # (below, on a strategy's first IMPLEMENT) creates one.
+    # -- cross-process locking --------------------------------------------------
 
-    def _branch_exists(self, branch: str) -> bool:
-        result = subprocess.run(
-            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
-            cwd=self.root,
-            capture_output=True,
-        )
-        return result.returncode == 0
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Exclusive, blocking, process-wide — the one thing that makes every
+        public method below safe to call concurrently across worker
+        subprocesses sharing this same `root` (see module docstring).
+
+        A fresh `open()` per acquisition rather than a cached handle: `flock`
+        locks belong to the *open file description*, not the path or the
+        process, so two calls in the *same* process each get their own
+        description and genuinely block each other — which is exactly what
+        prevents the public methods below from ever nesting two acquisitions
+        (each calls a private `_unlocked` helper internally, never itself).
+        """
+        self.root.mkdir(parents=True, exist_ok=True)
+        with (self.root / _LOCK_FILENAME).open("w") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+    # -- public API ---------------------------------------------------------------
+
+    def ensure_repo(self) -> None:
+        with self._locked():
+            self._ensure_repo_unlocked()
 
     def ensure_branch(self, branch: str) -> None:
-        """Create `branch` if it does not exist yet. Idempotent (TRD §5.2).
-
-        Always an orphan branch, whether or not the repo already holds other
-        strategies' history: *"two unrelated hypotheses have no shared
-        content to combine"* (TRD §5.2). `git checkout --orphan` carries the
-        current branch's working-tree files forward as staged adds, so every
-        branch but the very first (created on an empty, unborn repo) needs its
-        tree wiped back to nothing before the initial commit.
-        """
-        self.ensure_repo()
-        if self._branch_exists(branch):
-            return
-        _run(["checkout", "--orphan", branch], self.root)
-        tracked = _run(["ls-files"], self.root)
-        if tracked:
-            _run(["rm", "-rf", "--cached", "."], self.root)
-        for entry in self.root.iterdir():
-            if entry.name == ".git":
-                continue
-            shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
-        _run(["commit", "--allow-empty", "-m", f"init: {branch}"], self.root)
+        """Create `branch` if it does not exist yet. Idempotent (TRD §5.2)."""
+        with self._locked():
+            self._ensure_branch_unlocked(branch)
 
     def commit_file(
         self, branch: str, relative_path: str, content: str, message: str
@@ -115,31 +124,79 @@ class StrategyRepo:
         the retried job re-deriving the identical commit rather than adding a
         duplicate.
         """
-        self.ensure_branch(branch)
-        _run(["checkout", branch], self.root)
+        with self._locked():
+            self._ensure_branch_unlocked(branch)
+            _run(["checkout", branch], self.root)
 
-        target = self.root / relative_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        previous = target.read_text(encoding="utf-8") if target.exists() else None
-        target.write_text(content, encoding="utf-8")
+            target = self.root / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            previous = target.read_text(encoding="utf-8") if target.exists() else None
+            target.write_text(content, encoding="utf-8")
 
-        _run(["add", relative_path], self.root)
-        status = _run(["status", "--porcelain", "--", relative_path], self.root)
+            _run(["add", relative_path], self.root)
+            status = _run(["status", "--porcelain", "--", relative_path], self.root)
 
-        parent_hash = self.head_commit(branch)
-        diff = "" if previous is None else self._diff(parent_hash, target, previous, content)
+            parent_hash = self._head_commit_unlocked(branch)
+            diff = "" if previous is None else self._diff(target, previous, content)
 
-        if not status:
-            # Nothing changed — the working tree already matched `content`
-            # (a retried job re-rendering the same spec). The existing commit
-            # is the correct answer; report it rather than creating a
-            # meaningless empty commit.
-            return parent_hash, diff
+            if not status:
+                # Nothing changed — the working tree already matched `content`
+                # (a retried job re-rendering the same spec). The existing
+                # commit is the correct answer; report it rather than
+                # creating a meaningless empty commit.
+                return parent_hash, diff
 
-        _run(["commit", "-m", message], self.root)
-        return self.head_commit(branch), diff
+            _run(["commit", "-m", message], self.root)
+            return self._head_commit_unlocked(branch), diff
 
-    def _diff(self, parent_hash: str, target: Path, previous: str, content: str) -> str:
+    def head_commit(self, branch: str) -> str:
+        with self._locked():
+            return self._head_commit_unlocked(branch)
+
+    # -- unlocked internals — never call these without holding `_locked()` ------
+
+    def _ensure_repo_unlocked(self) -> None:
+        if (self.root / ".git").exists():
+            return
+        _run(["init"], self.root)
+        _run(["config", "user.name", "aqrl-agent"], self.root)
+        _run(["config", "user.email", "agent@aqrl.local"], self.root)
+        # An empty repo has no branch to check out yet; the initial commit
+        # (below, on a strategy's first IMPLEMENT) creates one.
+
+    def _branch_exists(self, branch: str) -> bool:
+        result = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+            cwd=self.root,
+            capture_output=True,
+        )
+        return result.returncode == 0
+
+    def _ensure_branch_unlocked(self, branch: str) -> None:
+        """Always an orphan branch, whether or not the repo already holds
+        other strategies' history: *"two unrelated hypotheses have no shared
+        content to combine"* (TRD §5.2). `git checkout --orphan` carries the
+        current branch's working-tree files forward as staged adds, so every
+        branch but the very first (created on an empty, unborn repo) needs
+        its tree wiped back to nothing before the initial commit.
+        """
+        self._ensure_repo_unlocked()
+        if self._branch_exists(branch):
+            return
+        _run(["checkout", "--orphan", branch], self.root)
+        tracked = _run(["ls-files"], self.root)
+        if tracked:
+            _run(["rm", "-rf", "--cached", "."], self.root)
+        for entry in self.root.iterdir():
+            if entry.name in (".git", _LOCK_FILENAME):
+                continue
+            shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
+        _run(["commit", "--allow-empty", "-m", f"init: {branch}"], self.root)
+
+    def _head_commit_unlocked(self, branch: str) -> str:
+        return _run(["rev-parse", branch], self.root)
+
+    def _diff(self, target: Path, previous: str, content: str) -> str:
         if previous == content:
             return ""
         import difflib
@@ -152,6 +209,3 @@ class StrategyRepo:
                 tofile=f"b/{target.name}",
             )
         )
-
-    def head_commit(self, branch: str) -> str:
-        return _run(["rev-parse", branch], self.root)

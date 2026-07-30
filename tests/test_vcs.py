@@ -1,6 +1,7 @@
 """One repo, one branch per strategy (TRD §5.2)."""
 from __future__ import annotations
 
+import multiprocessing
 import subprocess
 
 from aqrl.vcs import StrategyRepo
@@ -75,3 +76,45 @@ def test_commit_file_survives_a_missing_working_tree_file(tmp_path):
     commit_hash, diff = repo.commit_file("strategy/fresh", "strategies/fresh/strategy.py", "y = 1\n", "first")
     assert commit_hash
     assert diff == ""
+
+
+def _commit_many(root, n: int, attempts: int) -> None:
+    """Module-level (not a closure) so it is picklable for `multiprocessing`
+    regardless of start method."""
+    repo = StrategyRepo(root)
+    for i in range(attempts):
+        repo.commit_file(f"strategy/s{n}", f"strategies/s{n}/strategy.py", f"x = {i}\n", f"iteration {i}")
+
+
+def test_concurrent_workers_do_not_corrupt_the_shared_repo(tmp_path):
+    """`Dispatcher.max_concurrent` defaults to 4 (Stage 4) — nothing stops two
+    `IMPLEMENT`/`FIX_CODE` jobs for two different strategies landing in two
+    worker subprocesses at once, both calling into this same shared repo.
+
+    Without the exclusive lock in `StrategyRepo._locked`, this reproduces
+    immediately and destructively: real processes racing `git checkout` /
+    `git init` / `git commit` against one shared working tree left most
+    strategies either crashed or missing their own file entirely (verified by
+    hand while diagnosing this). With the lock, every worker's final commit
+    must be intact on its own branch, none of the others', with no crash.
+    """
+    attempts = 5
+    workers = 4
+    procs = [
+        multiprocessing.Process(target=_commit_many, args=(tmp_path, n, attempts)) for n in range(workers)
+    ]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(timeout=60)
+
+    for n, p in enumerate(procs):
+        assert p.exitcode == 0, f"worker {n} crashed (exitcode {p.exitcode})"
+
+    for n in range(workers):
+        result = subprocess.run(
+            ["git", "show", f"strategy/s{n}:strategies/s{n}/strategy.py"],
+            cwd=tmp_path, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"strategy/s{n} missing its file: {result.stderr}"
+        assert result.stdout == f"x = {attempts - 1}\n"
