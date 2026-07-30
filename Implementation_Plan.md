@@ -338,7 +338,7 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 
 ---
 
-## 8. Stage 5 — A2 Quant Engineer
+## 8. Stage 5 — A2 Quant Engineer ✅ built
 
 **Goal:** spec → working code.
 
@@ -354,6 +354,41 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 | Prompt versioning | Recorded on every output |
 
 **Done when:** given a hand-written spec, A2 produces code that passes P0 and runs through `evaluate.py` unattended.
+
+> **Built as `aqrl/agents/` + `aqrl/orchestration/handlers/implement.py`.** The
+> decisive design call: `aqrl/eval/engine.py` compiles **specs**, not source
+> (`compile_spec(inputs.spec, ...)`), so A2 never emits freeform Python the
+> engine then executes — it emits a schema-validated spec (`ProposedSpec`,
+> Stage 2's operator DAG plus a plain-language `change_summary`), and
+> `render.py` deterministically renders that into
+> `strategies/<uid>/strategy.py`. The guardrail is `spec_hash` equality
+> between the rendered module and the stored row — checked on every render,
+> not just in tests — which makes "the code" and "the thing `evaluate.py`
+> scores" structurally the same object (TRD §6.1's no-forking rule, applied
+> to codegen). **Iteration 1, from a hand-written spec, needs no LLM call at
+> all** — pure Python render → sandboxed static check (`sandbox.py`, a
+> scrubbed-env, resource-limited, timed-out subprocess reusing Stage 3's own
+> `static_lookahead_scan` / `spec_absolute_level_scan` / truncation-invariance
+> checks) → an idempotent, content-addressed git commit
+> (`aqrl/vcs.py`, always an orphan branch per strategy — "two unrelated
+> hypotheses share no content") → `code_versions` insert → `EVALUATE`
+> enqueued with the eval-relevant payload carried through unchanged. Claude
+> (`agents/session.py`'s `AnthropicSession`, via `client.messages.parse` for
+> schema-validated structured output) is invoked only for a plan-driven
+> iteration or a `FIX_CODE` retry — `StubSession`/`ReplaySession` stand in for
+> every test, so nothing in the suite needs `ANTHROPIC_API_KEY`. A failing
+> static check is a bounded-retry loop (`max_fix_attempts`, default 3,
+> counted from `code_versions` rows on the experiment) ending in
+> `strategies.quarantined`, not a failed job — the checks ran and produced a
+> verdict, the same shape as `EVALUATE`'s own bar-clear short-circuit. A3
+> (Stage 6) doesn't exist yet, so the plan-driven path is exercised by
+> inserting a `research_plans` row by hand and enqueuing `IMPLEMENT`
+> directly — done-when is proven both via direct handler calls and, for the
+> hand-written-spec path, through a real claimed job running in a real
+> `aqrl.orchestration.worker` subprocess. One deliberate scope note: sandbox
+> isolation is process-level (`subprocess` + `resource` limits), not
+> container-level (TRD §19 defers Docker) — it blocks credential/database
+> access and runaway CPU/memory, not a generated process opening a socket.
 
 ---
 
@@ -617,3 +652,4 @@ Not in the v1 build:
 | 2026-07-29 | **Stage 2 built.** `aqrl/operators/`: the base class and registry, **32 operators** across all four TRD §11 categories, the spec DAG with canonical structural hashing, and a compiler producing the signal function `nanoaqrl/evaluate.py` already accepts — verified bar-for-bar identical to the hand-written `strategy.py`. Node ids, declaration order, defaults, float spelling, commutative operand order and hypothesis wording all leave `spec_hash` unchanged; a genuine change does not. Causality is a registry-wide property test with negative controls, and `operator_library_version` is derived by content hash. No new dependencies. |
 | 2026-07-29 | **Stage 3 built.** `aqrl/eval/` — the single, profile-driven, panel-native evaluation engine: the ordered funnel (complexity → P0 → P1 → P2 → P3 → market gates → the bar), the walk-forward protocol and honest score moved out of `nanoaqrl/_lib/` so exactly one implementation exists (TRD §6.1), market-specific gates as appended phases per TRD §6.5, and full TRD §6.6 provenance persisted into Stage 1's schema with no new migration needed. The known-answer suite (§5.2) passed — **M1 cleared** — with the published-strategy case replaced by analytic ground truth. Profiling drove two evidence-based optimisations (Numba on the one genuinely path-dependent hot loop; an O(n²) expanding-median bug fixed algorithmically) for a measured 4.7× speedup, and fold-level parallelism was verified bit-identical across worker counts, not merely designed to be. One new dependency: `numba`, applied on profiled evidence per TRD §9.7, not speculatively. |
 | 2026-07-29 | **Stage 4 built.** `aqrl/orchestration/` — the `jobs` queue (`JobRepository`: atomic `BEGIN IMMEDIATE` claim, lease/heartbeat, `dedupe_key`), explicit state machines for `strategies`/`experiments` that raise on an invalid transition and write `audit_log`, the TRD §4.1 event→job_type table, transient/deterministic failure classification with exponential backoff and *k*-consecutive-failure quarantine, budget back-pressure gating dispatch, a subprocess worker with the `EVALUATE` handler wired end to end (queued job → rebuilt `EvaluationInputs` → Stage 3's engine → persisted report → the bar-clear short-circuit straight to `PROMOTE`, or `REVIEW` on a bar failure — never invoking A3, which doesn't exist yet), and the App-Flow §13 scheduler tick with TRD §4.5 idle-cause reporting. `aqrl.db.connection` gained WAL mode, `busy_timeout`, and `BEGIN IMMEDIATE` for the first time two processes write the database at once. Migration 0008 added `jobs.dedupe_key`. The crash test *is* the done-when: a real subprocess is `SIGKILL`ed mid-job and a re-run produces exactly one evaluation, and losing the scheduler process itself still recovers via lease expiry on the next tick — both proven against real OS processes, not mocks. |
+| 2026-07-30 | **Stage 5 built.** `aqrl/agents/` (render, sandbox, session, context) and `aqrl/orchestration/handlers/implement.py` — A2 translates a spec (hand-written for iteration 1, Claude-proposed for a plan-driven iteration or a `FIX_CODE` retry) into `strategies/<uid>/strategy.py` via a deterministic renderer, never freeform code, since `evaluate.py` compiles specs (TRD §6.1's no-forking rule extended to codegen). Static checks run in a scrubbed-env, resource-limited, timed-out subprocess reusing Stage 3's own P0 scanners; a passing spec commits to an idempotent, orphan-per-strategy git branch (`aqrl/vcs.py`) and enqueues `EVALUATE` unattended, exactly as Stage 5's done-when requires — proven both via direct handler calls and through a real claimed job in a real worker subprocess. A failing spec is a bounded `FIX_CODE` retry loop (default 3 attempts, counted from `code_versions`) ending in quarantine, not a failed job. No new migration: `code_versions` and `research_plans` already existed in Stage 1's schema, needing only new repositories (`CodeVersionRepository`, `ResearchPlanRepository`) and `ExperimentRepository.open_pending` for the `created → code_pending → code_ready → evaluating` chain Stage 4 defined but never drove. New optional dependency: `anthropic`, imported lazily so no test in the suite needs a network connection or an API key — `StubSession`/`ReplaySession` stand in throughout. |

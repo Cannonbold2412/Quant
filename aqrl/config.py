@@ -51,6 +51,23 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     log_format: LogFormat = Field(default="json")
 
+    # -- Stage 5: A2 Quant Engineer (Implementation_Plan §8) ---------------------
+    strategy_repo_path: Path = Field(
+        default=Path("strategy_repo"),
+        description="One repo, one branch per strategy (TRD §5.2). Never the framework repo.",
+    )
+    max_fix_attempts: int = Field(
+        default=3, description="Bounded FIX_CODE retries on one experiment before quarantine (App-Flow §4.3)."
+    )
+    sandbox_timeout_seconds: int = Field(
+        default=60, description="Wall-clock cap on the static-check/smoke-run subprocess."
+    )
+    sandbox_cpu_seconds: int = Field(default=30, description="RLIMIT_CPU for the sandboxed subprocess.")
+    sandbox_memory_bytes: int = Field(
+        default=3 * 1024 * 1024 * 1024, description="RLIMIT_AS for the sandboxed subprocess (3 GiB default)."
+    )
+    anthropic_model: str = Field(default="claude-opus-5", description="Model A2's session wrapper calls.")
+
     # -- Stage 4: the nervous system (Implementation_Plan §6) -------------------
     busy_timeout_ms: int = Field(
         default=5000, description="SQLite busy_timeout — how long a writer waits under contention."

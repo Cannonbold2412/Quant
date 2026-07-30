@@ -51,7 +51,7 @@ def test_claim_is_atomic_and_returns_highest_priority_first(conn, jobs):
 
 
 def test_claim_respects_job_types_filter(conn, jobs):
-    jobs.enqueue("FIX_CODE")
+    jobs.enqueue("ARCHIVE")
     evaluate_id = jobs.enqueue("EVALUATE")
     with transaction(conn, immediate=True):
         claimed = jobs.claim("w1", lease_seconds=60, job_types=["EVALUATE"])

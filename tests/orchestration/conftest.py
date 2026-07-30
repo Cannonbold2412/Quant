@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from aqrl.config import reset_settings_cache
+from aqrl.config import PROJECT_ROOT, Settings, reset_settings_cache
 from aqrl.data import SnapshotManager
 from aqrl.db.repositories import ExperimentRepository, JobRepository, SpecRepository, StrategyRepository
 from aqrl.operators import Node, StrategySpec
@@ -22,6 +22,20 @@ from ..eval.conftest import random_walk_bars
 MARKET = "nse_equity"
 TIMEFRAME = "daily"
 ASSET_CLASS = "cash_equity"
+
+
+@pytest.fixture
+def settings(tmp_path: Path) -> Settings:
+    """Overrides the root fixture to add `strategy_repo_path` — Stage 5's
+    `IMPLEMENT`/`FIX_CODE` handler tests need their own scratch git repo, and
+    every other test in this suite ignores the field entirely."""
+    return Settings(
+        db_path=tmp_path / "test.db",
+        data_root=tmp_path / "data",
+        profiles_dir=PROJECT_ROOT / "profiles",
+        strategy_repo_path=tmp_path / "strategy_repo",
+        log_level="WARNING",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +48,7 @@ def _env_settings(settings, monkeypatch):
     """
     monkeypatch.setenv("AQRL_DB_PATH", str(settings.db_path))
     monkeypatch.setenv("AQRL_DATA_ROOT", str(settings.data_root))
+    monkeypatch.setenv("AQRL_STRATEGY_REPO_PATH", str(settings.strategy_repo_path))
     monkeypatch.setenv("AQRL_LOG_LEVEL", "WARNING")
     reset_settings_cache()
     yield

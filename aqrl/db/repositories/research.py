@@ -95,10 +95,41 @@ class ExperimentRepository(Repository):
 
         It starts in `evaluating`: if the process dies mid-run the row is
         visibly unfinished rather than absent, which is what makes a crash
-        distinguishable from "never happened".
+        distinguishable from "never happened". Used by the ad hoc
+        `aqrl evaluate run` CLI path, which has code and a snapshot in hand
+        already — Stage 5's `IMPLEMENT` handler uses `open_pending` instead,
+        since it starts before code exists (Backend-Schema §14.2's
+        `created` -> `code_pending` -> `code_ready` -> `evaluating` chain).
         """
         return self.insert(
             strategy_id=strategy_id, iteration=iteration, status="evaluating", **provenance
+        )
+
+    def open_pending(
+        self,
+        strategy_id: int,
+        iteration: int,
+        spec_id: int,
+        *,
+        parent_experiment_id: int | None = None,
+        research_plan_id: int | None = None,
+    ) -> int:
+        """Open an experiment before any code exists for it.
+
+        Starts in `created` — the head of `EXPERIMENT_TRANSITIONS`
+        (`aqrl/orchestration/states.py`) — because Stage 5's `IMPLEMENT`
+        handler must record the attempt *before* rendering, checking, or
+        committing anything, so a worker crash mid-codegen leaves a visibly
+        unfinished row rather than no row at all (App-Flow §4, same
+        crash-distinguishability argument as `start()` above).
+        """
+        return self.insert(
+            strategy_id=strategy_id,
+            iteration=iteration,
+            spec_id=spec_id,
+            parent_experiment_id=parent_experiment_id,
+            research_plan_id=research_plan_id,
+            status="created",
         )
 
     def complete(
@@ -207,6 +238,37 @@ class RegimePerformanceRepository(Repository):
 
     def for_evaluation(self, evaluation_id: int) -> list[Row]:
         return self.find(evaluation_id=evaluation_id)
+
+
+class CodeVersionRepository(Repository):
+    """Every implementation A2 produces (Backend-Schema §5).
+
+    Recorded even for a rejected attempt: `compile_ok` and
+    `static_check_results` exist precisely so a `FIX_CODE` loop's history is
+    legible afterward — *why* did it take three tries, not just that it did.
+    """
+
+    table = "code_versions"
+    json_columns = frozenset({"static_check_results"})
+
+    def for_experiment(self, experiment_id: int) -> list[Row]:
+        return self.find(experiment_id=experiment_id, order_by="id")
+
+
+class ResearchPlanRepository(Repository):
+    """A3's output (Backend-Schema §6). **Never contains code** — it is a
+    research instruction that Stage 5's context assembler reads, not writes;
+    A3 itself is Stage 6 and does not exist yet. Stage 5 needs read access
+    now because the `IMPLEMENT` handler's iteration path (a spec revised in
+    response to a plan) is exercised by inserting a `research_plans` row by
+    hand until Stage 6 ships a real producer.
+    """
+
+    table = "research_plans"
+    json_columns = frozenset({"evidence_cited", "proposed_changes"})
+
+    def for_experiment(self, experiment_id: int) -> list[Row]:
+        return self.find(experiment_id=experiment_id, order_by="id")
 
 
 class NullWorldRunRepository(Repository):

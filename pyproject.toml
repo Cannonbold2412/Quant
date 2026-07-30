@@ -26,6 +26,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
+# Stage 5: the real Claude session wrapper (aqrl/agents/session.py). Imported
+# lazily, so nothing in the test suite needs this installed — StubSession and
+# ReplaySession stand in for every test, including the full offline loop.
+agents = ["anthropic>=0.40"]
 
 [project.scripts]
 aqrl = "aqrl.cli:main"
@@ -43,8 +47,13 @@ target-version = "py311"
 [tool.ruff.lint.per-file-ignores]
 # nanoAQRL executes the committed strategy source by design (TRD §2.1). It is
 # not a security sandbox and does not claim to be — real agent isolation is
-# Stage 5's job. Flagging it here every run adds noise, not safety.
+# aqrl/agents/sandbox.py's job (Stage 5). Flagging it here every run adds
+# noise, not safety.
 "nanoaqrl/evaluate.py" = ["S102"]
+# Stage 5's static-check pipeline: executing the rendered module is the whole
+# job of this file, inside the process-isolated subprocess `sandbox.py`
+# spawns — not a place code review needs a warning about `exec`.
+"aqrl/agents/_sandbox_worker.py" = ["S102"]
 # The P0 look-ahead scanner keeps its branches explicit rather than collapsing
 # them into a precedence-dependent boolean chain. Readability wins in the one
 # place where a misread condition silently stops catching leaks.
