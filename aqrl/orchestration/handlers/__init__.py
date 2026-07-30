@@ -1,7 +1,9 @@
 """The `job_type -> handler` registry.
 
-Stage 4 ships exactly one real handler — `EVALUATE` — because it is the only
-job type with a producer built so far (Stage 3's engine). Every other
+Stage 4 shipped `EVALUATE`. Stage 5 adds `IMPLEMENT` and `FIX_CODE` — A2,
+Implementation_Plan §8 — sharing one handler module (`implement.py`) since
+they differ only in which experiment they target and whether an LLM call is
+involved, not in the render -> check -> commit path both end at. Every other
 `job_type` in the schema's CHECK constraint (`aqrl/db/repositories/jobs.py`,
 `JOB_TYPES`) is a real future stage, not a stub: `get_handler` raises
 `NotImplementedHandler` for anything unregistered, which `failures.py`
@@ -16,6 +18,7 @@ from typing import Any, Callable
 
 from ...db.repositories.base import Row
 from . import evaluate as _evaluate
+from . import implement as _implement
 from .base import HandlerResult, JobHandler, NotImplementedHandler
 
 __all__ = ["HandlerResult", "JobHandler", "NotImplementedHandler", "get_handler"]
@@ -29,6 +32,8 @@ class _FunctionHandler:
 
 _HANDLERS: dict[str, _FunctionHandler] = {
     "EVALUATE": _FunctionHandler(run=_evaluate.run, persist=_evaluate.persist),
+    "IMPLEMENT": _FunctionHandler(run=_implement.run, persist=_implement.persist),
+    "FIX_CODE": _FunctionHandler(run=_implement.run, persist=_implement.persist),
 }
 
 

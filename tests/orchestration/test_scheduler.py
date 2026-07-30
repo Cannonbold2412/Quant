@@ -42,7 +42,7 @@ def test_diagnose_idle_reports_queue_empty(conn, dispatcher):
 def test_diagnose_idle_reports_validation_flags(conn, dispatcher, strategy_id):
     from aqrl.db.repositories import SnapshotRepository, ValidationFlagRepository
 
-    JobRepository(conn).enqueue("FIX_CODE", strategy_id=strategy_id)
+    JobRepository(conn).enqueue("ARCHIVE", strategy_id=strategy_id)
     # A snapshot row is required by the FK; a minimal one is enough — this
     # test is about the flag, not the snapshot content.
     snapshot_id = SnapshotRepository(conn).insert(
@@ -59,7 +59,7 @@ def test_diagnose_idle_reports_validation_flags(conn, dispatcher, strategy_id):
 
 
 def test_diagnose_idle_reports_schedule_or_dependency_block(conn, dispatcher, strategy_id):
-    JobRepository(conn).enqueue("FIX_CODE", strategy_id=strategy_id, scheduled_for="2999-01-01T00:00:00+00:00")
+    JobRepository(conn).enqueue("ARCHIVE", strategy_id=strategy_id, scheduled_for="2999-01-01T00:00:00+00:00")
     assert diagnose_idle(conn, dispatcher) == "blocked_on_schedule_or_dependencies"
 
 
@@ -95,7 +95,7 @@ def test_fire_due_time_jobs_with_empty_schedule_is_a_noop(conn):
 
 def test_tick_expires_leases_and_reports_the_orphan(conn, dispatcher, strategy_id):
     jobs = JobRepository(conn)
-    job_id = jobs.enqueue("FIX_CODE", strategy_id=strategy_id)
+    job_id = jobs.enqueue("ARCHIVE", strategy_id=strategy_id)
     with transaction(conn, immediate=True):
         jobs.claim("some-dead-worker", lease_seconds=1)
 
@@ -110,7 +110,7 @@ def test_tick_with_nothing_queued_reports_queue_empty(conn, dispatcher):
 
 
 def test_tick_dispatches_and_reaps_a_fast_failing_job(conn, dispatcher, strategy_id):
-    job_id = JobRepository(conn).enqueue("FIX_CODE", strategy_id=strategy_id)
+    job_id = JobRepository(conn).enqueue("ARCHIVE", strategy_id=strategy_id)
     report = tick(conn, dispatcher)
     assert report.dispatched == [job_id]
 

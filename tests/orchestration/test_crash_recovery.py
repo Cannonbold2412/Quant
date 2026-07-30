@@ -83,7 +83,7 @@ def test_scheduler_kill_9_orphans_recover(conn, strategy_id):
     `expire_leases` plus a fresh `Dispatcher`'s next tick, not process
     signals (`test_kill_9_loses_nothing` already covers the signal path)."""
     jobs = JobRepository(conn)
-    job_id = jobs.enqueue("FIX_CODE", strategy_id=strategy_id)
+    job_id = jobs.enqueue("ARCHIVE", strategy_id=strategy_id)
 
     # A job claimed by a worker that then vanished along with its scheduler —
     # no heartbeat, no completion, ever.
@@ -106,5 +106,5 @@ def test_scheduler_kill_9_orphans_recover(conn, strategy_id):
     fresh_dispatcher.reap()
 
     final = jobs.get(job_id)
-    assert final["status"] in ("failed", "pending")  # FIX_CODE has no handler -> deterministic failure
+    assert final["status"] in ("failed", "pending")  # ARCHIVE has no handler -> deterministic failure
     assert final["attempts"] == 2, "claimed exactly twice: the orphaned attempt, then the recovery"

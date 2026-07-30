@@ -26,11 +26,13 @@ from .operators import (
 from .registry import CostModelRepository, MarketProfileRepository, TimeframeProfileRepository
 from .research import (
     VERDICT_TO_STATUS,
+    CodeVersionRepository,
     EvaluationRepository,
     EvaluationTestRepository,
     ExperimentRepository,
     NullWorldRunRepository,
     RegimePerformanceRepository,
+    ResearchPlanRepository,
     StrategyRepository,
 )
 
@@ -39,6 +41,7 @@ __all__ = [
     "JOB_TYPES",
     "VERDICT_TO_STATUS",
     "AuditLogRepository",
+    "CodeVersionRepository",
     "CorporateActionRepository",
     "CostModelRepository",
     "DuplicateSpecError",
@@ -53,6 +56,7 @@ __all__ = [
     "OperatorRepository",
     "RegimePerformanceRepository",
     "Repository",
+    "ResearchPlanRepository",
     "Row",
     "SnapshotRepository",
     "SpecOperatorRepository",

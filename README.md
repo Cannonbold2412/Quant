@@ -1,18 +1,17 @@
 # AQRL — Autonomous Quantitative Research Laboratory
 
-> **Status: Stages 0–4 built.**
-> `nanoaqrl/` is the original research loop (Stage 0); `aqrl/` is the foundation layer (Stage 1), operator library (Stage 2), the single productionised evaluation engine (Stage 3), and now the job queue and scheduler (Stage 4, `aqrl/orchestration/`) that runs it unattended. Stages 4a–13 remain design only.
+> **Status: Stages 0–5 built.**
+> `nanoaqrl/` is the original research loop (Stage 0); `aqrl/` is the foundation layer (Stage 1), operator library (Stage 2), the single productionised evaluation engine (Stage 3), the job queue and scheduler (Stage 4, `aqrl/orchestration/`), and now A2 the Quant Engineer (Stage 5, `aqrl/agents/`) — spec in, rendered code out, static-checked in a sandbox, committed to git, evaluated unattended. Stage 4a and Stages 6–13 remain design only.
 >
 > ```bash
 > pip install -e .            # Python 3.11+
 > aqrl db migrate             # create the schema
 > aqrl profile show nse_equity --timeframe daily
-> aqrl evaluate run --spec strategy.json --market nse_equity --timeframe daily \
->     --asset-class cash_equity --snapshot-id 1
-> aqrl jobs enqueue EVALUATE --payload '{"asset_class": "cash_equity"}' \
->     --strategy-id 1 --experiment-id 1
-> aqrl scheduler run --once  # or omit --once for the always-on loop
-> pytest                      # 832 tests
+> aqrl strategy new --spec strategy.json --name my-strategy --family my-family \
+>     --market nse_equity --timeframe daily --asset-class cash_equity --snapshot-id 1
+> aqrl scheduler run --once  # renders, checks, commits, then evaluates — unattended
+> aqrl code show 1           # the rendered module's static-check results
+> pytest                      # 885 tests
 > ```
 
 ---

@@ -436,6 +436,150 @@ def cmd_spec_compile(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- strategy / code / agents (Stage 5 — Implementation_Plan §8) ---------------
+
+
+def cmd_strategy_new(args: argparse.Namespace) -> int:
+    """Seed a strategy from a hand-written spec and enqueue its first IMPLEMENT.
+
+    Everything downstream — render, static checks, git commit, `EVALUATE` —
+    runs unattended from here, no LLM call involved: this is Stage 5's
+    done-when (Implementation_Plan §8), made runnable rather than asserted.
+    """
+    from .db.repositories import JobRepository, SpecRepository, StrategyRepository
+    from .operators import SpecError
+    from .orchestration import states
+    from .orchestration.events import Event, emit
+
+    try:
+        spec = _load_spec(args.spec)
+    except SpecError as exc:
+        print(f"invalid spec: {exc}", file=sys.stderr)
+        return 1
+
+    conn = connect()
+    strategies = StrategyRepository(conn)
+    specs = SpecRepository(conn)
+
+    payload: dict[str, Any] = {"asset_class": args.asset_class}
+    if args.snapshot_id is not None:
+        payload["data_snapshot_id"] = args.snapshot_id
+    if args.campaign:
+        payload["campaign"] = args.campaign
+    if args.cost_multiplier is not None:
+        payload["cost_multiplier"] = args.cost_multiplier
+    if args.seed is not None:
+        payload["random_seed"] = args.seed
+
+    try:
+        with transaction(conn, immediate=True):
+            strategy_id = strategies.get_or_create(args.name, args.family, args.market, args.timeframe)
+            spec_id = specs.insert_spec(spec, strategy_id)
+            strategy = strategies.get(strategy_id)
+            if strategy["status"] == "draft":
+                states.transition(conn, "strategies", strategy_id, "spec_ready", actor="cli")
+            payload["spec_id"] = spec_id
+            job_id = emit(conn, Event.SPEC_SAVED, strategy_id=strategy_id, payload=payload)
+    except (ValueError, LookupError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    job = JobRepository(conn).get(job_id) if job_id else None
+    print(f"strategy {strategy_id}  spec {spec_id}  IMPLEMENT job {job['uid'] if job else '(none — SPEC_SAVED not wired)'}")
+    return 0
+
+
+def cmd_code_show(args: argparse.Namespace) -> int:
+    from .db.repositories import CodeVersionRepository
+
+    conn = connect()
+    versions = CodeVersionRepository(conn).for_experiment(args.experiment_id)
+    if not versions:
+        print(f"no code_versions for experiment {args.experiment_id}", file=sys.stderr)
+        return 1
+
+    if args.all:
+        rows = [
+            {
+                "id": row["id"],
+                "compile_ok": row["compile_ok"],
+                "git_commit": (row["git_commit"] or "")[:12],
+                "change_summary": row["change_summary"],
+            }
+            for row in versions
+        ]
+        print(_table(rows, ["id", "compile_ok", "git_commit", "change_summary"]))
+        return 0
+
+    row = versions[-1]
+    print(f"code_version    {row['id']}")
+    print(f"code_path       {row['code_path']}")
+    print(f"git_commit      {row['git_commit']}")
+    print(f"compile_ok      {row['compile_ok']}")
+    print(f"prompt_version  {row['prompt_version']}")
+    print(f"change_summary  {row['change_summary']}")
+    checks = row.get("static_check_results") or []
+    print("\nstatic checks:")
+    print(_table(checks, ["test_name", "result", "detail"]))
+    return 0
+
+
+def cmd_agents_brief(args: argparse.Namespace) -> int:
+    """Print the Implementation Brief a plan-driven `IMPLEMENT`/`FIX_CODE` job
+    would send to Claude — without calling it."""
+    from .agents.context import assemble_implement_brief
+    from .db.repositories import (
+        CodeVersionRepository,
+        EvaluationRepository,
+        ExperimentRepository,
+        ResearchPlanRepository,
+        SpecRepository,
+        StrategyRepository,
+    )
+
+    conn = connect()
+    strategy = StrategyRepository(conn).get(args.strategy_id)
+    if strategy is None:
+        print(f"no strategy {args.strategy_id}", file=sys.stderr)
+        return 1
+
+    specs = SpecRepository(conn)
+    prior_spec = None
+    prior_diff = None
+    prior_evaluation = None
+    if args.experiment_id is not None:
+        experiment = ExperimentRepository(conn).get(args.experiment_id)
+        if experiment is None:
+            print(f"no experiment {args.experiment_id}", file=sys.stderr)
+            return 1
+        prior_spec = specs.load_spec(experiment["spec_id"])
+        versions = CodeVersionRepository(conn).for_experiment(args.experiment_id)
+        prior_diff = versions[-1]["diff_from_parent"] if versions else None
+        prior_evaluation = EvaluationRepository(conn).latest_for_experiment(args.experiment_id)
+
+    research_plan = None
+    if args.research_plan_id is not None:
+        research_plan = ResearchPlanRepository(conn).get(args.research_plan_id)
+        if research_plan is None:
+            print(f"no research_plans row {args.research_plan_id}", file=sys.stderr)
+            return 1
+
+    diagnostics = (
+        json.loads(Path(args.diagnostics_file).read_text(encoding="utf-8")) if args.diagnostics_file else None
+    )
+
+    brief = assemble_implement_brief(
+        strategy=strategy,
+        prior_spec=prior_spec,
+        research_plan=research_plan,
+        prior_diff=prior_diff,
+        prior_evaluation=prior_evaluation,
+        diagnostics=diagnostics,
+    )
+    print(brief)
+    return 0
+
+
 # -- evaluate --------------------------------------------------------------------
 
 
@@ -896,6 +1040,40 @@ def build_parser() -> argparse.ArgumentParser:
     p = spec.add_parser("compile", help="validate a spec and describe what it computes")
     p.add_argument("path", type=Path)
     p.set_defaults(func=cmd_spec_compile)
+
+    strategy = subs.add_parser("strategy", help="strategies (Stage 5 — A2)").add_subparsers(
+        dest="cmd", required=True
+    )
+    p = strategy.add_parser("new", help="seed a strategy from a hand-written spec, enqueue IMPLEMENT")
+    p.add_argument("--spec", required=True, type=Path)
+    p.add_argument("--name", required=True)
+    p.add_argument("--family", required=True)
+    p.add_argument("--market", required=True)
+    p.add_argument("--timeframe", required=True)
+    p.add_argument("--asset-class", required=True, dest="asset_class")
+    p.add_argument("--snapshot-id", type=int, dest="snapshot_id", help="data_snapshot_id for EVALUATE")
+    p.add_argument("--campaign", help="acceptance_bars.campaign_label to lock against")
+    p.add_argument("--cost-multiplier", type=float, dest="cost_multiplier")
+    p.add_argument("--seed", type=int)
+    p.set_defaults(func=cmd_strategy_new)
+
+    code = subs.add_parser("code", help="A2's generated code (Stage 5)").add_subparsers(
+        dest="cmd", required=True
+    )
+    p = code.add_parser("show", help="show code_versions for one experiment")
+    p.add_argument("experiment_id", type=int)
+    p.add_argument("--all", action="store_true", help="list every attempt, not just the latest")
+    p.set_defaults(func=cmd_code_show)
+
+    agents = subs.add_parser("agents", help="the Claude session wrapper (Stage 5)").add_subparsers(
+        dest="cmd", required=True
+    )
+    p = agents.add_parser("brief", help="print the Implementation Brief without calling Claude")
+    p.add_argument("--strategy-id", type=int, required=True, dest="strategy_id")
+    p.add_argument("--experiment-id", type=int, dest="experiment_id", help="the experiment being iterated on/fixed")
+    p.add_argument("--research-plan-id", type=int, dest="research_plan_id")
+    p.add_argument("--diagnostics-file", dest="diagnostics_file", help="JSON list of diagnostic strings")
+    p.set_defaults(func=cmd_agents_brief)
 
     flags = subs.add_parser("flags", help="data validation flags").add_subparsers(
         dest="cmd", required=True
