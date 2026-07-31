@@ -17,6 +17,7 @@ from .data import (
     ValidationFlagRepository,
 )
 from .jobs import JOB_STATUSES, JOB_TYPES, JobRepository, LeaseLost, UnknownJobType
+from .knowledge import KnowledgeEntryRepository
 from .operators import (
     DuplicateSpecError,
     OperatorRepository,
@@ -50,6 +51,7 @@ __all__ = [
     "ExperimentRepository",
     "IndexMembershipRepository",
     "JobRepository",
+    "KnowledgeEntryRepository",
     "LeaseLost",
     "MarketProfileRepository",
     "NullWorldRunRepository",

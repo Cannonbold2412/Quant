@@ -39,7 +39,7 @@ from ..operators.spec import StrategySpec
 from ..profiles.models import MarketProfile
 from .checks import CheckResult, verdict, warned
 
-__all__ = ["AcceptanceBar", "BarVerdict", "breadth_of", "complexity_of"]
+__all__ = ["AcceptanceBar", "BarVerdict", "BAR_FAILURE_TO_EXPERIMENT_REASON", "breadth_of", "complexity_of"]
 
 #: TRD §7.5. These are the defaults a campaign inherits when no `acceptance_bars`
 #: row has been locked; a locked row always wins, because pre-registration is
@@ -52,6 +52,25 @@ DEFAULT_Z_MULTIPLIER = 1.65
 
 #: The order failures are reported in — cheapest and most diagnostic first.
 _FAILURE_ORDER = ("complexity", "min_trades", "max_drawdown", "cost_stress", "breadth")
+
+#: `BarVerdict.failed_on`'s vocabulary (this module's, matching
+#: `evaluations.bar_failed_on`) is not `experiments.failure_reason`'s vocabulary
+#: (Backend-Schema §6) — the two enums were never meant to be the same string.
+#: `engine.py` needs this map to close out a bar-failed experiment at all: an
+#: un-translated `"min_trades"` written straight to `experiments.failure_reason`
+#: violates that column's own CHECK constraint. `min_trades` -> `insufficient_trades`
+#: is exact; `cost_stress` -> `costs_exceed_edge` reuses the same bucket P2's own
+#: cost-survival failure already uses, since both ask the identical question at
+#: different phases. `max_drawdown` and `breadth` have no dedicated slot in the
+#: schema, so each takes the closest existing bucket — the same "closest
+#: available bucket" tradeoff `implement.py`'s P0-provenance handling and A2's
+#: FIX_CODE quarantine reason already make, not a new precedent.
+BAR_FAILURE_TO_EXPERIMENT_REASON: dict[str, str] = {
+    "min_trades": "insufficient_trades",
+    "cost_stress": "costs_exceed_edge",
+    "max_drawdown": "monte_carlo_ruin_risk",
+    "breadth": "capacity_constrained",
+}
 
 
 @dataclass(frozen=True)

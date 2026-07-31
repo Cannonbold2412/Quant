@@ -82,6 +82,23 @@ def test_persist_routes_bar_failure_to_review(conn, strategy_id, experiment_id):
     assert strategy["status"] != "pending_promotion"
 
 
+def test_persist_carries_the_incoming_payload_through_to_the_follow_on_job(conn, strategy_id, experiment_id):
+    """PROMOTE/REVIEW need the same eval-relevant fields the next EVALUATE
+    would (`asset_class`, `data_snapshot_id`, `cost_multiplier`, ...) — Stage
+    6's REVIEW -> IMPLEMENT -> EVALUATE loop breaks at iteration 2 otherwise,
+    since `implement.py` hard-requires `asset_class` in its own payload."""
+    job = {"payload": {"asset_class": "cash_equity", "data_snapshot_id": 7, "cost_multiplier": 3.0}}
+    outcome = handler.EvaluateOutcome(experiment_id=experiment_id, strategy_id=strategy_id, report=_report(passed=False))
+    with transaction(conn, immediate=True):
+        handler.persist(conn, job, outcome)
+
+    review_job = JobRepository(conn).find(job_type="REVIEW")[0]
+    assert review_job["payload"]["asset_class"] == "cash_equity"
+    assert review_job["payload"]["data_snapshot_id"] == 7
+    assert review_job["payload"]["cost_multiplier"] == 3.0
+    assert "evaluation_id" in review_job["payload"]
+
+
 def test_persist_writes_the_evaluation_regardless_of_verdict(conn, strategy_id, experiment_id):
     outcome = handler.EvaluateOutcome(experiment_id=experiment_id, strategy_id=strategy_id, report=_report(passed=False))
     with transaction(conn, immediate=True):

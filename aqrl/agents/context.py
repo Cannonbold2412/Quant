@@ -1,7 +1,9 @@
-"""The Implementation Brief — assembled in Python (App-Flow §4.1).
+"""The Implementation Brief and the Review Brief — both assembled in Python
+(App-Flow §4.1, §6.2).
 
 **Python builds the brief; Claude does not go hunting for context** (TRD
-§16). Every field the brief can contain is named here explicitly:
+§16). Every field the Implementation Brief can contain is named here
+explicitly:
 
     strategy identity (name, family, market, timeframe)
     operator catalog (name, category, params, valid markets/timeframes)
@@ -11,13 +13,26 @@
     the prior evaluation's summary, if any — outcome and phase, never internals
     static-check diagnostics, if this is a FIX_CODE retry
 
-**What never appears here, and why.** No `evaluate.py` source, no honest-score
-formula or thresholds, no bar values, no vault data. App-Flow §4.1 is explicit
-that *"A2 never receives `evaluate.py`"* — an agent that can see how it will
-be scored eventually optimises for the scorer instead of the market. A stored
-*outcome* (pass/fail, which phase, which named failure reason) is a fact about
-what already happened, not a description of the scoring function, so it is
-safe to include; the function that produced it is not.
+**What never appears in the Implementation Brief, and why.** No
+`evaluate.py` source, no honest-score formula or thresholds, no bar values,
+no vault data. App-Flow §4.1 is explicit that *"A2 never receives
+`evaluate.py`"* — an agent that can see how it will be scored eventually
+optimises for the scorer instead of the market. A stored *outcome* (pass/fail,
+which phase, which named failure reason) is a fact about what already
+happened, not a description of the scoring function, so it is safe to
+include; the function that produced it is not.
+
+**The Review Brief's redaction is deliberately asymmetric, not looser by
+accident.** A3 only ever reviews a *bar failure* (App-Flow §6.1) — and a
+bar failure has no `honest_score` at all (TRD §7.5), so there is no scoring
+surface to protect A3 from the way there is for A2. What A3 needs instead is
+exactly what would otherwise be withheld: `bar_failed_on` plus the raw
+diagnostic values and thresholds behind it (how far below `min_trades`, how
+far over `max_drawdown`) — App-Flow §6.3 is explicit that this is the *only*
+signal available to tell "getting closer" from "stuck" without a synthetic
+score for failing attempts. What stays hidden is unchanged either way: no
+`evaluate.py` source, no honest-score formula, no bar thresholds beyond the
+one this evaluation actually hit.
 """
 from __future__ import annotations
 
@@ -30,13 +45,19 @@ from ..hashing import content_hash
 from ..operators.registry import all_operators
 from ..operators.spec import StrategySpec
 
-__all__ = ["assemble_implement_brief", "implement_prompt_version"]
+__all__ = [
+    "assemble_implement_brief",
+    "assemble_review_brief",
+    "implement_prompt_version",
+    "review_prompt_version",
+]
 
-_PROMPT_PATH = Path(__file__).parent / "prompts" / "implement_v1.md"
+_IMPLEMENT_PROMPT_PATH = Path(__file__).parent / "prompts" / "implement_v1.md"
+_REVIEW_PROMPT_PATH = Path(__file__).parent / "prompts" / "review_v1.md"
 
 
-def _template() -> str:
-    return _PROMPT_PATH.read_text(encoding="utf-8")
+def _template(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
 
 
 def implement_prompt_version() -> str:
@@ -47,7 +68,12 @@ def implement_prompt_version() -> str:
     forgotten the first time the wording changes, and every output recorded
     under the stale version silently becomes incomparable noise.
     """
-    return f"implement-v1-{content_hash(_template())[:12]}"
+    return f"implement-v1-{content_hash(_template(_IMPLEMENT_PROMPT_PATH))[:12]}"
+
+
+def review_prompt_version() -> str:
+    """`implement_prompt_version`'s A3 counterpart — same derivation."""
+    return f"review-v1-{content_hash(_template(_REVIEW_PROMPT_PATH))[:12]}"
 
 
 def _operator_catalog() -> list[dict[str, Any]]:
@@ -140,7 +166,7 @@ def assemble_implement_brief(
     reshuffling this function.
     """
     sections = [
-        _template(),
+        _template(_IMPLEMENT_PROMPT_PATH),
         "## Strategy",
         json.dumps(
             {
@@ -164,5 +190,143 @@ def assemble_implement_brief(
         _prior_evaluation_section(prior_evaluation),
         "## Static-check diagnostics (if this is a FIX_CODE retry)",
         _diagnostics_section(diagnostics),
+    ]
+    return "\n\n".join(sections)
+
+
+# -- the Review Brief (A3, Stage 6) -------------------------------------------
+
+
+def _iteration_history_section(experiments: list[Row]) -> str:
+    """Every experiment this strategy has run, oldest first — App-Flow §6.2's
+    *"all prior experiments for this strategy (full history)"*. Provenance
+    and metric fields are omitted for the same reason `_prior_evaluation_section`
+    omits them from the Implementation Brief: they sit on `experiments`, not
+    this table's business to re-expose."""
+    if not experiments:
+        return "(no prior experiments — this is the first iteration)"
+    rows = [
+        {
+            "iteration": experiment.get("iteration"),
+            "status": experiment.get("status"),
+            "outcome": experiment.get("outcome"),
+            "failure_reason": experiment.get("failure_reason"),
+        }
+        for experiment in experiments
+    ]
+    return json.dumps(rows, indent=2, sort_keys=True, default=str)
+
+
+def _bar_failure_section(evaluation: Row, diagnostic_checks: list[Row]) -> str:
+    """The one place A3 sees raw metric values — a bar failure has no
+    `honest_score` to reason over instead (module docstring)."""
+    checks = [
+        {
+            "test_name": check.get("test_name"),
+            "category": check.get("category"),
+            "result": check.get("result"),
+            "value": check.get("value"),
+            "threshold": check.get("threshold"),
+            "detail": check.get("detail"),
+        }
+        for check in diagnostic_checks
+    ]
+    fields = {
+        "bar_failed_on": evaluation.get("bar_failed_on"),
+        "checks": checks,
+    }
+    return json.dumps(fields, indent=2, sort_keys=True, default=str)
+
+
+def _regime_section(regime_rows: list[Row]) -> str:
+    if not regime_rows:
+        return "(no regime breakdown recorded for this evaluation)"
+    rows = [
+        {
+            "regime": row.get("regime"),
+            "sharpe": row.get("sharpe"),
+            "cagr": row.get("cagr"),
+            "max_drawdown": row.get("max_drawdown"),
+            "trade_count": row.get("trade_count"),
+        }
+        for row in regime_rows
+    ]
+    return json.dumps(rows, indent=2, sort_keys=True, default=str)
+
+
+def _knowledge_section(knowledge_entries: list[Row]) -> str:
+    if not knowledge_entries:
+        return "(no related knowledge entries — none recorded yet, or none matched)"
+    rows = [
+        {
+            "title": entry.get("title"),
+            "statement": entry.get("statement"),
+            "confidence": entry.get("confidence"),
+        }
+        for entry in knowledge_entries
+    ]
+    return json.dumps(rows, indent=2, sort_keys=True, default=str)
+
+
+def _budget_section(*, iteration_count: int, plateau_counter: int, hard_iteration_cap: int, plateau_patience: int) -> str:
+    fields = {
+        "iteration_count": iteration_count,
+        "hard_iteration_cap": hard_iteration_cap,
+        "consecutive_bar_failures": plateau_counter,
+        "plateau_patience": plateau_patience,
+    }
+    return json.dumps(fields, indent=2, sort_keys=True)
+
+
+def assemble_review_brief(
+    *,
+    strategy: Row,
+    spec: StrategySpec,
+    experiment_history: list[Row],
+    evaluation: Row,
+    diagnostic_checks: list[Row],
+    regime_performance: list[Row],
+    knowledge_entries: list[Row],
+    iteration_count: int,
+    plateau_counter: int,
+    hard_iteration_cap: int,
+    plateau_patience: int,
+) -> str:
+    """Build the complete brief `ReviewSession.review` receives.
+
+    Only ever called below the bar (App-Flow §6.1) — `evaluation` here is
+    always a bar failure. Same stable-content-first ordering as
+    `assemble_implement_brief`.
+    """
+    sections = [
+        _template(_REVIEW_PROMPT_PATH),
+        "## Strategy",
+        json.dumps(
+            {
+                "name": strategy.get("name"),
+                "family": strategy.get("family"),
+                "market": strategy.get("market"),
+                "timeframe": strategy.get("timeframe"),
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        "## Spec under review",
+        _spec_section(spec),
+        "## Iteration history (full)",
+        _iteration_history_section(experiment_history),
+        "## This evaluation's bar failure and raw diagnostics",
+        _bar_failure_section(evaluation, diagnostic_checks),
+        "## Regime breakdown",
+        _regime_section(regime_performance),
+        "## Related knowledge entries",
+        _knowledge_section(knowledge_entries),
+        "## Remaining budget",
+        _budget_section(
+            iteration_count=iteration_count,
+            plateau_counter=plateau_counter,
+            hard_iteration_cap=hard_iteration_cap,
+            plateau_patience=plateau_patience,
+        ),
     ]
     return "\n\n".join(sections)

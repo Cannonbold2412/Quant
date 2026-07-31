@@ -1,9 +1,15 @@
-"""The Implementation Brief (App-Flow §4.1) — what it contains, and what it
-must never contain.
+"""The Implementation Brief (App-Flow §4.1) and the Review Brief (App-Flow
+§6.2) — what each contains, and what each must never contain.
 """
 from __future__ import annotations
 
-from aqrl.agents.context import assemble_implement_brief, implement_prompt_version
+from aqrl.agents.context import (
+    assemble_implement_brief,
+    assemble_review_brief,
+    implement_prompt_version,
+    review_prompt_version,
+)
+from aqrl.operators.spec import Node, StrategySpec
 
 _STRATEGY = {"name": "s", "family": "fam", "market": "nse_equity", "timeframe": "daily"}
 
@@ -117,8 +123,109 @@ def test_prompt_version_changes_if_the_template_changes(tmp_path, monkeypatch):
     import aqrl.agents.context as context_module
 
     before = implement_prompt_version()
-    original = context_module._PROMPT_PATH.read_text(encoding="utf-8")
+    original = context_module._IMPLEMENT_PROMPT_PATH.read_text(encoding="utf-8")
     fake = tmp_path / "implement_v1.md"
     fake.write_text(original + "\nan appended line that changes the hash\n", encoding="utf-8")
-    monkeypatch.setattr(context_module, "_PROMPT_PATH", fake)
+    monkeypatch.setattr(context_module, "_IMPLEMENT_PROMPT_PATH", fake)
     assert implement_prompt_version() != before
+
+
+# -- the Review Brief (A3, Stage 6) -------------------------------------------
+
+_SPEC = StrategySpec(
+    entry_logic=[
+        Node(id="fast", operator="ema", inputs={"series": "price.close"}, params={"span": 10}),
+        Node(id="slow", operator="ema", inputs={"series": "price.close"}, params={"span": 40}),
+        Node(id="e1", operator="crossover", inputs={"fast": "fast", "slow": "slow"}),
+    ],
+    hypothesis="review-brief fixture: a plain dual-EMA crossover.",
+)
+
+
+def _review_brief(**overrides):
+    fields = dict(
+        strategy=_STRATEGY,
+        spec=_SPEC,
+        experiment_history=[],
+        evaluation={"bar_failed_on": "min_trades"},
+        diagnostic_checks=[],
+        regime_performance=[],
+        knowledge_entries=[],
+        iteration_count=1,
+        plateau_counter=1,
+        hard_iteration_cap=25,
+        plateau_patience=5,
+    )
+    fields.update(overrides)
+    return assemble_review_brief(**fields)
+
+
+def test_review_brief_includes_bar_failure_and_raw_diagnostics():
+    """Unlike the Implementation Brief, A3 must see the raw metric values —
+    a bar failure has no `honest_score` to reason over instead (App-Flow
+    §6.3), so `bar_failed_on` plus the raw value/threshold pair is the only
+    signal available."""
+    brief = _review_brief(
+        evaluation={"bar_failed_on": "min_trades"},
+        diagnostic_checks=[
+            {"test_name": "min_trades", "category": "performance", "result": "fail", "value": 42.0, "threshold": 100.0}
+        ],
+    )
+    section = brief.split("## This evaluation's bar failure")[1].split("## Regime breakdown")[0]
+    assert "min_trades" in section
+    assert "42.0" in section
+    assert "100.0" in section
+
+
+def test_review_brief_includes_full_iteration_history():
+    brief = _review_brief(
+        experiment_history=[
+            {"iteration": 1, "status": "evaluated", "outcome": "failed", "failure_reason": "no_signal"},
+            {"iteration": 2, "status": "evaluated", "outcome": "failed", "failure_reason": "costs_exceed_edge"},
+        ]
+    )
+    section = brief.split("## Iteration history")[1].split("## This evaluation's bar failure")[0]
+    assert "no_signal" in section
+    assert "costs_exceed_edge" in section
+    assert '"iteration": 1' in section
+    assert '"iteration": 2' in section
+
+
+def test_review_brief_includes_regime_breakdown():
+    brief = _review_brief(
+        regime_performance=[
+            {"regime": "trending", "sharpe": 0.9, "cagr": 0.1, "max_drawdown": 0.05, "trade_count": 20}
+        ]
+    )
+    section = brief.split("## Regime breakdown")[1].split("## Related knowledge")[0]
+    assert "trending" in section
+
+
+def test_review_brief_includes_budget_and_iteration_counts():
+    brief = _review_brief(iteration_count=7, plateau_counter=3, hard_iteration_cap=25, plateau_patience=5)
+    section = brief.split("## Remaining budget")[1]
+    assert '"iteration_count": 7' in section
+    assert '"consecutive_bar_failures": 3' in section
+    assert '"hard_iteration_cap": 25' in section
+    assert '"plateau_patience": 5' in section
+
+
+def test_review_brief_still_omits_engine_internals():
+    """The redaction stays the same either way (module docstring) — only the
+    *name* `honest_score` is exempt here, because the review prompt itself
+    explains its structural absence below the bar (App-Flow §6.3: *"a
+    bar-failing evaluation has no `honest_score` to compare"*). Explaining
+    that a number does not exist is not the same as leaking it."""
+    brief = _review_brief()
+    lowered = brief.lower()
+    for term in _FORBIDDEN_TERMS:
+        if term == "honest_score":
+            continue
+        assert term not in lowered, f"forbidden term {term!r} leaked into the review brief"
+
+
+def test_review_prompt_version_is_stable_and_derived():
+    a = review_prompt_version()
+    b = review_prompt_version()
+    assert a == b
+    assert a.startswith("review-v1-")

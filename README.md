@@ -1,7 +1,7 @@
 # AQRL — Autonomous Quantitative Research Laboratory
 
-> **Status: Stages 0–5 built.**
-> `nanoaqrl/` is the original research loop (Stage 0); `aqrl/` is the foundation layer (Stage 1), operator library (Stage 2), the single productionised evaluation engine (Stage 3), the job queue and scheduler (Stage 4, `aqrl/orchestration/`), and now A2 the Quant Engineer (Stage 5, `aqrl/agents/`) — spec in, rendered code out, static-checked in a sandbox, committed to git, evaluated unattended. Stage 4a and Stages 6–13 remain design only.
+> **Status: Stages 0–6 built.**
+> `nanoaqrl/` is the original research loop (Stage 0); `aqrl/` is the foundation layer (Stage 1), operator library (Stage 2), the single productionised evaluation engine (Stage 3), the job queue and scheduler (Stage 4, `aqrl/orchestration/`), A2 the Quant Engineer (Stage 5, `aqrl/agents/`) — spec in, rendered code out, static-checked in a sandbox, committed to git, evaluated unattended — and now A3 the Research Reviewer (Stage 6, `aqrl/orchestration/handlers/review.py`), which closes the loop: a below-the-bar evaluation is reviewed autonomously and either iterates (back to A2) or plateaus/rejects, while clearing the bar short-circuits straight to promotion without A3 ever being invoked. Stage 4a and Stages 7–13 remain design only.
 >
 > ```bash
 > pip install -e .            # Python 3.11+
