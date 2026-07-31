@@ -268,3 +268,55 @@ class SpecRepository(Repository):
             (name,),
         ).fetchall()
         return [self._decode(row) for row in rows]  # type: ignore[misc]
+
+    def find_near_duplicates(
+        self, spec: StrategySpec, family: str, *, threshold: float = 0.8
+    ) -> list[dict[str, Any]]:
+        """Structural near-duplicate detection — App-Flow §3.4's second
+        duplicate outcome ("near-duplicate? -> attach the prior result"),
+        distinct from `insert_spec`'s exact-`spec_hash` rejection.
+
+        Reuses `spec_operators` (already indexed for Backend-Schema §15 Q4)
+        rather than adding a second, embedding-based similarity mechanism
+        for the same problem TRD §21 leaves open — Jaccard overlap of
+        `(operator name, operator version, role)` sets, scoped to specs
+        belonging to strategies in the same `family`, excluding an exact
+        `spec_hash` match (that stricter case is `insert_spec`'s job, not
+        this one's).
+
+        Returns lightweight `{spec_id, strategy_id, overlap}` dicts, sorted
+        by overlap descending — a caller that wants the full spec/strategy
+        row looks it up by `spec_id`/`strategy_id`, matching how
+        `DuplicateSpecError` itself only carries the row it needs.
+        """
+        candidate_pairs = {
+            (op.name, op.version, role)
+            for role, entries in spec.operators().items()
+            for _, op, _ in entries
+        }
+        if not candidate_pairs:
+            return []
+
+        rows = self.conn.execute(
+            """SELECT ss.id AS spec_id, ss.strategy_id, so.role, o.name AS op_name, o.version AS op_version
+                 FROM strategy_specs ss
+                 JOIN strategies st     ON st.id = ss.strategy_id
+                 JOIN spec_operators so ON so.spec_id = ss.id
+                 JOIN operators o       ON o.id = so.operator_id
+                WHERE st.family = ? AND ss.spec_hash != ?""",
+            (family, spec.spec_hash()),
+        ).fetchall()
+
+        by_spec: dict[int, set[tuple[str, str, str]]] = {}
+        strategy_by_spec: dict[int, int] = {}
+        for row in rows:
+            by_spec.setdefault(row["spec_id"], set()).add((row["op_name"], row["op_version"], row["role"]))
+            strategy_by_spec[row["spec_id"]] = row["strategy_id"]
+
+        matches = [
+            {"spec_id": spec_id, "strategy_id": strategy_by_spec[spec_id], "overlap": overlap}
+            for spec_id, pairs in by_spec.items()
+            if (overlap := len(candidate_pairs & pairs) / len(candidate_pairs | pairs)) >= threshold
+        ]
+        matches.sort(key=lambda m: m["overlap"], reverse=True)
+        return matches

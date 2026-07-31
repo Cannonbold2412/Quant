@@ -29,20 +29,31 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from ..db import transaction
-from ..db.repositories import JobRepository
+from ..db.repositories import JobRepository, ResearchGoalRepository
+from ..db.repositories.base import Row
 from ..logging import get_logger
 from .budgets import check_global
 from .dispatch import Dispatcher
 
 __all__ = [
+    "ALLOCATION_BUCKET_WEIGHTS",
     "TIME_DRIVEN_SCHEDULE",
     "TickReport",
     "TimeDrivenJob",
     "diagnose_idle",
+    "fire_due_hypothesis_batch",
     "fire_due_time_jobs",
     "run_forever",
     "tick",
 ]
+
+#: PRD §4.5's 70/20/10 split, as relative weights for the nightly batch's
+#: weighted round-robin (below) — order, not selection: every eligible goal
+#: is still enqueued every day, this only decides which bucket's
+#: `GENERATE_SPEC` jobs the scheduler tends to claim first when several
+#: compete in one tick. `hypothesis_budget`/`hypotheses_used` per goal
+#: remains the real, durable cap (Backend-Schema §3).
+ALLOCATION_BUCKET_WEIGHTS: dict[str, int] = {"incremental": 7, "cross_market": 2, "exploratory": 1}
 
 _log = get_logger(__name__)
 
@@ -75,6 +86,7 @@ class TickReport:
     terminated_for_timeout: list[int]
     reaped: list[int]
     idle_cause: str | None
+    hypothesis_jobs_fired: list[int] = field(default_factory=list)
 
 
 def _period_key(cadence: str, now: datetime) -> str:
@@ -106,6 +118,74 @@ def fire_due_time_jobs(
         for entry in schedule:
             key = f"time:{entry.name}:{_period_key(entry.cadence, now)}"
             fired.append(jobs.enqueue(entry.job_type, entry.payload, dedupe_key=key))
+    return fired
+
+
+def _weighted_round_robin(buckets: dict[str, list[Row]], weights: dict[str, int]) -> list[Row]:
+    """Merge each bucket's rows into one order, interleaved proportionally
+    to `weights` (surplus/credit round-robin: every bucket's credit grows by
+    its weight each round; the highest-credit non-empty bucket goes next and
+    is debited by the total weight) — so a 7:2:1 split spreads roughly
+    `I I C I I C I I E I I C ...`, not `IIIIIII CC E`."""
+    total_weight = sum(weights.get(b, 1) for b in buckets) or 1
+    indices = {bucket: 0 for bucket in buckets}
+    credits = {bucket: 0 for bucket in buckets}
+    order: list[Row] = []
+    remaining = sum(len(rows) for rows in buckets.values())
+    while remaining > 0:
+        for bucket in buckets:
+            credits[bucket] += weights.get(bucket, 1)
+        eligible = [b for b in buckets if indices[b] < len(buckets[b])]
+        chosen = max(eligible, key=lambda b: credits[b])
+        order.append(buckets[chosen][indices[chosen]])
+        indices[chosen] += 1
+        credits[chosen] -= total_weight
+        remaining -= 1
+    return order
+
+
+def fire_due_hypothesis_batch(conn: sqlite3.Connection, *, now: datetime | None = None) -> list[int]:
+    """A1's nightly batch trigger (Implementation_Plan §10, App-Flow §3.1) —
+    one `GENERATE_SPEC` job per active `research_goals` row with unused
+    hypothesis budget. Not folded into `TIME_DRIVEN_SCHEDULE`, since that
+    list fires one fixed job/payload per entry and this needs one job per
+    *row* found at tick time.
+
+    Idempotent per goal per day via `dedupe_key`, the same pattern
+    `fire_due_time_jobs` already uses — an overlapping tick never
+    double-fires the same goal. Enqueue order follows
+    `ALLOCATION_BUCKET_WEIGHTS`'s 70/20/10 split (PRD §4.5) via
+    `_weighted_round_robin`; every eligible goal still fires today, the
+    split only orders which bucket's jobs `JobRepository.claim` (highest
+    `priority` first) tends to pick up first when more than one is pending
+    at once.
+    """
+    now = now or datetime.now(UTC)
+    goals = ResearchGoalRepository(conn).active_with_budget()
+    if not goals:
+        return []
+
+    buckets: dict[str, list[Row]] = {bucket: [] for bucket in ALLOCATION_BUCKET_WEIGHTS}
+    for goal in goals:
+        bucket = goal.get("allocation_bucket")
+        buckets.setdefault(bucket if bucket in ALLOCATION_BUCKET_WEIGHTS else "exploratory", []).append(goal)
+
+    ordered = _weighted_round_robin(buckets, ALLOCATION_BUCKET_WEIGHTS)
+    date_key = now.strftime("%Y-%m-%d")
+
+    jobs = JobRepository(conn)
+    fired: list[int] = []
+    with transaction(conn, immediate=True):
+        for priority, goal in enumerate(reversed(ordered)):
+            key = f"generate_spec:{goal['id']}:{date_key}"
+            fired.append(
+                jobs.enqueue(
+                    "GENERATE_SPEC",
+                    {"goal_id": goal["id"]},
+                    dedupe_key=key,
+                    priority=priority,
+                )
+            )
     return fired
 
 
@@ -160,6 +240,7 @@ def tick(
         expired = jobs.expire_leases(now=now.isoformat())
 
     time_jobs = fire_due_time_jobs(conn, schedule, now=now)
+    hypothesis_jobs = fire_due_hypothesis_batch(conn, now=now)
     dispatched = dispatcher.dispatch_pending()
     terminated = dispatcher.enforce_time_budgets()
     reaped = dispatcher.reap()
@@ -170,7 +251,7 @@ def tick(
         level = _log.warning if idle_cause in ("queue_empty",) else _log.info
         level("scheduler idle", extra={"idle_cause": idle_cause})
 
-    return TickReport(expired, time_jobs, dispatched, terminated, reaped, idle_cause)
+    return TickReport(expired, time_jobs, dispatched, terminated, reaped, idle_cause, hypothesis_jobs)
 
 
 def run_forever(

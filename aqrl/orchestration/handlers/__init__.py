@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from ...db.repositories.base import Row
 from . import evaluate as _evaluate
+from . import generate as _generate
 from . import implement as _implement
 from . import review as _review
 from .base import HandlerResult, JobHandler, NotImplementedHandler
@@ -38,6 +39,7 @@ _HANDLERS: dict[str, _FunctionHandler] = {
     "IMPLEMENT": _FunctionHandler(run=_implement.run, persist=_implement.persist),
     "FIX_CODE": _FunctionHandler(run=_implement.run, persist=_implement.persist),
     "REVIEW": _FunctionHandler(run=_review.run, persist=_review.persist),
+    "GENERATE_SPEC": _FunctionHandler(run=_generate.run, persist=_generate.persist),
 }
 
 

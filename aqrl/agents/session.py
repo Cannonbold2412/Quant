@@ -45,12 +45,17 @@ __all__ = [
     "AgentResponse",
     "AgentSession",
     "AnthropicSession",
+    "HypothesisResponse",
+    "HypothesisSession",
+    "ProposedHypothesis",
     "ProposedPlan",
     "ProposedSpec",
+    "ReplayHypothesisSession",
     "ReplayReviewSession",
     "ReplaySession",
     "ReviewResponse",
     "ReviewSession",
+    "StubHypothesisSession",
     "StubReviewSession",
     "StubSession",
 ]
@@ -118,6 +123,56 @@ class ProposedPlan(BaseModel):
     confidence: float | None = None
 
 
+class ProposedHypothesis(BaseModel):
+    """A1's one output shape — a brand-new strategy, identity and all
+    (Implementation_Plan §10, App-Flow §3.4).
+
+    Unlike `ProposedSpec`/`ProposedPlan`, which revise or review an
+    *existing* strategy, A1 has none to revise — it proposes the identity
+    (`name`/`family`/`market`/`timeframe`) alongside the operator DAG in the
+    same call. Every `ProposedSpec` field carries over unchanged (mirrors
+    `StrategySpec` field-for-field, `to_spec()` is the same kind of
+    conversion), plus the dual-source traceability App-Flow §3.4 requires:
+    which candidate ideas from `external_knowledge` this drew on, and which
+    tested `knowledge_entries` it respected or knowingly overrode. There is
+    no `change_summary` here — nothing preceded this to summarise a change
+    from. `extra="forbid"` for the same reason as its siblings: an invented
+    field must fail loudly, not be silently dropped and quietly change what
+    got proposed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    family: str
+    market: str
+    timeframe: str
+    entry_logic: list[Node] = Field(default_factory=list)
+    exit_logic: list[Node] = Field(default_factory=list)
+    filter_logic: list[Node] = Field(default_factory=list)
+    risk_logic: list[Node] = Field(default_factory=list)
+    universe: dict[str, Any] = Field(default_factory=dict)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    hypothesis: str
+    rationale: str | None = None
+    expected_behavior: str | None = None
+    source_external_knowledge_ids: list[int] = Field(default_factory=list)
+    source_internal_knowledge_ids: list[int] = Field(default_factory=list)
+
+    def to_spec(self) -> StrategySpec:
+        return StrategySpec(
+            entry_logic=self.entry_logic,
+            exit_logic=self.exit_logic,
+            filter_logic=self.filter_logic,
+            risk_logic=self.risk_logic,
+            universe=self.universe,
+            parameters=self.parameters,
+            hypothesis=self.hypothesis,
+            rationale=self.rationale,
+            expected_behavior=self.expected_behavior,
+        )
+
+
 @dataclass(frozen=True)
 class AgentResponse:
     """What a session call returns — everything a caller needs to persist."""
@@ -138,6 +193,16 @@ class ReviewResponse:
     raw_output: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class HypothesisResponse:
+    """What a generate call returns — the A1 counterpart to `AgentResponse`."""
+
+    hypothesis: ProposedHypothesis
+    prompt_version: str
+    tokens_spent: int
+    raw_output: dict[str, Any]
+
+
 class AgentSession(Protocol):
     def propose_spec(self, brief: str, *, prompt_version: str) -> AgentResponse:
         """Turn one complete brief into one `ProposedSpec`. Stateless."""
@@ -147,6 +212,12 @@ class AgentSession(Protocol):
 class ReviewSession(Protocol):
     def review(self, brief: str, *, prompt_version: str) -> ReviewResponse:
         """Turn one complete brief into one `ProposedPlan`. Stateless."""
+        ...
+
+
+class HypothesisSession(Protocol):
+    def generate(self, brief: str, *, prompt_version: str) -> HypothesisResponse:
+        """Turn one complete Research Brief into one `ProposedHypothesis`. Stateless."""
         ...
 
 
@@ -231,9 +302,49 @@ class ReplayReviewSession:
         return ReviewResponse(plan=plan, prompt_version=prompt_version, tokens_spent=0, raw_output=raw)
 
 
+class StubHypothesisSession:
+    """`StubSession`'s A1 counterpart. Returns a fixed (or brief-derived)
+    `ProposedHypothesis`. No network, ever."""
+
+    def __init__(self, response: ProposedHypothesis | Callable[[str], ProposedHypothesis]) -> None:
+        self._response = response
+        self.calls: list[str] = []
+
+    def generate(self, brief: str, *, prompt_version: str) -> HypothesisResponse:
+        self.calls.append(brief)
+        hypothesis = self._response(brief) if callable(self._response) else self._response
+        return HypothesisResponse(
+            hypothesis=hypothesis,
+            prompt_version=prompt_version,
+            tokens_spent=0,
+            raw_output=hypothesis.model_dump(mode="json"),
+        )
+
+
+class ReplayHypothesisSession:
+    """`ReplaySession`'s A1 counterpart — replays pre-recorded hypotheses in
+    order, one per call. For tests that drive more than one `GENERATE_SPEC`
+    call (e.g. an exact-duplicate rejection followed by a novel retry) and
+    want each response to differ deterministically."""
+
+    def __init__(self, fixtures: Sequence[dict[str, Any]]) -> None:
+        self._fixtures = list(fixtures)
+        self._index = 0
+
+    def generate(self, brief: str, *, prompt_version: str) -> HypothesisResponse:
+        if self._index >= len(self._fixtures):
+            raise RuntimeError(
+                f"ReplayHypothesisSession exhausted after {self._index} call(s): no more recorded responses"
+            )
+        raw = self._fixtures[self._index]
+        self._index += 1
+        hypothesis = ProposedHypothesis(**raw)
+        return HypothesisResponse(hypothesis=hypothesis, prompt_version=prompt_version, tokens_spent=0, raw_output=raw)
+
+
 class AnthropicSession:
-    """The real wrapper — one stateless call per `propose_spec`/`review` call
-    (TRD §16).
+    """The real wrapper — one stateless call per `propose_spec`/`review`/
+    `generate` call (TRD §16).
 
     Imports `anthropic` lazily so the rest of this codebase, including every
     test that never constructs this class, has no hard dependency on the
@@ -280,4 +391,13 @@ class AnthropicSession:
             prompt_version=prompt_version,
             tokens_spent=tokens_spent,
             raw_output=plan.model_dump(mode="json"),
+        )
+
+    def generate(self, brief: str, *, prompt_version: str) -> HypothesisResponse:
+        hypothesis, tokens_spent = self._parse(brief, output_format=ProposedHypothesis)
+        return HypothesisResponse(
+            hypothesis=hypothesis,
+            prompt_version=prompt_version,
+            tokens_spent=tokens_spent,
+            raw_output=hypothesis.model_dump(mode="json"),
         )

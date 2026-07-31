@@ -54,6 +54,18 @@ class StrategyRepository(Repository):
         ).fetchone()
         return int(row["total"])
 
+    def family_trial_counts_for(self, market: str, timeframe: str) -> dict[str, int]:
+        """`family_trial_count`, for every family already active in this
+        market/timeframe — Stage 7's Research Brief needs the whole
+        landscape (App-Flow §3.2's "trials already spent in this family"),
+        not one family at a time, since A1 hasn't named a family yet."""
+        rows = self.conn.execute(
+            "SELECT family, SUM(iteration_count) AS total FROM strategies "
+            "WHERE market = ? AND timeframe = ? GROUP BY family",
+            (market, timeframe),
+        ).fetchall()
+        return {row["family"]: int(row["total"]) for row in rows}
+
     def record_bar_clear(self, strategy_id: int, experiment_id: int, score: float) -> None:
         """Clearing the bar is an immediate, unconditional stop (PRD §9.2)."""
         self.update(
@@ -298,3 +310,46 @@ class NullWorldRunRepository(Repository):
             max_score_observed=max_score_observed,
             **fields,
         )
+
+
+class ResearchGoalRepository(Repository):
+    """Top-level research direction (Backend-Schema §3). Drives A1's
+    hypothesis budget (Stage 7, Implementation_Plan §10) — build-on-need's
+    first felt caller for this table; nothing before Stage 7 wrote to it."""
+
+    table = "research_goals"
+    updated_column = "updated_at"
+
+    def active_with_budget(self) -> list[Row]:
+        """Every goal `fire_due_hypothesis_batch` (scheduler.py) may enqueue
+        against — active, and either unbudgeted (NULL = unlimited, the same
+        "no row/no cap" convention `budgets.py` uses) or with room left."""
+        rows = self.conn.execute(
+            "SELECT * FROM research_goals WHERE status = 'active' "
+            "AND (hypothesis_budget IS NULL OR hypotheses_used < hypothesis_budget)"
+        ).fetchall()
+        return [self._decode(row) for row in rows]  # type: ignore[misc]
+
+    def increment_hypotheses_used(self, goal_id: int) -> None:
+        self.conn.execute(
+            "UPDATE research_goals SET hypotheses_used = hypotheses_used + 1, updated_at = ? WHERE id = ?",
+            (utcnow_iso(), goal_id),
+        )
+
+
+class ResearchQuestionRepository(Repository):
+    """The curiosity queue (Backend-Schema §10). Read-only from Stage 7's
+    side — A5 (Stage 8) is the writer; this exists so the Research Brief has
+    something to call today, same relationship Stage 6's
+    `KnowledgeEntryRepository` has to Stage 8's writer."""
+
+    table = "research_questions"
+    json_columns = frozenset({"search_terms", "answer_knowledge_ids", "produced_spec_ids"})
+
+    def open_questions(self, limit: int = 20) -> list[Row]:
+        """Priority-ordered open questions. Not scoped to a research goal —
+        `research_questions` carries no `goal_id` column (App-Flow §3.2's
+        "open research_questions for this goal" bullet presupposes a
+        linkage the schema doesn't have); see `context._open_questions_section`
+        for the same note where it matters to the brief's reader."""
+        return self.find(status="open", order_by="priority DESC, id", limit=limit)

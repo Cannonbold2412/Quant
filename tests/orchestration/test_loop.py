@@ -28,23 +28,32 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from aqrl.agents.session import ProposedPlan, ProposedSpec, ReplayReviewSession, ReplaySession
+from aqrl.agents.embeddings import StubEmbedder
+from aqrl.agents.session import (
+    ProposedHypothesis,
+    ProposedPlan,
+    ProposedSpec,
+    ReplayReviewSession,
+    ReplaySession,
+    StubHypothesisSession,
+)
 from aqrl.data import SnapshotManager
 from aqrl.db import transaction
 from aqrl.db.repositories import (
     ExperimentRepository,
     JobRepository,
+    ResearchGoalRepository,
     ResearchPlanRepository,
     SpecRepository,
     StrategyRepository,
 )
 from aqrl.operators.spec import Node, StrategySpec
 from aqrl.orchestration import states
+from aqrl.orchestration.events import Event, emit
+from aqrl.orchestration.handlers import generate as generate_handler
 from aqrl.orchestration.handlers import implement as implement_handler
 from aqrl.orchestration.handlers import review as review_handler
-from aqrl.orchestration.events import Event, emit
 from aqrl.orchestration.worker import run_job
-
 from tests.eval.conftest import bars
 
 from .conftest import ASSET_CLASS, MARKET, TIMEFRAME
@@ -93,6 +102,23 @@ def _proposed_spec(window: int, upper: float, *, change_summary: str) -> Propose
     )
 
 
+def _proposed_hypothesis(window: int, upper: float, *, name: str, family: str) -> ProposedHypothesis:
+    """A1's stand-in for this fixture — same filter-gated crossover shape as
+    `_proposed_spec`, plus the strategy identity A1 alone proposes (Stage 7,
+    Implementation_Plan §10)."""
+    spec = _filtered_crossover_spec(3, 8, window=window, upper=upper)
+    return ProposedHypothesis(
+        name=name,
+        family=family,
+        market=MARKET,
+        timeframe=TIMEFRAME,
+        entry_logic=spec.entry_logic,
+        filter_logic=spec.filter_logic,
+        hypothesis=spec.hypothesis,
+        rationale="loop fixture: A1 stand-in, no contradicting lessons in this empty knowledge base",
+    )
+
+
 @pytest.fixture
 def loop_snapshot_id(conn, settings, loader, tmp_path) -> int:
     """One fixed, filter-friendly panel for the whole loop — real edge, real
@@ -133,13 +159,32 @@ def loop_strategy_id(conn) -> int:
     )
 
 
+@pytest.fixture
+def loop_goal_id(conn) -> int:
+    """A research goal for Stage 7's end of this file — A1 has no strategy
+    to seed against, only a goal (App-Flow §3.1)."""
+    return ResearchGoalRepository(conn).insert(
+        title="loop fixture goal",
+        market=MARKET,
+        timeframe=TIMEFRAME,
+        allocation_bucket="incremental",
+        hypotheses_used=0,
+        status="active",
+        created_by="human",
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_sessions():
     implement_handler.set_session(None)
     review_handler.set_session(None)
+    generate_handler.set_session(None)
+    generate_handler.set_embedder(StubEmbedder())
     yield
     implement_handler.set_session(None)
     review_handler.set_session(None)
+    generate_handler.set_session(None)
+    generate_handler.set_embedder(None)
 
 
 def _seed_first_implement_job(conn, strategy_id: int, snapshot_id: int, window: int, upper: float) -> dict:
@@ -293,3 +338,69 @@ def test_plateaus_at_five_consecutive_bar_failures(conn, loop_strategy_id, loop_
     archive_jobs = jobs.find(job_type="ARCHIVE")
     assert len(archive_jobs) == 1
     assert archive_jobs[0]["strategy_id"] == strategy_id
+
+
+# -- Stage 7's own done-when: A1 -> A2 -> evaluate -> A3, unattended ----------
+
+
+def _seed_first_generate_job(conn, goal_id: int, snapshot_id: int) -> dict:
+    payload = {
+        "goal_id": goal_id,
+        "asset_class": ASSET_CLASS,
+        "data_snapshot_id": snapshot_id,
+        "cost_multiplier": 1.0,
+        "random_seed": 1,  # pinned: same convention as `_seed_first_implement_job`
+    }
+    with transaction(conn, immediate=True):
+        job_id = JobRepository(conn).enqueue("GENERATE_SPEC", payload)
+    return JobRepository(conn).get(job_id)
+
+
+def test_a1_generates_a_spec_that_flows_through_the_unmodified_loop(conn, loop_goal_id, loop_snapshot_id):
+    """Implementation_Plan §10's done-when, driven through the real queue:
+    *"A1 generates novel, non-duplicate specs ... and the full
+    A1->A2->evaluate->A3 loop runs end to end unattended."* No strategy or
+    spec is seeded by hand here — A1 (`StubHypothesisSession`) proposes the
+    strategy's identity and its first, below-bar spec; A3
+    (`ReplayReviewSession`) iterates it; A2 (`ReplaySession`) revises it into
+    one that clears — all through `aqrl.orchestration.worker.run_job`,
+    exactly the same `IMPLEMENT`/`EVALUATE`/`REVIEW` code this file's other
+    tests already exercise, unmodified.
+    """
+    _seed_first_generate_job(conn, loop_goal_id, loop_snapshot_id)
+
+    generate_handler.set_session(
+        StubHypothesisSession(_proposed_hypothesis(*_BELOW_THE_BAR[0], name="a1-fixture", family="a1-fixture-family"))
+    )
+    review_handler.set_session(
+        ReplayReviewSession(
+            [
+                ProposedPlan(
+                    verdict="iterate", diagnosis="not enough trades below the filter", confidence=0.5
+                ).model_dump(mode="json")
+            ]
+        )
+    )
+    implement_handler.set_session(
+        ReplaySession(
+            [_proposed_spec(*_CLEARS_THE_BAR, change_summary="loosened the filter").model_dump(mode="json")]
+        )
+    )
+
+    ran = _drain_queue(conn)
+    assert ran == ["GENERATE_SPEC", "IMPLEMENT", "EVALUATE", "REVIEW", "IMPLEMENT", "EVALUATE", "PROMOTE"]
+
+    strategies = StrategyRepository(conn).find()
+    assert len(strategies) == 1
+    strategy = strategies[0]
+    assert strategy["name"] == "a1-fixture"
+    assert strategy["family"] == "a1-fixture-family"
+    assert strategy["status"] == "pending_promotion"
+    assert strategy["best_experiment_id"] is not None
+
+    plans = ResearchPlanRepository(conn).find(strategy_id=strategy["id"])
+    assert len(plans) == 1
+    assert plans[0]["verdict"] == "iterate"
+
+    goal = ResearchGoalRepository(conn).get(loop_goal_id)
+    assert goal["hypotheses_used"] == 1

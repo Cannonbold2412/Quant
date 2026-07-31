@@ -30,6 +30,10 @@ dev = ["pytest>=8", "ruff>=0.5"]
 # lazily, so nothing in the test suite needs this installed — StubSession and
 # ReplaySession stand in for every test, including the full offline loop.
 agents = ["anthropic>=0.40"]
+# Stage 7: the real embedding client (aqrl/agents/embeddings.py). Imported
+# lazily, same reasoning as `agents` above — StubEmbedder stands in for
+# every test, including the full offline loop.
+embeddings = ["voyageai>=0.3"]
 
 [project.scripts]
 aqrl = "aqrl.cli:main"

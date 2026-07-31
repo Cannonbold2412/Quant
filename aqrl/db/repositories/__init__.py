@@ -16,6 +16,7 @@ from .data import (
     SnapshotRepository,
     ValidationFlagRepository,
 )
+from .embeddings import EmbeddingRepository
 from .jobs import JOB_STATUSES, JOB_TYPES, JobRepository, LeaseLost, UnknownJobType
 from .knowledge import KnowledgeEntryRepository
 from .operators import (
@@ -33,7 +34,9 @@ from .research import (
     ExperimentRepository,
     NullWorldRunRepository,
     RegimePerformanceRepository,
+    ResearchGoalRepository,
     ResearchPlanRepository,
+    ResearchQuestionRepository,
     StrategyRepository,
 )
 
@@ -46,6 +49,7 @@ __all__ = [
     "CorporateActionRepository",
     "CostModelRepository",
     "DuplicateSpecError",
+    "EmbeddingRepository",
     "EvaluationRepository",
     "EvaluationTestRepository",
     "ExperimentRepository",
@@ -58,7 +62,9 @@ __all__ = [
     "OperatorRepository",
     "RegimePerformanceRepository",
     "Repository",
+    "ResearchGoalRepository",
     "ResearchPlanRepository",
+    "ResearchQuestionRepository",
     "Row",
     "SnapshotRepository",
     "SpecOperatorRepository",

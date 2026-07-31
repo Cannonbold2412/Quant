@@ -489,6 +489,41 @@ def cmd_strategy_new(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_goal_new(args: argparse.Namespace) -> int:
+    """Create a `research_goals` row — the only way to seed one before
+    Stage 9's human-gate UI exists (Stage 7, Implementation_Plan §10).
+    Nothing before Stage 7 wrote to this table."""
+    from .db.repositories import ResearchGoalRepository
+
+    conn = connect()
+    goals = ResearchGoalRepository(conn)
+    with transaction(conn, immediate=True):
+        goal_id = goals.insert(
+            title=args.title,
+            description=args.description,
+            market=args.market,
+            timeframe=args.timeframe,
+            allocation_bucket=args.allocation_bucket,
+            priority=args.priority,
+            hypothesis_budget=args.hypothesis_budget,
+            hypotheses_used=0,
+            status="active",
+            created_by="human",
+        )
+    print(f"research_goals {goal_id}  {args.title!r}")
+    return 0
+
+
+def cmd_goal_list(args: argparse.Namespace) -> int:
+    from .db.repositories import ResearchGoalRepository
+
+    conn = connect()
+    rows = ResearchGoalRepository(conn).find(order_by="id")
+    columns = ["id", "title", "market", "timeframe", "allocation_bucket", "status", "hypotheses_used", "hypothesis_budget"]
+    print(_table(rows, columns))
+    return 0
+
+
 def cmd_code_show(args: argparse.Namespace) -> int:
     from .db.repositories import CodeVersionRepository
 
@@ -1078,6 +1113,27 @@ def build_parser() -> argparse.ArgumentParser:
     p = spec.add_parser("compile", help="validate a spec and describe what it computes")
     p.add_argument("path", type=Path)
     p.set_defaults(func=cmd_spec_compile)
+
+    goal = subs.add_parser("goal", help="research goals (Stage 7 — A1)").add_subparsers(
+        dest="cmd", required=True
+    )
+    p = goal.add_parser("new", help="create a research goal, driving A1's hypothesis budget")
+    p.add_argument("--title", required=True)
+    p.add_argument("--description")
+    p.add_argument("--market", required=True)
+    p.add_argument("--timeframe", required=True)
+    p.add_argument(
+        "--allocation-bucket",
+        required=True,
+        dest="allocation_bucket",
+        choices=["incremental", "cross_market", "exploratory"],
+        help="the 70/20/10 split (PRD §4.5)",
+    )
+    p.add_argument("--priority", type=int, default=0)
+    p.add_argument("--hypothesis-budget", type=int, dest="hypothesis_budget", help="omit for unlimited")
+    p.set_defaults(func=cmd_goal_new)
+    p = goal.add_parser("list", help="list research goals")
+    p.set_defaults(func=cmd_goal_list)
 
     strategy = subs.add_parser("strategy", help="strategies (Stage 5 — A2)").add_subparsers(
         dest="cmd", required=True

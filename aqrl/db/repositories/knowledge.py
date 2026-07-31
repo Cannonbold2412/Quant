@@ -28,3 +28,30 @@ class KnowledgeEntryRepository(Repository):
                   ORDER BY id DESC LIMIT ?"""
         rows = self.conn.execute(sql, (strategy.get("id"), limit)).fetchall()
         return [self._decode(row) for row in rows]  # type: ignore[misc]
+
+    def failure_patterns(self, market: str | None, timeframe: str | None, limit: int = 20) -> list[Row]:
+        """The anti-amnesia surface for Stage 7's Research Brief (App-Flow
+        §3.2/§3.4) — lessons with counter-evidence, or a cross-experiment
+        `pattern`/`global_rule` entry, scoped to a market/timeframe.
+
+        SQL bounds a global candidate window, same shape as `relevant_to`;
+        market/timeframe membership is checked in Python against the decoded
+        `applicable_markets`/`applicable_timeframes` lists, not a `LIKE`
+        against the raw JSON text — a `LIKE` match wouldn't carry over to a
+        future JSONB column (TRD §20's dialect-portability rule is about the
+        query's *shape*, not just its syntax).
+        """
+        sql = """SELECT * FROM knowledge_entries
+                  WHERE superseded_by IS NULL
+                    AND (counter_evidence_count > 0 OR entry_type IN ('pattern', 'global_rule'))
+                  ORDER BY counter_evidence_count DESC, id DESC LIMIT ?"""
+        rows = [self._decode(row) for row in self.conn.execute(sql, (limit * 5,)).fetchall()]
+
+        def _applies(row: Row) -> bool:
+            markets = row.get("applicable_markets")
+            timeframes = row.get("applicable_timeframes")
+            market_ok = not markets or market is None or market in markets
+            timeframe_ok = not timeframes or timeframe is None or timeframe in timeframes
+            return market_ok and timeframe_ok
+
+        return [row for row in rows if row is not None and _applies(row)][:limit]

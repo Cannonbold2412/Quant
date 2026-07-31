@@ -46,14 +46,17 @@ from ..operators.registry import all_operators
 from ..operators.spec import StrategySpec
 
 __all__ = [
+    "assemble_generate_brief",
     "assemble_implement_brief",
     "assemble_review_brief",
+    "generate_prompt_version",
     "implement_prompt_version",
     "review_prompt_version",
 ]
 
 _IMPLEMENT_PROMPT_PATH = Path(__file__).parent / "prompts" / "implement_v1.md"
 _REVIEW_PROMPT_PATH = Path(__file__).parent / "prompts" / "review_v1.md"
+_GENERATE_PROMPT_PATH = Path(__file__).parent / "prompts" / "generate_v1.md"
 
 
 def _template(path: Path) -> str:
@@ -328,5 +331,117 @@ def assemble_review_brief(
             hard_iteration_cap=hard_iteration_cap,
             plateau_patience=plateau_patience,
         ),
+    ]
+    return "\n\n".join(sections)
+
+
+# -- the Research Brief (A1, Stage 7) -----------------------------------------
+
+
+def generate_prompt_version() -> str:
+    """`implement_prompt_version`'s A1 counterpart — same derivation."""
+    return f"generate-v1-{content_hash(_template(_GENERATE_PROMPT_PATH))[:12]}"
+
+
+def _goal_section(goal: Row) -> str:
+    fields = {
+        "title": goal.get("title"),
+        "description": goal.get("description"),
+        "market": goal.get("market"),
+        "timeframe": goal.get("timeframe"),
+        "allocation_bucket": goal.get("allocation_bucket"),
+    }
+    return json.dumps(fields, indent=2, sort_keys=True)
+
+
+def _knowledge_rows_section(rows: list[Row], fields: tuple[str, ...]) -> str:
+    if not rows:
+        return "(none found)"
+    projected = [{f: row.get(f) for f in ("id", *fields, "_relevance_score")} for row in rows]
+    return json.dumps(projected, indent=2, sort_keys=True, default=str)
+
+
+def _open_questions_section(questions: list[Row]) -> str:
+    """`research_questions` (Backend-Schema §10) carries no `goal_id`
+    column — it links to an originating experiment or knowledge entry, not
+    a research goal. So "open questions for this goal" (App-Flow §3.2)
+    cannot be scoped to *this* goal specifically; the brief surfaces every
+    open question, priority-ordered, and leaves the relevance judgement to
+    A1, the same way `_budget_section`-adjacent items elsewhere in this
+    module surface raw facts rather than a pre-filtered subset the schema
+    can't actually support."""
+    if not questions:
+        return "(no open research questions)"
+    rows = [
+        {"id": q.get("id"), "question": q.get("question"), "motivation": q.get("motivation"), "priority": q.get("priority")}
+        for q in questions
+    ]
+    return json.dumps(rows, indent=2, sort_keys=True, default=str)
+
+
+def _failure_patterns_section(entries: list[Row]) -> str:
+    """The anti-amnesia surface (App-Flow §3.2/§3.4): internal lessons with
+    counter-evidence or a `pattern`/`global_rule` entry type, scoped to this
+    goal's market/timeframe. Surfaced whether or not A1 ends up touching
+    them — `generate_v1.md`'s "must justify overriding" instruction has
+    nothing to bite on if the contradicting lesson was never shown."""
+    if not entries:
+        return "(no recorded failure patterns for this market/timeframe)"
+    rows = [
+        {
+            "id": entry.get("id"),
+            "title": entry.get("title"),
+            "statement": entry.get("statement"),
+            "counter_evidence_count": entry.get("counter_evidence_count"),
+            "confidence": entry.get("confidence"),
+        }
+        for entry in entries
+    ]
+    return json.dumps(rows, indent=2, sort_keys=True, default=str)
+
+
+def _family_trials_section(family_counts: dict[str, int]) -> str:
+    if not family_counts:
+        return "(no strategies yet in this market/timeframe)"
+    ordered = sorted(family_counts.items(), key=lambda pair: (-pair[1], pair[0]))
+    rows = [{"family": family, "trials": count} for family, count in ordered]
+    return json.dumps(rows, indent=2, sort_keys=True)
+
+
+def assemble_generate_brief(
+    *,
+    goal: Row,
+    relevant_external_knowledge: list[Row],
+    relevant_internal_knowledge: list[Row],
+    open_questions: list[Row],
+    failure_patterns: list[Row],
+    family_trial_counts: dict[str, int],
+) -> str:
+    """Build the complete Research Brief `HypothesisSession.generate` receives.
+
+    Stable content (the template, the operator catalog) first, volatile
+    per-call content (this goal, its relevant knowledge) last — same ordering
+    `assemble_implement_brief`/`assemble_review_brief` already use. Relevance
+    search itself (`agents/research_brief.top_k_relevant`) is the caller's
+    job, not this function's — this module only ever formats rows it is
+    handed, matching how `assemble_review_brief` never queries the database
+    on its own.
+    """
+    sections = [
+        _template(_GENERATE_PROMPT_PATH),
+        "## Research goal",
+        _goal_section(goal),
+        "## Operator catalog",
+        json.dumps(_operator_catalog(), indent=2, sort_keys=True),
+        "## Relevant external knowledge (candidate, UNTESTED)",
+        _knowledge_rows_section(relevant_external_knowledge, ("core_idea", "category", "novelty_score")),
+        "## Relevant internal knowledge (tested, TRUSTED)",
+        _knowledge_rows_section(relevant_internal_knowledge, ("title", "statement", "confidence")),
+        "## Open research questions",
+        _open_questions_section(open_questions),
+        "## Known failure patterns (anti-amnesia)",
+        _failure_patterns_section(failure_patterns),
+        "## Trials already spent, by family, in this market/timeframe",
+        _family_trials_section(family_trial_counts),
     ]
     return "\n\n".join(sections)

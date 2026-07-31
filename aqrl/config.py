@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     )
     anthropic_model: str = Field(default="claude-opus-5", description="Model A2's session wrapper calls.")
 
+    # -- Stage 7: A1 Research Scientist (Implementation_Plan §10) ---------------
+    voyage_api_key: str | None = Field(
+        default=None, description="Voyage AI key for the Research Brief's relevance search (agents/embeddings.py)."
+    )
+
     # -- Stage 4: the nervous system (Implementation_Plan §6) -------------------
     busy_timeout_ms: int = Field(
         default=5000, description="SQLite busy_timeout — how long a writer waits under contention."
