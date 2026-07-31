@@ -1,7 +1,7 @@
 # Implementation Plan — AQRL
 
-> **Status:** **Stages 0–4 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised, the Nervous System job queue/scheduler). Stages 4a–13 not started.
-> **Last updated:** 2026-07-29
+> **Status:** **Stages 0–6 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised, the Nervous System job queue/scheduler, A2 the Quant Engineer, A3 the Research Reviewer). Stage 4a and Stages 7–13 not started.
+> **Last updated:** 2026-07-31
 > **Companion docs:** `PRD.md` (why) · `TRD.md` (how) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences)
 
 ---
@@ -392,7 +392,7 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 
 ---
 
-## 9. Stage 6 — A3 Research Reviewer ★ CLOSES THE LOOP
+## 9. Stage 6 — A3 Research Reviewer ✅ built ★ CLOSES THE LOOP
 
 **Goal:** the iteration engine — the first moment AQRL is more than a pipeline.
 
@@ -410,6 +410,59 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 **Done when:** a hand-written spec runs autonomously through several below-bar iterations, then **stops the instant one clears the bar** — without attempting a further iteration to chase a higher score — **and** a deliberately-stuck spec plateaus at 5 bar failures and routes to A5.
 
 > **This is the first real milestone.** At this point the system iterates on research without a human. Everything before it is infrastructure; everything after it is amplification.
+
+> **Built as `aqrl/orchestration/handlers/review.py`**, alongside A2's
+> `implement.py`, same `run`/`persist` split for the same reason (Claude is
+> never called inside an open write transaction). `agents/session.py` gained
+> `ProposedPlan`/`ReviewSession` — A3's one output shape, mirroring
+> `ProposedSpec`/`AgentSession` — and `agents/context.py` gained
+> `assemble_review_brief`, whose redaction is deliberately *looser* than A2's
+> on one axis: a bar failure has no `honest_score` to protect (TRD §7.5), so
+> the brief includes the raw `bar_failed_on` value/threshold pair A3 actually
+> needs to tell "getting closer" from "stuck" (App-Flow §6.3), while still
+> withholding the engine itself. Stop conditions (plateau patience, the hard
+> iteration cap, and now a per-strategy token/iteration budget) are checked
+> in `run()` before any session call; `handlers/review.py` is the first real
+> consumer of the per-strategy `budgets` rows Stage 4 only ever tracked
+> (`aqrl/orchestration/budgets.py`). Two deliberate scope cuts, both following
+> Stage 5's own precedent for `PROMOTE`: the `ARCHIVE` job a `plateau`/`reject`
+> verdict enqueues has no handler — A5 is Stage 8 and does not exist yet, so
+> it fails loudly (`NotImplementedHandler`) rather than half-working, and the
+> strategy's own terminal state (`plateaued`/`rejected`) is already correct by
+> the time that job is enqueued.
+>
+> **Two bugs found and fixed on the way, both load-bearing for this stage to
+> be reachable at all.** `handlers/evaluate.py`'s follow-on `emit()` was
+> dropping the incoming job payload (`asset_class` and friends) — harmless
+> while every loop was one iteration long, fatal the moment a second
+> `IMPLEMENT`/`EVALUATE` round has to happen, which is this stage's entire
+> premise. And `eval/engine.py`'s P3 bar-failure branch was routing through
+> the phase-agnostic `_failed()` helper, which hardcodes `bar_verdict=None` —
+> correct for P0-P2 (there is no bar_verdict yet) but wrong for an actual bar
+> failure, since `handlers/evaluate.py`'s PROMOTE/REVIEW routing reads
+> `report.bar_verdict` directly. Left unfixed, no real bar failure could ever
+> have enqueued a `REVIEW` job in the first place — masked until now by a
+> known-answer test whose own bar-failure assertion turned out to be
+> vacuous (the scenario it built never actually reached the bar). Fixing it
+> surfaced a second, related gap: `BarVerdict.failed_on`'s vocabulary
+> (`min_trades`, `max_drawdown`, `cost_stress`, `breadth`) was never mapped to
+> `experiments.failure_reason`'s own CHECK-constrained enum, so persisting a
+> real bar failure raised a SQLite `IntegrityError` before this stage
+> existed to test the case. `BAR_FAILURE_TO_EXPERIMENT_REASON`
+> (`aqrl/eval/bar.py`) is the map, using the same "closest available bucket"
+> tradeoff `implement.py`'s P0-provenance handling already established for
+> `max_drawdown`/`breadth`, which have no dedicated slot in the schema.
+>
+> **Done-when, proven two ways.** `tests/orchestration/test_review_handler.py`
+> exercises every guard, stop condition, and verdict directly. The actual
+> loop — claim, run, persist, repeat, through the real job queue and
+> `aqrl.orchestration.worker.run_job`, no direct handler calls —
+> is `tests/orchestration/test_loop.py`: a filter-gated crossover spec (real
+> edge, real P0-P2 pass, tunable trade count) run against one fixed
+> synthetic snapshot proves both halves of the done-when — several below-bar
+> `iterate` verdicts followed by an immediate stop the instant one clears the
+> bar, and, separately, five consecutive bar failures forcing a `plateau`
+> with zero further LLM calls.
 
 ---
 

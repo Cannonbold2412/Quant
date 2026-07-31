@@ -11,13 +11,14 @@ before it claims anything, so an exhausted budget shows up as an idle cause
 Only the four global, day-scoped caps are gated in Stage 4's dispatch loop —
 `tokens`, `experiments`, `compute_seconds`, and the concurrency cap (which
 lives in `Settings`, not this table, since it is not a *quantity spent* but a
-*simultaneous-workers* limit). Per-strategy and per-goal budgets are tracked
-here and queryable, but nothing dispatches on them yet: Stage 4 ships only
-the `EVALUATE` handler, which spends no LLM tokens, so a strategy-level token
-cap has no real traffic to gate until Stage 5 adds agent calls. Gating those
-at claim time (rather than before an agent session starts) would also risk an
-infinite reclaim loop on a single blocked strategy while others sit idle —
-better decided once there is a caller for it.
+*simultaneous-workers* limit). Per-strategy budgets were tracked here and
+queryable from Stage 4 but had no caller until Stage 6: `handlers/review.py`
+is the first real consumer — App-Flow §6.2 lists "budget exhausted before
+clearing the bar" as a stop condition A3 checks before ever being invoked, so
+it calls `check(conn, "strategy", "tokens", "day", ...)` and `check(conn,
+"strategy", "iterations", "lifetime", ...)` per strategy, and `consume(...)`
+after every review. Per-goal budgets remain tracked-but-ungated; nothing
+spends against a `research_goals` row until Stage 7's A1 exists to.
 """
 from __future__ import annotations
 

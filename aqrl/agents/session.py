@@ -1,26 +1,31 @@
 """The Claude session wrapper — stateless, schema-validated (TRD §16).
 
 **Stateless and disposable.** Every call is a fresh `AgentSession.propose_spec`
-with a complete brief; nothing here remembers a previous call, matching TRD
-§16's *"Model: Claude, via Claude Code sessions. Stateless and disposable."*
-Context assembly is `context.py`'s job, never this module's — a session
-wrapper that goes looking for its own context is exactly what TRD §16 rules
-out (*"Claude does not go hunting for context"*).
+or `ReviewSession.review` with a complete brief; nothing here remembers a
+previous call, matching TRD §16's *"Model: Claude, via Claude Code sessions.
+Stateless and disposable."* Context assembly is `context.py`'s job, never
+this module's — a session wrapper that goes looking for its own context is
+exactly what TRD §16 rules out (*"Claude does not go hunting for context"*).
 
-**Structured outputs, not prose parsing.** `ProposedSpec` is the one shape
-A2 may return: an operator DAG plus a plain-language `change_summary` — never
-free code (App-Flow §4.2: *"translation, not invention"*). The real
-implementation (`AnthropicSession`) uses `client.messages.parse(...,
-output_format=ProposedSpec)`, so the SDK — not a hand-rolled JSON parser —
-is what guarantees a malformed response never reaches the render/check
-pipeline.
+**Structured outputs, not prose parsing.** `ProposedSpec` (A2) and
+`ProposedPlan` (A3) are the only two shapes Claude may return here: an
+operator DAG plus a plain-language `change_summary` for A2 — never free code
+(App-Flow §4.2: *"translation, not invention"*) — and a verdict plus
+plain-language `proposed_changes` for A3 — never code either (App-Flow
+§6.4: *"the research plan is not code"*). The real implementation
+(`AnthropicSession`) uses `client.messages.parse(..., output_format=...)`,
+so the SDK — not a hand-rolled JSON parser — is what guarantees a malformed
+response never reaches the render/check pipeline or the `research_plans`
+table.
 
-**Three implementations, one protocol.** `AnthropicSession` is the only one
-that touches the network; `StubSession` and `ReplaySession` return
-pre-supplied responses so every test in this codebase — including the full
-offline loop test — never needs `ANTHROPIC_API_KEY` or a live connection.
-Retries are the SDK's own (`max_retries`, default 2, on 429/5xx/connection
-errors) plus `aqrl.orchestration.failures.classify`, which already lists
+**Three implementations, two protocols.** `AnthropicSession` implements both
+`AgentSession` (A2) and `ReviewSession` (A3) and is the only one that touches
+the network; `StubSession`/`ReplaySession` and their A3 counterparts
+`StubReviewSession`/`ReplayReviewSession` return pre-supplied responses so
+every test in this codebase — including the full offline loop test — never
+needs `ANTHROPIC_API_KEY` or a live connection. Retries are the SDK's own
+(`max_retries`, default 2, on 429/5xx/connection errors) plus
+`aqrl.orchestration.failures.classify`, which already lists
 `RateLimitError`/`APITimeoutError`/`APIConnectionError` as transient — this
 module does not duplicate that logic, it just lets those exceptions propagate
 to the worker, exactly like any other handler failure.
@@ -29,7 +34,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,8 +45,13 @@ __all__ = [
     "AgentResponse",
     "AgentSession",
     "AnthropicSession",
+    "ProposedPlan",
     "ProposedSpec",
+    "ReplayReviewSession",
     "ReplaySession",
+    "ReviewResponse",
+    "ReviewSession",
+    "StubReviewSession",
     "StubSession",
 ]
 
@@ -85,6 +95,29 @@ class ProposedSpec(BaseModel):
         )
 
 
+class ProposedPlan(BaseModel):
+    """A3's one output shape — a verdict plus its plain-language reasoning.
+
+    Mirrors `research_plans` field-for-field. **Never contains code** — App-Flow
+    §6.4: A3 says *"replace the fixed stop with an ATR trailing stop"*, it
+    does not write the function. `verdict` is closed to the three values
+    App-Flow §6.2 allows below the bar; there is deliberately no `promote`
+    option here — clearing the bar is a Python short-circuit A3 is never
+    consulted on (App-Flow §6.1). `extra="forbid"` for the same reason as
+    `ProposedSpec`: an invented field must fail loudly, not be silently
+    dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: Literal["iterate", "plateau", "reject"]
+    diagnosis: str
+    evidence_cited: list[dict[str, Any]] = Field(default_factory=list)
+    proposed_changes: list[dict[str, Any]] = Field(default_factory=list)
+    expected_effect: str | None = None
+    confidence: float | None = None
+
+
 @dataclass(frozen=True)
 class AgentResponse:
     """What a session call returns — everything a caller needs to persist."""
@@ -95,9 +128,25 @@ class AgentResponse:
     raw_output: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ReviewResponse:
+    """What a review call returns — the A3 counterpart to `AgentResponse`."""
+
+    plan: ProposedPlan
+    prompt_version: str
+    tokens_spent: int
+    raw_output: dict[str, Any]
+
+
 class AgentSession(Protocol):
     def propose_spec(self, brief: str, *, prompt_version: str) -> AgentResponse:
         """Turn one complete brief into one `ProposedSpec`. Stateless."""
+        ...
+
+
+class ReviewSession(Protocol):
+    def review(self, brief: str, *, prompt_version: str) -> ReviewResponse:
+        """Turn one complete brief into one `ProposedPlan`. Stateless."""
         ...
 
 
@@ -145,8 +194,46 @@ class ReplaySession:
         return AgentResponse(spec=spec, prompt_version=prompt_version, tokens_spent=0, raw_output=raw)
 
 
+class StubReviewSession:
+    """`StubSession`'s A3 counterpart. Returns a fixed (or brief-derived)
+    `ProposedPlan`. No network, ever."""
+
+    def __init__(self, response: ProposedPlan | Callable[[str], ProposedPlan]) -> None:
+        self._response = response
+        self.calls: list[str] = []
+
+    def review(self, brief: str, *, prompt_version: str) -> ReviewResponse:
+        self.calls.append(brief)
+        plan = self._response(brief) if callable(self._response) else self._response
+        return ReviewResponse(
+            plan=plan, prompt_version=prompt_version, tokens_spent=0, raw_output=plan.model_dump(mode="json")
+        )
+
+
+class ReplayReviewSession:
+    """`ReplaySession`'s A3 counterpart — replays pre-recorded plans in order,
+    one per call. Used by the closed-loop test to make each successive A3
+    verdict differ deterministically (e.g. `iterate` four times, then
+    `plateau` on the fifth) without a live call."""
+
+    def __init__(self, fixtures: Sequence[dict[str, Any]]) -> None:
+        self._fixtures = list(fixtures)
+        self._index = 0
+
+    def review(self, brief: str, *, prompt_version: str) -> ReviewResponse:
+        if self._index >= len(self._fixtures):
+            raise RuntimeError(
+                f"ReplayReviewSession exhausted after {self._index} call(s): no more recorded responses"
+            )
+        raw = self._fixtures[self._index]
+        self._index += 1
+        plan = ProposedPlan(**raw)
+        return ReviewResponse(plan=plan, prompt_version=prompt_version, tokens_spent=0, raw_output=raw)
+
+
 class AnthropicSession:
-    """The real wrapper — one stateless call per `propose_spec` (TRD §16).
+    """The real wrapper — one stateless call per `propose_spec`/`review` call
+    (TRD §16).
 
     Imports `anthropic` lazily so the rest of this codebase, including every
     test that never constructs this class, has no hard dependency on the
@@ -166,19 +253,31 @@ class AnthropicSession:
         self._client = anthropic.Anthropic()
         return self._client
 
-    def propose_spec(self, brief: str, *, prompt_version: str) -> AgentResponse:
+    def _parse(self, brief: str, *, output_format: type[BaseModel]) -> tuple[BaseModel, int]:
         client = self._get_client()
         response = client.messages.parse(
             model=self.model,
             max_tokens=self.max_tokens,
             messages=[{"role": "user", "content": brief}],
-            output_format=ProposedSpec,
+            output_format=output_format,
         )
-        spec = response.parsed_output
         tokens_spent = int(response.usage.input_tokens) + int(response.usage.output_tokens)
+        return response.parsed_output, tokens_spent
+
+    def propose_spec(self, brief: str, *, prompt_version: str) -> AgentResponse:
+        spec, tokens_spent = self._parse(brief, output_format=ProposedSpec)
         return AgentResponse(
             spec=spec,
             prompt_version=prompt_version,
             tokens_spent=tokens_spent,
             raw_output=spec.model_dump(mode="json"),
+        )
+
+    def review(self, brief: str, *, prompt_version: str) -> ReviewResponse:
+        plan, tokens_spent = self._parse(brief, output_format=ProposedPlan)
+        return ReviewResponse(
+            plan=plan,
+            prompt_version=prompt_version,
+            tokens_spent=tokens_spent,
+            raw_output=plan.model_dump(mode="json"),
         )

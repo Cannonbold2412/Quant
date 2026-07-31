@@ -107,12 +107,17 @@ def persist(conn: sqlite3.Connection, job: Row, outcome: EvaluateOutcome) -> Han
         else:
             strategies.record_bar_failure(outcome.strategy_id)
             event = Event.EVALUATION_FAILED_BAR
+        # Carry the incoming payload through unchanged (asset_class,
+        # data_snapshot_id, campaign, cost_multiplier, random_seed, ...) —
+        # PROMOTE/REVIEW need the same eval-relevant fields the next
+        # EVALUATE will, exactly like `implement.py`'s `_eval_payload`.
+        job_payload = job.get("payload") or {}
         emit(
             conn,
             event,
             strategy_id=outcome.strategy_id,
             experiment_id=outcome.experiment_id,
-            payload={"evaluation_id": evaluation_id},
+            payload={**job_payload, "evaluation_id": evaluation_id},
         )
 
     return HandlerResult(tokens_spent=0)

@@ -1,9 +1,11 @@
 """The `job_type -> handler` registry.
 
-Stage 4 shipped `EVALUATE`. Stage 5 adds `IMPLEMENT` and `FIX_CODE` — A2,
+Stage 4 shipped `EVALUATE`. Stage 5 added `IMPLEMENT` and `FIX_CODE` — A2,
 Implementation_Plan §8 — sharing one handler module (`implement.py`) since
 they differ only in which experiment they target and whether an LLM call is
-involved, not in the render -> check -> commit path both end at. Every other
+involved, not in the render -> check -> commit path both end at. Stage 6 adds
+`REVIEW` — A3, Implementation_Plan §9 — in its own module (`review.py`),
+since its job is a verdict plus a research plan, not code. Every other
 `job_type` in the schema's CHECK constraint (`aqrl/db/repositories/jobs.py`,
 `JOB_TYPES`) is a real future stage, not a stub: `get_handler` raises
 `NotImplementedHandler` for anything unregistered, which `failures.py`
@@ -19,6 +21,7 @@ from typing import Any, Callable
 from ...db.repositories.base import Row
 from . import evaluate as _evaluate
 from . import implement as _implement
+from . import review as _review
 from .base import HandlerResult, JobHandler, NotImplementedHandler
 
 __all__ = ["HandlerResult", "JobHandler", "NotImplementedHandler", "get_handler"]
@@ -34,6 +37,7 @@ _HANDLERS: dict[str, _FunctionHandler] = {
     "EVALUATE": _FunctionHandler(run=_evaluate.run, persist=_evaluate.persist),
     "IMPLEMENT": _FunctionHandler(run=_implement.run, persist=_implement.persist),
     "FIX_CODE": _FunctionHandler(run=_implement.run, persist=_implement.persist),
+    "REVIEW": _FunctionHandler(run=_review.run, persist=_review.persist),
 }
 
 

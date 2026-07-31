@@ -50,7 +50,14 @@ from ..operators.registry import operator_library_version
 from ..operators.spec import StrategySpec
 from ..profiles.models import ResolvedProfile
 from .backtest import run_backtest
-from .bar import AcceptanceBar, breadth_of, check_complexity, check_min_score, check_outcome
+from .bar import (
+    BAR_FAILURE_TO_EXPERIMENT_REASON,
+    AcceptanceBar,
+    breadth_of,
+    check_complexity,
+    check_min_score,
+    check_outcome,
+)
 from .checks import CheckResult
 from .determinism import derive_seed
 from .evaluator import PanelEvaluator
@@ -265,7 +272,28 @@ def evaluate_experiment(inputs: EvaluationInputs) -> EvaluationReport:
     checks.extend(market_checks)
 
     if bar_verdict.blocks_scoring:
-        return _failed(provenance, "P3", bar_verdict.failed_on, checks, _elapsed(start_time))
+        # Not the generic `_failed()` — that helper hardcodes `bar_verdict=None`,
+        # which is correct for every earlier phase (there is no bar_verdict yet)
+        # but wrong here: the four-item bar was just computed, and
+        # `handlers/evaluate.py`'s PROMOTE/REVIEW routing (App-Flow §6.1) reads
+        # `report.bar_verdict` directly. Losing it here would silently make a
+        # bar failure indistinguishable from a P0-P2 failure and never enqueue
+        # `REVIEW` at all. `failure_reason` is translated through
+        # `BAR_FAILURE_TO_EXPERIMENT_REASON` — `bar_verdict.failed_on` is this
+        # module's own vocabulary (and exactly what `evaluations.bar_failed_on`
+        # stores), not `experiments.failure_reason`'s.
+        return EvaluationReport(
+            provenance=provenance,
+            phase_reached="P3",
+            outcome="failed",
+            failure_reason=BAR_FAILURE_TO_EXPERIMENT_REASON[bar_verdict.failed_on],
+            bar_verdict=bar_verdict,
+            best_of_three=best_of_three,
+            metrics=None,
+            robustness=robustness,
+            all_checks=checks,
+            duration_seconds=_elapsed(start_time),
+        )
 
     score_check = check_min_score(inputs.acceptance_bar, window.score.honest_score)
     checks.append(score_check)

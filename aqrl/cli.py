@@ -525,13 +525,15 @@ def cmd_code_show(args: argparse.Namespace) -> int:
 
 
 def cmd_agents_brief(args: argparse.Namespace) -> int:
-    """Print the Implementation Brief a plan-driven `IMPLEMENT`/`FIX_CODE` job
-    would send to Claude — without calling it."""
-    from .agents.context import assemble_implement_brief
+    """Print the Implementation Brief (A2) or Review Brief (A3) a job would
+    send to Claude — without calling it."""
     from .db.repositories import (
         CodeVersionRepository,
         EvaluationRepository,
+        EvaluationTestRepository,
         ExperimentRepository,
+        KnowledgeEntryRepository,
+        RegimePerformanceRepository,
         ResearchPlanRepository,
         SpecRepository,
         StrategyRepository,
@@ -542,6 +544,42 @@ def cmd_agents_brief(args: argparse.Namespace) -> int:
     if strategy is None:
         print(f"no strategy {args.strategy_id}", file=sys.stderr)
         return 1
+
+    if args.agent == "a3":
+        from .agents.context import assemble_review_brief
+        from .eval.bar import AcceptanceBar
+
+        if args.experiment_id is None:
+            print("--experiment-id is required for --agent a3", file=sys.stderr)
+            return 1
+        experiments = ExperimentRepository(conn)
+        experiment = experiments.get(args.experiment_id)
+        if experiment is None:
+            print(f"no experiment {args.experiment_id}", file=sys.stderr)
+            return 1
+        spec = SpecRepository(conn).load_spec(experiment["spec_id"])
+        evaluation = EvaluationRepository(conn).latest_for_experiment(args.experiment_id)
+        if evaluation is None:
+            print(f"no evaluation for experiment {args.experiment_id}", file=sys.stderr)
+            return 1
+        bar = AcceptanceBar.locked(conn)
+        brief = assemble_review_brief(
+            strategy=strategy,
+            spec=spec,
+            experiment_history=experiments.find(strategy_id=args.strategy_id, order_by="iteration"),
+            evaluation=evaluation,
+            diagnostic_checks=EvaluationTestRepository(conn).for_evaluation(evaluation["id"]),
+            regime_performance=RegimePerformanceRepository(conn).for_evaluation(evaluation["id"]),
+            knowledge_entries=KnowledgeEntryRepository(conn).relevant_to(strategy),
+            iteration_count=strategy["iteration_count"],
+            plateau_counter=strategy["plateau_counter"],
+            hard_iteration_cap=bar.hard_iteration_cap,
+            plateau_patience=bar.plateau_patience,
+        )
+        print(brief)
+        return 0
+
+    from .agents.context import assemble_implement_brief
 
     specs = SpecRepository(conn)
     prior_spec = None
@@ -1065,14 +1103,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--all", action="store_true", help="list every attempt, not just the latest")
     p.set_defaults(func=cmd_code_show)
 
-    agents = subs.add_parser("agents", help="the Claude session wrapper (Stage 5)").add_subparsers(
+    agents = subs.add_parser("agents", help="the Claude session wrappers (Stages 5-6)").add_subparsers(
         dest="cmd", required=True
     )
-    p = agents.add_parser("brief", help="print the Implementation Brief without calling Claude")
+    p = agents.add_parser("brief", help="print the Implementation (A2) or Review (A3) Brief without calling Claude")
+    p.add_argument("--agent", choices=["a2", "a3"], default="a2", help="which agent's brief to print")
     p.add_argument("--strategy-id", type=int, required=True, dest="strategy_id")
-    p.add_argument("--experiment-id", type=int, dest="experiment_id", help="the experiment being iterated on/fixed")
-    p.add_argument("--research-plan-id", type=int, dest="research_plan_id")
-    p.add_argument("--diagnostics-file", dest="diagnostics_file", help="JSON list of diagnostic strings")
+    p.add_argument(
+        "--experiment-id",
+        type=int,
+        dest="experiment_id",
+        help="the experiment being iterated on/fixed (a2) or reviewed (a3, required)",
+    )
+    p.add_argument("--research-plan-id", type=int, dest="research_plan_id", help="a2 only")
+    p.add_argument("--diagnostics-file", dest="diagnostics_file", help="JSON list of diagnostic strings (a2 only)")
     p.set_defaults(func=cmd_agents_brief)
 
     flags = subs.add_parser("flags", help="data validation flags").add_subparsers(
