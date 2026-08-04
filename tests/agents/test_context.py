@@ -4,9 +4,15 @@
 from __future__ import annotations
 
 from aqrl.agents.context import (
+    archive_prompt_version,
+    assemble_archive_brief,
     assemble_implement_brief,
+    assemble_mine_brief,
+    assemble_promote_brief,
     assemble_review_brief,
     implement_prompt_version,
+    mine_prompt_version,
+    promote_prompt_version,
     review_prompt_version,
 )
 from aqrl.operators.spec import Node, StrategySpec
@@ -229,3 +235,167 @@ def test_review_prompt_version_is_stable_and_derived():
     b = review_prompt_version()
     assert a == b
     assert a.startswith("review-v1-")
+
+
+# -- the Promotion Brief (A4, Stage 8) -----------------------------------------
+
+#: Unlike A2/A3, A4 may see the honest score and full metrics (module
+#: docstring) — only the bar's own formula/threshold terms stay hidden.
+_A4_FORBIDDEN_TERMS = ("z_multiplier", "trials_haircut", "cost_stress_multiple", "evaluate_experiment")
+
+
+def _promote_brief(**overrides):
+    fields = dict(
+        strategy=_STRATEGY,
+        spec=_SPEC,
+        experiment_history=[],
+        winning_evaluation={"honest_score": 0.9, "sharpe": 1.2, "bar_result": "pass"},
+        diagnostic_checks=[],
+        iteration_count=3,
+    )
+    fields.update(overrides)
+    return assemble_promote_brief(**fields)
+
+
+def test_promote_brief_may_include_the_honest_score():
+    """The one deliberate asymmetry with every other brief in this module —
+    A4 is a judge whose output never feeds a future spec (App-Flow §7)."""
+    brief = _promote_brief(winning_evaluation={"honest_score": 0.87, "sharpe": 1.3, "bar_result": "pass"})
+    section = brief.split("## Winning evaluation")[1].split("## Overfitting signal")[0]
+    assert "0.87" in section
+    assert "1.3" in section
+
+
+def test_promote_brief_still_omits_the_bar_formula_and_thresholds():
+    brief = _promote_brief()
+    lowered = brief.lower()
+    for term in _A4_FORBIDDEN_TERMS:
+        assert term not in lowered, f"forbidden term {term!r} leaked into the promote brief"
+
+
+def test_promote_brief_includes_full_iteration_history_including_bar_failures():
+    brief = _promote_brief(
+        experiment_history=[
+            {"iteration": 1, "status": "reviewed", "outcome": "failed", "failure_reason": "insufficient_trades"},
+            {"iteration": 2, "status": "evaluated", "outcome": "passed", "failure_reason": None},
+        ]
+    )
+    section = brief.split("## Full iteration history")[1].split("## Winning evaluation")[0]
+    assert "insufficient_trades" in section
+    assert '"iteration": 1' in section
+    assert '"iteration": 2' in section
+
+
+def test_promote_brief_includes_the_overfitting_signal():
+    brief = _promote_brief(iteration_count=31, winning_evaluation={"n_trials_used": 12, "bar_result": "pass"})
+    section = brief.split("## Overfitting signal")[1].split("## Capacity")[0]
+    assert '"iteration_count": 31' in section
+    assert '"n_trials_used": 12' in section
+
+
+def test_promote_brief_surfaces_capacity_checks_only():
+    brief = _promote_brief(
+        diagnostic_checks=[
+            {"test_name": "equities_capacity", "result": "pass", "value": 0.02, "threshold": 0.1},
+            {"test_name": "p1_no_signal", "result": "pass", "value": None, "threshold": None},
+        ]
+    )
+    section = brief.split("## Capacity/liquidity evidence")[1]
+    assert "equities_capacity" in section
+    assert "p1_no_signal" not in section
+
+
+def test_promote_prompt_version_is_stable_and_derived():
+    a = promote_prompt_version()
+    b = promote_prompt_version()
+    assert a == b
+    assert a.startswith("promote-v1-")
+
+
+# -- the Archive / Mining Briefs (A5, Stage 8) ---------------------------------
+
+
+def _archive_brief(**overrides):
+    fields = dict(
+        strategy=_STRATEGY,
+        spec=_SPEC,
+        experiment_history=[],
+        evaluations=[],
+        plans=[],
+        promotion=None,
+    )
+    fields.update(overrides)
+    return assemble_archive_brief(**fields)
+
+
+def test_archive_brief_omits_engine_internals_including_honest_score():
+    """A5's output reaches a future A1 brief (module docstring) — the same
+    reward-hacking channel A3 is redacted against, so the full forbidden-term
+    list applies here, `honest_score` included (unlike A4's brief)."""
+    brief = _archive_brief(evaluations=[{"phase": "bar", "result": "fail", "bar_failed_on": "min_trades"}])
+    lowered = brief.lower()
+    for term in _FORBIDDEN_TERMS:
+        assert term not in lowered, f"forbidden term {term!r} leaked into the archive brief"
+
+
+def test_archive_brief_includes_all_iterations_and_evaluations():
+    brief = _archive_brief(
+        experiment_history=[{"iteration": 1, "status": "reviewed", "outcome": "failed", "failure_reason": "no_signal"}],
+        evaluations=[{"phase": "bar", "result": "fail", "bar_failed_on": "min_trades"}],
+    )
+    history_section = brief.split("## All iterations")[1].split("## All evaluations")[0]
+    assert "no_signal" in history_section
+    eval_section = brief.split("## All evaluations")[1].split("## A3 research plans")[0]
+    assert "min_trades" in eval_section
+
+
+def test_archive_brief_marks_absent_promotion_explicitly():
+    brief = _archive_brief(promotion=None)
+    assert "no a4 decision" in brief.lower()
+
+
+def test_archive_brief_includes_promotion_when_present():
+    brief = _archive_brief(promotion={"decision": "approve", "rationale": "credible", "overfitting_risk": "low"})
+    section = brief.split("## A4 promotion decision")[1]
+    assert "approve" in section
+    assert "credible" in section
+
+
+def test_archive_prompt_version_is_stable_and_derived():
+    a = archive_prompt_version()
+    b = archive_prompt_version()
+    assert a == b
+    assert a.startswith("archive-v1-")
+
+
+def _mine_brief(**overrides):
+    fields = dict(family_failure_groups={}, existing_entries=[])
+    fields.update(overrides)
+    return assemble_mine_brief(**fields)
+
+
+def test_mine_brief_omits_engine_internals():
+    brief = _mine_brief(family_failure_groups={"fam": [{"experiment_id": 1, "failure_reason": "overfit_in_sample"}]})
+    lowered = brief.lower()
+    for term in _FORBIDDEN_TERMS:
+        assert term not in lowered, f"forbidden term {term!r} leaked into the mine brief"
+
+
+def test_mine_brief_includes_family_groups_and_existing_entries():
+    brief = _mine_brief(
+        family_failure_groups={"fam-a": [{"experiment_id": 1, "failure_reason": "overfit_in_sample"}]},
+        existing_entries=[{"id": 5, "scope": "family", "title": "old lesson", "statement": "s"}],
+    )
+    groups_section = brief.split("## Recently-closed experiments")[1].split("## Existing")[0]
+    assert "fam-a" in groups_section
+    assert "overfit_in_sample" in groups_section
+    entries_section = brief.split("## Existing family/market/global")[1]
+    assert "old lesson" in entries_section
+    assert '"id": 5' in entries_section
+
+
+def test_mine_prompt_version_is_stable_and_derived():
+    a = mine_prompt_version()
+    b = mine_prompt_version()
+    assert a == b
+    assert a.startswith("mine-v1-")

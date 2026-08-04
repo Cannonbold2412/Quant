@@ -9,7 +9,13 @@ from aqrl.db import transaction
 from aqrl.db.repositories import JobRepository, StrategyRepository
 from aqrl.orchestration.budgets import BudgetRepository
 from aqrl.orchestration.dispatch import Dispatcher
-from aqrl.orchestration.scheduler import TimeDrivenJob, diagnose_idle, fire_due_time_jobs, tick
+from aqrl.orchestration.scheduler import (
+    TIME_DRIVEN_SCHEDULE,
+    TimeDrivenJob,
+    diagnose_idle,
+    fire_due_time_jobs,
+    tick,
+)
 
 
 @pytest.fixture
@@ -90,33 +96,55 @@ def test_fire_due_time_jobs_with_empty_schedule_is_a_noop(conn):
     assert fire_due_time_jobs(conn, [], now=datetime.now(UTC)) == []
 
 
+def test_real_schedule_fires_weekly_mine_patterns(conn):
+    """Stage 8's first real `TIME_DRIVEN_SCHEDULE` entry (App-Flow §8.2) —
+    exercised against the actual module-level schedule, not a fixture copy,
+    so a future edit to it is caught here."""
+    fired = fire_due_time_jobs(conn, TIME_DRIVEN_SCHEDULE, now=datetime(2026, 8, 3, tzinfo=UTC))
+    assert JobRepository(conn).count(job_type="MINE_PATTERNS") == 1
+    assert len(fired) == 1
+
+    # Same week, different day: dedupes (`_period_key`'s "weekly" cadence).
+    fire_due_time_jobs(conn, TIME_DRIVEN_SCHEDULE, now=datetime(2026, 8, 4, tzinfo=UTC))
+    assert JobRepository(conn).count(job_type="MINE_PATTERNS") == 1
+
+
 # -- tick ---------------------------------------------------------------------
 
 
 def test_tick_expires_leases_and_reports_the_orphan(conn, dispatcher, strategy_id):
     jobs = JobRepository(conn)
-    job_id = jobs.enqueue("ARCHIVE", strategy_id=strategy_id)
+    job_id = jobs.enqueue("COLLECT_PAPERS", strategy_id=strategy_id)
     with transaction(conn, immediate=True):
         jobs.claim("some-dead-worker", lease_seconds=1)
 
-    report = tick(conn, dispatcher, now=datetime(2999, 1, 1, tzinfo=UTC))
+    # `schedule=[]`: isolates this test from `TIME_DRIVEN_SCHEDULE`'s real
+    # weekly `MINE_PATTERNS` entry (Stage 8) — this tick's reclaimed
+    # `COLLECT_PAPERS` job would otherwise be dispatched alongside a real
+    # `MINE_PATTERNS` job neither this test nor its fixtures are set up to
+    # service (no `KnowledgeSession` installed process-wide).
+    report = tick(conn, dispatcher, schedule=[], now=datetime(2999, 1, 1, tzinfo=UTC))
     assert job_id in report.expired_leases
 
 
 def test_tick_with_nothing_queued_reports_queue_empty(conn, dispatcher):
-    report = tick(conn, dispatcher)
+    # Empty `schedule=[]`: this test is about dispatch with nothing pending,
+    # not about the real `TIME_DRIVEN_SCHEDULE`'s weekly `MINE_PATTERNS`
+    # entry (Stage 8) firing and creating something to dispatch — that is
+    # `test_fire_due_time_jobs_*`'s concern, exercised in isolation below.
+    report = tick(conn, dispatcher, schedule=[])
     assert report.dispatched == []
     assert report.idle_cause == "queue_empty"
 
 
 def test_tick_dispatches_and_reaps_a_fast_failing_job(conn, dispatcher, strategy_id):
-    job_id = JobRepository(conn).enqueue("ARCHIVE", strategy_id=strategy_id)
-    report = tick(conn, dispatcher)
+    job_id = JobRepository(conn).enqueue("COLLECT_PAPERS", strategy_id=strategy_id)
+    report = tick(conn, dispatcher, schedule=[])
     assert report.dispatched == [job_id]
 
     for running in dispatcher._running.values():
         running.popen.wait(timeout=15)
-    report2 = tick(conn, dispatcher)
+    report2 = tick(conn, dispatcher, schedule=[])
     assert job_id in report2.reaped
 
     assert JobRepository(conn).get(job_id)["status"] == "failed"

@@ -47,17 +47,52 @@ __all__ = [
     "AnthropicSession",
     "HypothesisResponse",
     "HypothesisSession",
+    "KnowledgeEdgeDraft",
+    "KnowledgeEntryDraft",
+    "KnowledgeResponse",
+    "KnowledgeSession",
+    "LabNotebookDraft",
+    "PromotionResponse",
+    "PromotionSession",
     "ProposedHypothesis",
+    "ProposedKnowledge",
     "ProposedPlan",
+    "ProposedPromotion",
     "ProposedSpec",
     "ReplayHypothesisSession",
+    "ReplayKnowledgeSession",
+    "ReplayPromotionSession",
     "ReplayReviewSession",
     "ReplaySession",
+    "ResearchQuestionDraft",
     "ReviewResponse",
     "ReviewSession",
     "StubHypothesisSession",
+    "StubKnowledgeSession",
+    "StubPromotionSession",
     "StubReviewSession",
     "StubSession",
+]
+
+#: Backend-Schema §14.5's *research-finding* half of `experiments.failure_reason`
+#: — the three bug categories (`code_error`, `look_ahead_detected`,
+#: `data_leakage_detected`) are deliberately excluded: they route back to A2
+#: and must never be recorded as a research conclusion, so A5 can never cite
+#: one as what a knowledge entry documents.
+ResearchFailureReason = Literal[
+    "no_signal",
+    "negative_expectancy",
+    "costs_exceed_edge",
+    "overfit_in_sample",
+    "walk_forward_unstable",
+    "regime_dependent",
+    "pbo_too_high",
+    "deflated_sharpe_insufficient",
+    "insufficient_trades",
+    "monte_carlo_ruin_risk",
+    "parameter_sensitive",
+    "capacity_constrained",
+    "plateaued_below_bar",
 ]
 
 
@@ -173,6 +208,125 @@ class ProposedHypothesis(BaseModel):
         )
 
 
+class ProposedPromotion(BaseModel):
+    """A4's one output shape — a recommendation, never an action (App-Flow
+    §7, Backend-Schema §7's `promotions` table).
+
+    Mirrors `promotions` field-for-field, with two deliberate omissions.
+    **No `requires_human_approval` field** — that column is hardcoded to 1
+    by `handlers/promote.py` regardless of `decision`, so an `approve`
+    verdict can never be self-certifying (App-Flow §7.3: *"A4 can say no
+    alone, never yes alone"*). **No portfolio-correlation field** — out of
+    scope for v1 and computed independently by the dashboard, never fed into
+    A4's decision (App-Flow §7.2). `extra="forbid"` for the same reason as
+    every sibling shape here: an invented field must fail loudly.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "reject", "defer"]
+    rationale: str
+    evidence_summary: dict[str, Any] = Field(default_factory=dict)
+    # The overfitting signal App-Flow §7.1 requires A4 to weigh explicitly —
+    # iteration count alone is a number; this is A4's judgement of it.
+    overfitting_risk: Literal["low", "medium", "high"]
+    confidence: float | None = None
+    # Can THIS strategy alone trade at real size — a single-strategy
+    # property (App-Flow §7's capacity/liquidity assessment).
+    capacity_liquidity_ok: bool
+    recommended_allocation_pct: float | None = None
+
+
+class LabNotebookDraft(BaseModel):
+    """One `lab_notebooks` row (Backend-Schema §9, TRD §16). `next_questions`
+    is **mandatory and non-empty** — the model must propose at least one; an
+    empty list is what self-propagation failing to happen looks like."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hypothesis: str
+    result: str
+    reason: str
+    evidence: str
+    confidence: float | None = None
+    next_questions: list[str] = Field(min_length=1)
+
+
+class KnowledgeEntryDraft(BaseModel):
+    """One `knowledge_entries` row (Backend-Schema §9). `future_ideas` is
+    **mandatory and non-empty** for the same reason `next_questions` is —
+    TRD §12.1: *"this is what self-propels the lab."* `documents_failure_reasons`
+    is Stage 8's own addition beyond the schema's literal columns: which
+    structured `experiments.failure_reason` value(s) this lesson documents,
+    written into the stored row's `evidence` JSON by the handler rather than
+    matched later against free-form `statement` prose — see
+    `db.repositories.knowledge.repeat_failure_rate`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entry_type: Literal["experiment_record", "lesson", "global_rule", "pattern"]
+    scope: Literal["experiment", "family", "market", "global"]
+    title: str
+    statement: str
+    evidence_experiment_ids: list[int] = Field(default_factory=list)
+    documents_failure_reasons: list[ResearchFailureReason] = Field(default_factory=list)
+    confidence: float | None = None
+    applicable_markets: list[str] = Field(default_factory=list)
+    applicable_timeframes: list[str] = Field(default_factory=list)
+    applicable_regimes: list[str] = Field(default_factory=list)
+    future_ideas: list[str] = Field(min_length=1)
+    # The real `knowledge_entries.id` of an EXISTING row this one contradicts
+    # and replaces, or None. Only ever a row the brief already showed A5 (its
+    # id is visible there) — never a forward reference to a sibling entry in
+    # this same response, which has no database id yet.
+    supersedes_existing_id: int | None = None
+
+
+class KnowledgeEdgeDraft(BaseModel):
+    """One `knowledge_edges` observation (TRD §12.5). `evidence_experiment_ids`
+    is **mandatory and non-empty** — *"an edge with no experiment backing
+    must not exist"* is enforced again at the repository layer
+    (`KnowledgeEdgeRepository.observe`), but requiring it here means a
+    malformed response fails schema validation before it ever reaches that
+    check."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str
+    predicate: Literal["works_in", "fails_in", "pairs_well_with", "pairs_poorly_with", "requires", "degrades_with"]
+    object: str
+    supports: bool = True
+    confidence: float | None = None
+    evidence_experiment_ids: list[int] = Field(min_length=1)
+
+
+class ResearchQuestionDraft(BaseModel):
+    """One `research_questions` row pushed to the curiosity queue (TRD
+    §12.4)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    question: str
+    motivation: str | None = None
+    priority: int = 0
+
+
+class ProposedKnowledge(BaseModel):
+    """A5's one output shape — serves both jobs it runs (App-Flow §8):
+    `ARCHIVE` (per-strategy, `notebook` required) and `MINE_PATTERNS`
+    (cross-experiment, `notebook` always `None` — there is no single
+    strategy's story to narrate). The handler enforces which is required
+    for which job; this schema only says what each field means.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    notebook: LabNotebookDraft | None = None
+    entries: list[KnowledgeEntryDraft] = Field(default_factory=list)
+    edges: list[KnowledgeEdgeDraft] = Field(default_factory=list)
+    questions: list[ResearchQuestionDraft] = Field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class AgentResponse:
     """What a session call returns — everything a caller needs to persist."""
@@ -203,6 +357,26 @@ class HypothesisResponse:
     raw_output: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class PromotionResponse:
+    """What a promotion call returns — the A4 counterpart to `AgentResponse`."""
+
+    promotion: ProposedPromotion
+    prompt_version: str
+    tokens_spent: int
+    raw_output: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class KnowledgeResponse:
+    """What an archive/mine call returns — the A5 counterpart to `AgentResponse`."""
+
+    knowledge: ProposedKnowledge
+    prompt_version: str
+    tokens_spent: int
+    raw_output: dict[str, Any]
+
+
 class AgentSession(Protocol):
     def propose_spec(self, brief: str, *, prompt_version: str) -> AgentResponse:
         """Turn one complete brief into one `ProposedSpec`. Stateless."""
@@ -218,6 +392,18 @@ class ReviewSession(Protocol):
 class HypothesisSession(Protocol):
     def generate(self, brief: str, *, prompt_version: str) -> HypothesisResponse:
         """Turn one complete Research Brief into one `ProposedHypothesis`. Stateless."""
+        ...
+
+
+class PromotionSession(Protocol):
+    def decide(self, brief: str, *, prompt_version: str) -> PromotionResponse:
+        """Turn one complete Promotion Brief into one `ProposedPromotion`. Stateless."""
+        ...
+
+
+class KnowledgeSession(Protocol):
+    def archive(self, brief: str, *, prompt_version: str) -> KnowledgeResponse:
+        """Turn one complete Archive/Mining Brief into one `ProposedKnowledge`. Stateless."""
         ...
 
 
@@ -342,6 +528,83 @@ class ReplayHypothesisSession:
         return HypothesisResponse(hypothesis=hypothesis, prompt_version=prompt_version, tokens_spent=0, raw_output=raw)
 
 
+class StubPromotionSession:
+    """`StubSession`'s A4 counterpart. Returns a fixed (or brief-derived)
+    `ProposedPromotion`. No network, ever."""
+
+    def __init__(self, response: ProposedPromotion | Callable[[str], ProposedPromotion]) -> None:
+        self._response = response
+        self.calls: list[str] = []
+
+    def decide(self, brief: str, *, prompt_version: str) -> PromotionResponse:
+        self.calls.append(brief)
+        promotion = self._response(brief) if callable(self._response) else self._response
+        return PromotionResponse(
+            promotion=promotion,
+            prompt_version=prompt_version,
+            tokens_spent=0,
+            raw_output=promotion.model_dump(mode="json"),
+        )
+
+
+class ReplayPromotionSession:
+    """`ReplaySession`'s A4 counterpart — replays pre-recorded promotions in
+    order, one per call."""
+
+    def __init__(self, fixtures: Sequence[dict[str, Any]]) -> None:
+        self._fixtures = list(fixtures)
+        self._index = 0
+
+    def decide(self, brief: str, *, prompt_version: str) -> PromotionResponse:
+        if self._index >= len(self._fixtures):
+            raise RuntimeError(
+                f"ReplayPromotionSession exhausted after {self._index} call(s): no more recorded responses"
+            )
+        raw = self._fixtures[self._index]
+        self._index += 1
+        promotion = ProposedPromotion(**raw)
+        return PromotionResponse(promotion=promotion, prompt_version=prompt_version, tokens_spent=0, raw_output=raw)
+
+
+class StubKnowledgeSession:
+    """`StubSession`'s A5 counterpart. Returns a fixed (or brief-derived)
+    `ProposedKnowledge`. No network, ever."""
+
+    def __init__(self, response: ProposedKnowledge | Callable[[str], ProposedKnowledge]) -> None:
+        self._response = response
+        self.calls: list[str] = []
+
+    def archive(self, brief: str, *, prompt_version: str) -> KnowledgeResponse:
+        self.calls.append(brief)
+        knowledge = self._response(brief) if callable(self._response) else self._response
+        return KnowledgeResponse(
+            knowledge=knowledge,
+            prompt_version=prompt_version,
+            tokens_spent=0,
+            raw_output=knowledge.model_dump(mode="json"),
+        )
+
+
+class ReplayKnowledgeSession:
+    """`ReplaySession`'s A5 counterpart — replays pre-recorded knowledge
+    outputs in order, one per call (`ARCHIVE` and `MINE_PATTERNS` are
+    separate jobs, so a test driving both installs two fixtures)."""
+
+    def __init__(self, fixtures: Sequence[dict[str, Any]]) -> None:
+        self._fixtures = list(fixtures)
+        self._index = 0
+
+    def archive(self, brief: str, *, prompt_version: str) -> KnowledgeResponse:
+        if self._index >= len(self._fixtures):
+            raise RuntimeError(
+                f"ReplayKnowledgeSession exhausted after {self._index} call(s): no more recorded responses"
+            )
+        raw = self._fixtures[self._index]
+        self._index += 1
+        knowledge = ProposedKnowledge(**raw)
+        return KnowledgeResponse(knowledge=knowledge, prompt_version=prompt_version, tokens_spent=0, raw_output=raw)
+
+
 class AnthropicSession:
     """The real wrapper — one stateless call per `propose_spec`/`review`/
     `generate` call (TRD §16).
@@ -400,4 +663,22 @@ class AnthropicSession:
             prompt_version=prompt_version,
             tokens_spent=tokens_spent,
             raw_output=hypothesis.model_dump(mode="json"),
+        )
+
+    def decide(self, brief: str, *, prompt_version: str) -> PromotionResponse:
+        promotion, tokens_spent = self._parse(brief, output_format=ProposedPromotion)
+        return PromotionResponse(
+            promotion=promotion,
+            prompt_version=prompt_version,
+            tokens_spent=tokens_spent,
+            raw_output=promotion.model_dump(mode="json"),
+        )
+
+    def archive(self, brief: str, *, prompt_version: str) -> KnowledgeResponse:
+        knowledge, tokens_spent = self._parse(brief, output_format=ProposedKnowledge)
+        return KnowledgeResponse(
+            knowledge=knowledge,
+            prompt_version=prompt_version,
+            tokens_spent=tokens_spent,
+            raw_output=knowledge.model_dump(mode="json"),
         )

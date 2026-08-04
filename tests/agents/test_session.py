@@ -8,7 +8,21 @@ from __future__ import annotations
 
 import pytest
 
-from aqrl.agents.session import AnthropicSession, ProposedSpec, ReplaySession, StubSession
+from aqrl.agents.session import (
+    AnthropicSession,
+    KnowledgeEdgeDraft,
+    KnowledgeEntryDraft,
+    LabNotebookDraft,
+    ProposedKnowledge,
+    ProposedPromotion,
+    ProposedSpec,
+    ReplayKnowledgeSession,
+    ReplayPromotionSession,
+    ReplaySession,
+    StubKnowledgeSession,
+    StubPromotionSession,
+    StubSession,
+)
 
 
 def _spec(hypothesis: str = "h", change_summary: str = "cs") -> ProposedSpec:
@@ -79,3 +93,127 @@ def test_anthropic_session_does_not_require_a_key_until_called():
     # only calling propose_spec() does, and this test deliberately never does.
     session = AnthropicSession(model="claude-opus-5")
     assert session.model == "claude-opus-5"
+
+
+# -- ProposedPromotion (A4, Stage 8) -------------------------------------------
+
+
+def _promotion(decision: str = "approve") -> ProposedPromotion:
+    return ProposedPromotion(
+        decision=decision, rationale="r", overfitting_risk="low", capacity_liquidity_ok=True
+    )
+
+
+def test_proposed_promotion_rejects_unknown_fields():
+    with pytest.raises(Exception):
+        ProposedPromotion(
+            decision="approve", rationale="r", overfitting_risk="low", capacity_liquidity_ok=True,
+            requires_human_approval=True,
+        )
+
+
+def test_proposed_promotion_has_no_portfolio_correlation_field():
+    """App-Flow §7.2 — out of scope for v1, never part of A4's brief or
+    output."""
+    assert "portfolio_correlation" not in ProposedPromotion.model_fields
+    assert "correlation" not in ProposedPromotion.model_fields
+
+
+def test_stub_promotion_session_returns_fixed_response():
+    promotion = _promotion()
+    stub = StubPromotionSession(promotion)
+    response = stub.decide("brief", prompt_version="v1")
+    assert response.promotion is promotion
+    assert response.tokens_spent == 0
+    assert stub.calls == ["brief"]
+
+
+def test_replay_promotion_session_returns_fixtures_in_order():
+    replay = ReplayPromotionSession(
+        [
+            {"decision": "approve", "rationale": "r1", "overfitting_risk": "low", "capacity_liquidity_ok": True},
+            {"decision": "reject", "rationale": "r2", "overfitting_risk": "high", "capacity_liquidity_ok": False},
+        ]
+    )
+    first = replay.decide("brief", prompt_version="v1")
+    second = replay.decide("brief", prompt_version="v1")
+    assert first.promotion.decision == "approve"
+    assert second.promotion.decision == "reject"
+
+
+def test_replay_promotion_session_raises_when_exhausted():
+    replay = ReplayPromotionSession(
+        [{"decision": "defer", "rationale": "r", "overfitting_risk": "medium", "capacity_liquidity_ok": True}]
+    )
+    replay.decide("brief", prompt_version="v1")
+    with pytest.raises(RuntimeError, match="exhausted"):
+        replay.decide("brief", prompt_version="v1")
+
+
+# -- ProposedKnowledge (A5, Stage 8) -------------------------------------------
+
+
+def _knowledge() -> ProposedKnowledge:
+    return ProposedKnowledge(
+        notebook=LabNotebookDraft(
+            hypothesis="h", result="r", reason="re", evidence="e", next_questions=["q"]
+        ),
+        entries=[
+            KnowledgeEntryDraft(entry_type="lesson", scope="global", title="t", statement="s", future_ideas=["idea"])
+        ],
+        edges=[KnowledgeEdgeDraft(subject="a", predicate="fails_in", object="b", evidence_experiment_ids=[1])],
+    )
+
+
+def test_lab_notebook_draft_requires_non_empty_next_questions():
+    with pytest.raises(Exception):
+        LabNotebookDraft(hypothesis="h", result="r", reason="re", evidence="e", next_questions=[])
+
+
+def test_knowledge_entry_draft_requires_non_empty_future_ideas():
+    with pytest.raises(Exception):
+        KnowledgeEntryDraft(entry_type="lesson", scope="global", title="t", statement="s", future_ideas=[])
+
+
+def test_knowledge_edge_draft_requires_non_empty_evidence_experiment_ids():
+    with pytest.raises(Exception):
+        KnowledgeEdgeDraft(subject="a", predicate="fails_in", object="b", evidence_experiment_ids=[])
+
+
+def test_proposed_knowledge_notebook_defaults_to_none_for_mine_patterns():
+    knowledge = ProposedKnowledge(entries=[], edges=[], questions=[])
+    assert knowledge.notebook is None
+
+
+def test_stub_knowledge_session_returns_fixed_response():
+    knowledge = _knowledge()
+    stub = StubKnowledgeSession(knowledge)
+    response = stub.archive("brief", prompt_version="v1")
+    assert response.knowledge is knowledge
+    assert response.tokens_spent == 0
+    assert stub.calls == ["brief"]
+
+
+def test_replay_knowledge_session_returns_fixtures_in_order():
+    replay = ReplayKnowledgeSession(
+        [
+            {"entries": [], "edges": [], "questions": []},
+            {
+                "notebook": {
+                    "hypothesis": "h", "result": "r", "reason": "re", "evidence": "e", "next_questions": ["q"]
+                },
+                "entries": [], "edges": [], "questions": [],
+            },
+        ]
+    )
+    first = replay.archive("brief", prompt_version="v1")
+    second = replay.archive("brief", prompt_version="v1")
+    assert first.knowledge.notebook is None
+    assert second.knowledge.notebook.hypothesis == "h"
+
+
+def test_replay_knowledge_session_raises_when_exhausted():
+    replay = ReplayKnowledgeSession([{"entries": [], "edges": [], "questions": []}])
+    replay.archive("brief", prompt_version="v1")
+    with pytest.raises(RuntimeError, match="exhausted"):
+        replay.archive("brief", prompt_version="v1")

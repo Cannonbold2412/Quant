@@ -1,7 +1,7 @@
 # Implementation Plan — AQRL
 
-> **Status:** **Stages 0–6 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised, the Nervous System job queue/scheduler, A2 the Quant Engineer, A3 the Research Reviewer). Stage 4a and Stages 7–13 not started.
-> **Last updated:** 2026-07-31
+> **Status:** **Stages 0–8 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised, the Nervous System job queue/scheduler, A2 the Quant Engineer, A3 the Research Reviewer, A1 the Research Scientist, A4 the Promotion Committee, A5 the Knowledge Manager). Stage 4a and Stages 9–13 not started.
+> **Last updated:** 2026-08-04
 > **Companion docs:** `PRD.md` (why) · `TRD.md` (how) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences)
 
 ---
@@ -482,6 +482,18 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 
 **Done when:** A1 generates novel, non-duplicate specs that respect known failure patterns, and the full A1→A2→evaluate→A3 loop runs end to end unattended.
 
+> ✅ **Built** (not previously recorded in this document — added retroactively
+> alongside the Stage 8 write-up below, so the status header is accurate).
+> `aqrl/agents/research_brief.py` (embedding-cached relevance search, bounded
+> to a recency-ordered candidate window before anything is embedded — "not a
+> table scan"), `agents/context.py`'s `assemble_generate_brief`, and
+> `orchestration/handlers/generate.py`. Exact-duplicate rejection is
+> `SpecRepository.by_hash` before any compute is spent; a structural near-
+> duplicate proceeds but is recorded to the audit log. Proven end to end by
+> `tests/orchestration/test_loop.py::test_a1_generates_a_spec_that_flows_through_the_unmodified_loop` —
+> a `GENERATE_SPEC` job through the real queue produces a strategy identity
+> and spec that flows through `IMPLEMENT`/`EVALUATE`/`REVIEW` unmodified.
+
 ---
 
 ## 11. Stage 8 — A4 Promotion + A5 Knowledge
@@ -506,6 +518,102 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 **Done when:** rejected experiments demonstrably prevent similar future proposals — measured by the **repeat-failure rate** trending toward zero.
 
 > The second real milestone: the lab stops being a loop and starts being a **memory**.
+
+> ✅ **Built.** `aqrl/orchestration/handlers/promote.py` (A4) and
+> `aqrl/orchestration/handlers/archive.py` (A5, serving both `ARCHIVE` and
+> `MINE_PATTERNS` — one module for both, mirroring `implement.py`'s
+> `IMPLEMENT`/`FIX_CODE` split), plus new `PromotionRepository`,
+> `KnowledgeEdgeRepository`, `LabNotebookRepository`, and write paths on
+> `KnowledgeEntryRepository`/`ResearchQuestionRepository`. No new migration —
+> every table Stage 8 writes (`promotions`, `knowledge_entries`,
+> `knowledge_edges`, `lab_notebooks`, `research_questions`) already existed
+> from Stages 1/3. `ProposedPromotion`/`ProposedKnowledge` join
+> `agents/session.py`'s existing `Proposed*` family — same
+> `extra="forbid"`, same Stub/Replay pair, same lazy `AnthropicSession`
+> default, so nothing in the suite needs `ANTHROPIC_API_KEY`.
+>
+> **A4 is a judge, not a producer** — the one deliberate asymmetry in
+> `agents/context.py`'s redaction scheme. Every other brief in the system
+> withholds `honest_score` and the engine internals (App-Flow §4.1); A4's
+> brief includes them, because nothing A4 writes ever reaches a future
+> spec-shaping agent — it emits a recommendation a human confirms, full
+> stop. `persist()` hardcodes `requires_human_approval=1` on every decision
+> regardless of what A4 said, so `approve` can never be self-certifying
+> (App-Flow §7.3). `reject` and `defer` are A4's own authority: `reject`
+> transitions the strategy to `rejected` — a deliberate deviation from
+> Backend-Schema §14.1, which only draws that edge off the never-cleared-
+> the-bar branch, recorded in `states.py`'s docstring alongside the existing
+> quarantine note, the same closest-available-bucket precedent Stages 3/5/6
+> already set. `defer` leaves status untouched (PRD §9.2 already stopped
+> this strategy the instant it cleared the bar) and opens a fresh
+> `research_goals` row instead — `created_by` left `NULL` there, since the
+> column's CHECK constraint only allows `'human'`/`'agent5'` and neither fits
+> A4.
+>
+> **A5 gets A3's asymmetric treatment, for the opposite reason A4 doesn't.**
+> A5's output *does* reach a future A1 brief
+> (`KnowledgeEntryRepository.failure_patterns`, consumed by
+> `assemble_generate_brief`) — a live reward-hacking channel — so
+> `assemble_archive_brief`/`assemble_mine_brief` withhold the full forbidden-
+> term list `honest_score` included, reusing the same raw
+> `bar_failed_on`-plus-diagnostics shape A3's brief already established.
+> `ARCHIVE` is idempotency-guarded on a `lab_notebooks` row already existing
+> for the strategy (TRD §12.1: A5 runs once, ever) and closes every one of
+> the strategy's experiments into the `archived` terminal state
+> `EXPERIMENT_TRANSITIONS` defined at Stage 4 and nothing before this stage
+> ever reached. `MINE_PATTERNS` is Stage 8's first live entry in
+> `scheduler.TIME_DRIVEN_SCHEDULE` — the mechanism Stage 4 built and left
+> empty specifically for this.
+>
+> **The repeat-failure rate is a measured, decided quantity, not an
+> aspiration.** `db.repositories.knowledge.repeat_failure_rate` defines a
+> repeat as: an experiment's `failure_reason` was already documented — in
+> `knowledge_entries.evidence.failure_reasons`, a small structured field
+> `handlers/archive.py` populates on every entry it writes — by a non-
+> superseded, market/timeframe-applicable entry created before that
+> experiment's own spec. Matching against the structured field rather than
+> free-form `statement` prose was a deliberate choice: `statement` is
+> deliberately prose ("ATR multipliers above 3.0 consistently overfit"), and
+> matching against it would have been a fragile substring guess. Exposed via
+> `aqrl knowledge rate [--since]`.
+>
+> **Proven two ways**, matching Stage 6's own precedent.
+> `tests/test_knowledge_repositories.py` and `tests/orchestration/
+> test_promote_handler.py`/`test_archive_handler.py` exercise every guard,
+> transition, and the edge-upsert/mandatory-non-empty contracts directly.
+> `tests/orchestration/test_memory_loop.py` drives the actual done-when
+> through the real job queue and `aqrl.orchestration.worker.run_job` —
+> unmodified `GENERATE_SPEC`→`IMPLEMENT`→`EVALUATE`→`REVIEW`→`ARCHIVE` for a
+> spec that fails the bar, A5's resulting lesson visible through the exact
+> reader a real A1 call would use, and a second, later strategy failing the
+> identical way counted by `repeat_failure_rate` as the preventable repeat
+> it is. The "a lesson written too late never counts, and an unrelated
+> failure never counts" halves of the mechanism are unit-tested directly
+> against the metric function rather than re-run through the queue a second
+> time.
+>
+> **One regression caught and fixed on the way.** Populating
+> `TIME_DRIVEN_SCHEDULE` for the first time broke three Stage 4/6 tests that
+> assumed it was permanently empty — two `test_scheduler.py` cases asserting
+> `tick()` dispatched nothing now saw the newly-firing `MINE_PATTERNS` job
+> too, and `test_dispatch.py`'s `NotImplementedHandler` fixture had used
+> `ARCHIVE` as its example of "a valid job_type nobody services yet," which
+> stopped being true. Fixed by isolating the dispatch-mechanics tests with
+> an explicit empty `schedule=[]` and swapping the fixture to
+> `COLLECT_PAPERS` (still unimplemented, Stage 10's concern) — the kind of
+> shared-state regression `states.transition`'s "errors, not warnings" rule
+> exists to surface loudly rather than let slide.
+>
+> **Known limits, stated rather than papered over.** The repeat-failure
+> metric is measurable, not yet minimized — the loop test proves the
+> mechanism works with a stubbed A1, not that a live A1 actually heeds a
+> shown lesson; the trend to zero is an operating observation over real
+> nights (M4). `promotions.merge_commit` stays NULL — merge-on-approve is
+> Stage 9 (TRD §5.3). A4's capacity verdict is only as good as
+> `GateContext.assumed_capital`, still Stage 3's provisional default.
+> `MINE_PATTERNS` firing weekly against sparse history will legitimately
+> find nothing some weeks and write nothing — a correct outcome the handler
+> returns cleanly from, not a failure it forces a pattern to avoid.
 
 ---
 
@@ -706,3 +814,4 @@ Not in the v1 build:
 | 2026-07-29 | **Stage 3 built.** `aqrl/eval/` — the single, profile-driven, panel-native evaluation engine: the ordered funnel (complexity → P0 → P1 → P2 → P3 → market gates → the bar), the walk-forward protocol and honest score moved out of `nanoaqrl/_lib/` so exactly one implementation exists (TRD §6.1), market-specific gates as appended phases per TRD §6.5, and full TRD §6.6 provenance persisted into Stage 1's schema with no new migration needed. The known-answer suite (§5.2) passed — **M1 cleared** — with the published-strategy case replaced by analytic ground truth. Profiling drove two evidence-based optimisations (Numba on the one genuinely path-dependent hot loop; an O(n²) expanding-median bug fixed algorithmically) for a measured 4.7× speedup, and fold-level parallelism was verified bit-identical across worker counts, not merely designed to be. One new dependency: `numba`, applied on profiled evidence per TRD §9.7, not speculatively. |
 | 2026-07-29 | **Stage 4 built.** `aqrl/orchestration/` — the `jobs` queue (`JobRepository`: atomic `BEGIN IMMEDIATE` claim, lease/heartbeat, `dedupe_key`), explicit state machines for `strategies`/`experiments` that raise on an invalid transition and write `audit_log`, the TRD §4.1 event→job_type table, transient/deterministic failure classification with exponential backoff and *k*-consecutive-failure quarantine, budget back-pressure gating dispatch, a subprocess worker with the `EVALUATE` handler wired end to end (queued job → rebuilt `EvaluationInputs` → Stage 3's engine → persisted report → the bar-clear short-circuit straight to `PROMOTE`, or `REVIEW` on a bar failure — never invoking A3, which doesn't exist yet), and the App-Flow §13 scheduler tick with TRD §4.5 idle-cause reporting. `aqrl.db.connection` gained WAL mode, `busy_timeout`, and `BEGIN IMMEDIATE` for the first time two processes write the database at once. Migration 0008 added `jobs.dedupe_key`. The crash test *is* the done-when: a real subprocess is `SIGKILL`ed mid-job and a re-run produces exactly one evaluation, and losing the scheduler process itself still recovers via lease expiry on the next tick — both proven against real OS processes, not mocks. |
 | 2026-07-30 | **Stage 5 built.** `aqrl/agents/` (render, sandbox, session, context) and `aqrl/orchestration/handlers/implement.py` — A2 translates a spec (hand-written for iteration 1, Claude-proposed for a plan-driven iteration or a `FIX_CODE` retry) into `strategies/<uid>/strategy.py` via a deterministic renderer, never freeform code, since `evaluate.py` compiles specs (TRD §6.1's no-forking rule extended to codegen). Static checks run in a scrubbed-env, resource-limited, timed-out subprocess reusing Stage 3's own P0 scanners; a passing spec commits to an idempotent, orphan-per-strategy git branch (`aqrl/vcs.py`) and enqueues `EVALUATE` unattended, exactly as Stage 5's done-when requires — proven both via direct handler calls and through a real claimed job in a real worker subprocess. A failing spec is a bounded `FIX_CODE` retry loop (default 3 attempts, counted from `code_versions`) ending in quarantine, not a failed job. No new migration: `code_versions` and `research_plans` already existed in Stage 1's schema, needing only new repositories (`CodeVersionRepository`, `ResearchPlanRepository`) and `ExperimentRepository.open_pending` for the `created → code_pending → code_ready → evaluating` chain Stage 4 defined but never drove. New optional dependency: `anthropic`, imported lazily so no test in the suite needs a network connection or an API key — `StubSession`/`ReplaySession` stand in throughout. **Review caught one real bug before merge:** `aqrl/vcs.py`'s shared working tree had no cross-process locking, so `Dispatcher`'s default `max_concurrent=4` (Stage 4) could run two strategies' `IMPLEMENT` jobs in parallel subprocesses racing `git checkout`/`init`/`commit` against the one shared repo — reproduced directly (four concurrent processes, three ended up crashed or missing their file entirely). Fixed with an exclusive `fcntl.flock` held across each public method's full git sequence, with a regression test exercising real concurrent subprocesses. |
+| 2026-08-04 | **Stage 8 built.** `aqrl/orchestration/handlers/promote.py` (A4) and `handlers/archive.py` (A5, serving both `ARCHIVE` and `MINE_PATTERNS`) close the two dead ends the loop had run into since Stage 6/7: a bar-clearing evaluation's `PROMOTE` job and a plateaued/rejected strategy's `ARCHIVE` job both previously hit `NotImplementedHandler`. New repositories (`PromotionRepository`, `KnowledgeEdgeRepository`, `LabNotebookRepository`, write paths on `KnowledgeEntryRepository`/`ResearchQuestionRepository`) and two new `Proposed*` session shapes (`ProposedPromotion`, `ProposedKnowledge`) follow every existing convention — no migration needed, since Stages 1/3 already created every table Stage 8 writes. A4's brief is the one deliberate exception to the system's usual redaction: it may see `honest_score` and full metrics, since A4 only ever emits a human-confirmed recommendation, never a spec-shaping signal; A5's brief keeps A3's asymmetric redaction instead, because A5's lessons **do** reach a future A1 brief. `states.py` gained `pending_promotion → rejected` (a deliberate, documented deviation from Backend-Schema §14.1, following the precedent Stages 3/5/6 already set for gaps this specific), and `scheduler.TIME_DRIVEN_SCHEDULE` got its first live entry (`MINE_PATTERNS`, weekly) — the mechanism Stage 4 built and deliberately left empty until there was a real producer. `db.repositories.knowledge.repeat_failure_rate` operationalises Implementation_Plan §11's done-when as a structured-field comparison (`knowledge_entries.evidence.failure_reasons`, populated by `handlers/archive.py`) rather than free-text matching, exposed via `aqrl knowledge rate`. Proven both directly (`tests/test_knowledge_repositories.py`, `test_promote_handler.py`, `test_archive_handler.py`) and end to end through the real job queue (`test_memory_loop.py`): a rejected experiment's lesson is visible through the exact reader a future A1 brief calls, and a second, later strategy failing the identical way is correctly counted as a preventable repeat. **One regression caught and fixed on the way:** populating `TIME_DRIVEN_SCHEDULE` for the first time broke three Stage 4/6 tests that had assumed it was permanently empty (two asserted `tick()` dispatched nothing; one used `ARCHIVE` as its example of "a job type nobody services yet," which stopped being true) — fixed by isolating the dispatch-mechanics tests with an explicit `schedule=[]` and swapping that fixture to `COLLECT_PAPERS`, still genuinely unimplemented. |

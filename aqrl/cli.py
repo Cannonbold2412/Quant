@@ -999,6 +999,24 @@ def cmd_budgets_set(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- knowledge (Stage 8) ---------------------------------------------------------
+
+
+def cmd_knowledge_rate(args: argparse.Namespace) -> int:
+    """Implementation_Plan §11's done-when, observed from a terminal:
+    *"rejected experiments demonstrably prevent similar future proposals ...
+    measured by the repeat-failure rate trending toward zero."*
+    """
+    from .db.repositories import repeat_failure_rate
+
+    conn = connect()
+    result = repeat_failure_rate(conn, since=args.since)
+    print(f"repeats:  {result['repeats']}")
+    print(f"total:    {result['total']}")
+    print(f"rate:     {result['rate']:.3f}")
+    return 0
+
+
 # -- wiring --------------------------------------------------------------------
 
 
@@ -1267,6 +1285,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--period", required=True, choices=["day", "week", "lifetime"])
     p.add_argument("--limit", required=True, type=int)
     p.set_defaults(func=cmd_budgets_set)
+
+    knowledge = subs.add_parser("knowledge", help="A5's knowledge base").add_subparsers(dest="cmd", required=True)
+    p = knowledge.add_parser("rate", help="repeat-failure rate — Implementation_Plan §11's done-when")
+    p.add_argument("--since", help="ISO-8601 timestamp; only experiments created at or after this")
+    p.set_defaults(func=cmd_knowledge_rate)
 
     return parser
 

@@ -18,13 +18,19 @@ from .data import (
 )
 from .embeddings import EmbeddingRepository
 from .jobs import JOB_STATUSES, JOB_TYPES, JobRepository, LeaseLost, UnknownJobType
-from .knowledge import KnowledgeEntryRepository
+from .knowledge import (
+    KnowledgeEdgeRepository,
+    KnowledgeEntryRepository,
+    LabNotebookRepository,
+    repeat_failure_rate,
+)
 from .operators import (
     DuplicateSpecError,
     OperatorRepository,
     SpecOperatorRepository,
     SpecRepository,
 )
+from .promotion import PromotionRepository
 from .registry import CostModelRepository, MarketProfileRepository, TimeframeProfileRepository
 from .research import (
     VERDICT_TO_STATUS,
@@ -55,11 +61,14 @@ __all__ = [
     "ExperimentRepository",
     "IndexMembershipRepository",
     "JobRepository",
+    "KnowledgeEdgeRepository",
     "KnowledgeEntryRepository",
+    "LabNotebookRepository",
     "LeaseLost",
     "MarketProfileRepository",
     "NullWorldRunRepository",
     "OperatorRepository",
+    "PromotionRepository",
     "RegimePerformanceRepository",
     "Repository",
     "ResearchGoalRepository",
@@ -74,5 +83,6 @@ __all__ = [
     "UnknownJobType",
     "ValidationFlagRepository",
     "new_uid",
+    "repeat_failure_rate",
     "utcnow_iso",
 ]

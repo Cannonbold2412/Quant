@@ -204,12 +204,13 @@ def _seed_first_implement_job(conn, strategy_id: int, snapshot_id: int, window: 
     return JobRepository(conn).get(job_id)
 
 
-#: Stage 8 (A5) does not exist yet — exactly like Stage 5's own `PROMOTE` job,
-#: these fail loudly with `NotImplementedHandler` rather than half-working
-#: (Implementation_Plan §9's design note). The routing decision this loop
-#: proves is already visible the instant one of these is enqueued; running it
-#: would only demonstrate that unimplemented-handler failure, which Stage 5
-#: already covers for `PROMOTE` and is not this file's concern.
+#: `PROMOTE`/`ARCHIVE` are real handlers as of Stage 8 (`handlers/promote.py`,
+#: `handlers/archive.py`) — running them for real needs a `PromotionSession`/
+#: `KnowledgeSession` this file's fixtures don't install, and belongs to
+#: `test_memory_loop.py`, which does. The routing decision this loop proves
+#: (which job type gets enqueued next, and with what payload) is already
+#: visible the instant one of these is claimed; this file stops there rather
+#: than duplicate Stage 8's own done-when test.
 _TERMINAL_UNIMPLEMENTED_JOB_TYPES = frozenset({"PROMOTE", "ARCHIVE"})
 
 

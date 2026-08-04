@@ -46,17 +46,26 @@ from ..operators.registry import all_operators
 from ..operators.spec import StrategySpec
 
 __all__ = [
+    "archive_prompt_version",
+    "assemble_archive_brief",
     "assemble_generate_brief",
     "assemble_implement_brief",
+    "assemble_mine_brief",
+    "assemble_promote_brief",
     "assemble_review_brief",
     "generate_prompt_version",
     "implement_prompt_version",
+    "mine_prompt_version",
+    "promote_prompt_version",
     "review_prompt_version",
 ]
 
 _IMPLEMENT_PROMPT_PATH = Path(__file__).parent / "prompts" / "implement_v1.md"
 _REVIEW_PROMPT_PATH = Path(__file__).parent / "prompts" / "review_v1.md"
 _GENERATE_PROMPT_PATH = Path(__file__).parent / "prompts" / "generate_v1.md"
+_PROMOTE_PROMPT_PATH = Path(__file__).parent / "prompts" / "promote_v1.md"
+_ARCHIVE_PROMPT_PATH = Path(__file__).parent / "prompts" / "archive_v1.md"
+_MINE_PROMPT_PATH = Path(__file__).parent / "prompts" / "mine_v1.md"
 
 
 def _template(path: Path) -> str:
@@ -443,5 +452,259 @@ def assemble_generate_brief(
         _failure_patterns_section(failure_patterns),
         "## Trials already spent, by family, in this market/timeframe",
         _family_trials_section(family_trial_counts),
+    ]
+    return "\n\n".join(sections)
+
+
+# -- the Promotion Brief (A4, Stage 8) ----------------------------------------
+#
+# Unlike A2 and A3, A4 is a JUDGE, not a producer of anything that feeds a
+# future spec — it emits a recommendation a human confirms or rejects, full
+# stop. So the redaction the rest of this module enforces (App-Flow §4.1's
+# "A2 never receives evaluate.py") does not apply the same way here: A4 may
+# see the honest score and the full metric set behind it, because nothing it
+# writes can leak back into the search as a spec-shaping signal. What still
+# never appears: the acceptance bar's own numeric thresholds and the scoring
+# FORMULA — A4 judges evidence already scored, it does not need to know how
+# scoring works to do that.
+
+
+def promote_prompt_version() -> str:
+    """`implement_prompt_version`'s A4 counterpart — same derivation."""
+    return f"promote-v1-{content_hash(_template(_PROMOTE_PROMPT_PATH))[:12]}"
+
+
+def _winning_evaluation_section(evaluation: Row) -> str:
+    fields = {
+        "honest_score": evaluation.get("honest_score"),
+        "sharpe": evaluation.get("sharpe"),
+        "sortino": evaluation.get("sortino"),
+        "calmar": evaluation.get("calmar"),
+        "cagr": evaluation.get("cagr"),
+        "max_drawdown": evaluation.get("max_drawdown"),
+        "profit_factor": evaluation.get("profit_factor"),
+        "win_rate": evaluation.get("win_rate"),
+        "trade_count": evaluation.get("trade_count"),
+        "deflated_sharpe": evaluation.get("deflated_sharpe"),
+        "pbo": evaluation.get("pbo"),
+        "wf_efficiency": evaluation.get("wf_efficiency"),
+        "n_trials_used": evaluation.get("n_trials_used"),
+        "cost_breakeven_multiplier": evaluation.get("cost_breakeven_multiplier"),
+    }
+    return json.dumps(fields, indent=2, sort_keys=True, default=str)
+
+
+def _full_iteration_history_section(experiments: list[Row]) -> str:
+    """Every attempt, including bar-failing ones — App-Flow §7's *"every
+    iteration and what changed ... including all the bar-FAILING attempts."*
+    Unlike `_iteration_history_section` (A3's narrower below-the-bar view),
+    this is the complete record a judge weighing overfitting risk needs."""
+    if not experiments:
+        return "(no prior experiments)"
+    rows = [
+        {
+            "iteration": experiment.get("iteration"),
+            "status": experiment.get("status"),
+            "outcome": experiment.get("outcome"),
+            "failure_reason": experiment.get("failure_reason"),
+        }
+        for experiment in experiments
+    ]
+    return json.dumps(rows, indent=2, sort_keys=True, default=str)
+
+
+def _capacity_evidence_section(diagnostic_checks: list[Row]) -> str:
+    """The market-specific capacity/liquidity gate's own verdict (e.g.
+    `equities_capacity`, `eval/gates/equities.py`) — read, never recomputed
+    here (module docstring: A4 judges evidence, it does not re-derive it)."""
+    capacity_checks = [
+        {
+            "test_name": check.get("test_name"),
+            "result": check.get("result"),
+            "value": check.get("value"),
+            "threshold": check.get("threshold"),
+            "detail": check.get("detail"),
+        }
+        for check in diagnostic_checks
+        if "capacity" in (check.get("test_name") or "") or "survivorship" in (check.get("test_name") or "")
+    ]
+    if not capacity_checks:
+        return "(no capacity/liquidity checks recorded for this evaluation)"
+    return json.dumps(capacity_checks, indent=2, sort_keys=True, default=str)
+
+
+def _overfitting_signal_section(*, iteration_count: int, n_trials_used: int | None) -> str:
+    fields = {"iteration_count": iteration_count, "n_trials_used": n_trials_used}
+    return json.dumps(fields, indent=2, sort_keys=True)
+
+
+def assemble_promote_brief(
+    *,
+    strategy: Row,
+    spec: StrategySpec,
+    experiment_history: list[Row],
+    winning_evaluation: Row,
+    diagnostic_checks: list[Row],
+    iteration_count: int,
+) -> str:
+    """Build the complete brief `PromotionSession.decide` receives (App-Flow
+    §7). Only ever called on a bar-clearing evaluation — `winning_evaluation`
+    here always has `bar_result = 'pass'`."""
+    sections = [
+        _template(_PROMOTE_PROMPT_PATH),
+        "## Strategy",
+        json.dumps(
+            {
+                "name": strategy.get("name"),
+                "family": strategy.get("family"),
+                "market": strategy.get("market"),
+                "timeframe": strategy.get("timeframe"),
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        "## Winning spec",
+        _spec_section(spec),
+        "## Full iteration history (including every bar-failing attempt)",
+        _full_iteration_history_section(experiment_history),
+        "## Winning evaluation — full metrics",
+        _winning_evaluation_section(winning_evaluation),
+        "## Overfitting signal",
+        _overfitting_signal_section(
+            iteration_count=iteration_count, n_trials_used=winning_evaluation.get("n_trials_used")
+        ),
+        "## Capacity/liquidity evidence",
+        _capacity_evidence_section(diagnostic_checks),
+    ]
+    return "\n\n".join(sections)
+
+
+# -- the Archive / Mining Briefs (A5, Stage 8) --------------------------------
+#
+# A5's output DOES reach a future A1 brief (`failure_patterns`,
+# `_failure_patterns_section` above) — a live reward-hacking channel the way
+# A2/A1's own briefs are, so A5 gets the same asymmetric treatment as A3
+# (module-level note on `assemble_review_brief`): raw `bar_failed_on` plus
+# diagnostic values, never the scoring formula or the bar's own thresholds.
+
+
+def archive_prompt_version() -> str:
+    """`implement_prompt_version`'s A5 (per-strategy) counterpart — same derivation."""
+    return f"archive-v1-{content_hash(_template(_ARCHIVE_PROMPT_PATH))[:12]}"
+
+
+def mine_prompt_version() -> str:
+    """`implement_prompt_version`'s A5 (cross-experiment) counterpart — same derivation."""
+    return f"mine-v1-{content_hash(_template(_MINE_PROMPT_PATH))[:12]}"
+
+
+def _evaluations_section(evaluations: list[Row]) -> str:
+    if not evaluations:
+        return "(no evaluations recorded)"
+    rows = [
+        {
+            "phase": row.get("phase"),
+            "result": row.get("result"),
+            "bar_failed_on": row.get("bar_failed_on"),
+        }
+        for row in evaluations
+    ]
+    return json.dumps(rows, indent=2, sort_keys=True, default=str)
+
+
+def _plans_section(plans: list[Row]) -> str:
+    if not plans:
+        return "(no A3 research plans recorded — either the bar cleared immediately, or A3 has not run yet)"
+    rows = [
+        {"verdict": plan.get("verdict"), "diagnosis": plan.get("diagnosis"), "proposed_changes": plan.get("proposed_changes")}
+        for plan in plans
+    ]
+    return json.dumps(rows, indent=2, sort_keys=True, default=str)
+
+
+def _promotion_decision_section(promotion: Row | None) -> str:
+    if promotion is None:
+        return "(no A4 decision — this strategy never cleared the bar)"
+    fields = {
+        "decision": promotion.get("decision"),
+        "rationale": promotion.get("rationale"),
+        "overfitting_risk": promotion.get("overfitting_risk"),
+    }
+    return json.dumps(fields, indent=2, sort_keys=True, default=str)
+
+
+def assemble_archive_brief(
+    *,
+    strategy: Row,
+    spec: StrategySpec,
+    experiment_history: list[Row],
+    evaluations: list[Row],
+    plans: list[Row],
+    promotion: Row | None,
+) -> str:
+    """Build the complete brief `KnowledgeSession.archive` receives for the
+    `ARCHIVE` job (App-Flow §8.1) — the strategy's complete story, read once."""
+    sections = [
+        _template(_ARCHIVE_PROMPT_PATH),
+        "## Strategy",
+        json.dumps(
+            {
+                "name": strategy.get("name"),
+                "family": strategy.get("family"),
+                "market": strategy.get("market"),
+                "timeframe": strategy.get("timeframe"),
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        "## Final spec",
+        _spec_section(spec),
+        "## All iterations",
+        _full_iteration_history_section(experiment_history),
+        "## All evaluations",
+        _evaluations_section(evaluations),
+        "## A3 research plans, in order",
+        _plans_section(plans),
+        "## A4 promotion decision",
+        _promotion_decision_section(promotion),
+    ]
+    return "\n\n".join(sections)
+
+
+def _family_failure_groups_section(groups: dict[str, list[dict[str, Any]]]) -> str:
+    if not groups:
+        return "(no recently-closed experiments in this batch)"
+    return json.dumps(groups, indent=2, sort_keys=True, default=str)
+
+
+def _existing_entries_section(entries: list[Row]) -> str:
+    if not entries:
+        return "(no existing family/market/global entries on record)"
+    rows = [
+        {
+            "id": entry.get("id"),
+            "scope": entry.get("scope"),
+            "title": entry.get("title"),
+            "statement": entry.get("statement"),
+        }
+        for entry in entries
+    ]
+    return json.dumps(rows, indent=2, sort_keys=True, default=str)
+
+
+def assemble_mine_brief(
+    *,
+    family_failure_groups: dict[str, list[dict[str, Any]]],
+    existing_entries: list[Row],
+) -> str:
+    """Build the complete brief `KnowledgeSession.archive` receives for the
+    weekly `MINE_PATTERNS` job (App-Flow §8.2) — cross-experiment, no
+    strategy identity of its own."""
+    sections = [
+        _template(_MINE_PROMPT_PATH),
+        "## Recently-closed experiments, grouped by family",
+        _family_failure_groups_section(family_failure_groups),
+        "## Existing family/market/global knowledge entries (extend or supersede, don't duplicate)",
+        _existing_entries_section(existing_entries),
     ]
     return "\n\n".join(sections)

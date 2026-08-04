@@ -5,12 +5,15 @@ Implementation_Plan §8 — sharing one handler module (`implement.py`) since
 they differ only in which experiment they target and whether an LLM call is
 involved, not in the render -> check -> commit path both end at. Stage 6 adds
 `REVIEW` — A3, Implementation_Plan §9 — in its own module (`review.py`),
-since its job is a verdict plus a research plan, not code. Every other
-`job_type` in the schema's CHECK constraint (`aqrl/db/repositories/jobs.py`,
-`JOB_TYPES`) is a real future stage, not a stub: `get_handler` raises
-`NotImplementedHandler` for anything unregistered, which `failures.py`
-classifies deterministic — one clear failure, not a retry storm, and a job
-type nobody can service yet never silently succeeds.
+since its job is a verdict plus a research plan, not code. Stage 8 adds
+`PROMOTE` (A4, `promote.py`) and `ARCHIVE`/`MINE_PATTERNS` (A5,
+`archive.py`, one module for both jobs the same way `implement.py` serves
+two) — Implementation_Plan §11. Every other `job_type` in the schema's CHECK
+constraint (`aqrl/db/repositories/jobs.py`, `JOB_TYPES`) is a real future
+stage, not a stub: `get_handler` raises `NotImplementedHandler` for anything
+unregistered, which `failures.py` classifies deterministic — one clear
+failure, not a retry storm, and a job type nobody can service yet never
+silently succeeds.
 """
 from __future__ import annotations
 
@@ -19,9 +22,11 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ...db.repositories.base import Row
+from . import archive as _archive
 from . import evaluate as _evaluate
 from . import generate as _generate
 from . import implement as _implement
+from . import promote as _promote
 from . import review as _review
 from .base import HandlerResult, JobHandler, NotImplementedHandler
 
@@ -40,6 +45,9 @@ _HANDLERS: dict[str, _FunctionHandler] = {
     "FIX_CODE": _FunctionHandler(run=_implement.run, persist=_implement.persist),
     "REVIEW": _FunctionHandler(run=_review.run, persist=_review.persist),
     "GENERATE_SPEC": _FunctionHandler(run=_generate.run, persist=_generate.persist),
+    "PROMOTE": _FunctionHandler(run=_promote.run, persist=_promote.persist),
+    "ARCHIVE": _FunctionHandler(run=_archive.run_archive, persist=_archive.persist_archive),
+    "MINE_PATTERNS": _FunctionHandler(run=_archive.run_mine, persist=_archive.persist_mine),
 }
 
 

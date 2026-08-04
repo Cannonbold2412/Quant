@@ -40,7 +40,16 @@ STRATEGY_TRANSITIONS: dict[str, frozenset[str]] = {
     "iterating": frozenset({"coding", "quarantined"}),
     "plateaued": frozenset({"retired"}),
     "rejected": frozenset({"retired"}),
-    "pending_promotion": frozenset({"awaiting_human_review", "quarantined"}),
+    # `rejected` here is a deliberate deviation from Backend-Schema §14.1,
+    # which only draws that edge off the never-cleared-the-bar branch. A4
+    # (Stage 8) can reject a bar-clearing strategy on its own authority
+    # (App-Flow §7.3) with nowhere else for it to land — the same
+    # closest-available-bucket precedent Stages 3/5/6 already set for gaps
+    # this specific. `defer` deliberately leaves status untouched: PRD §9.2
+    # already stopped this strategy the instant it cleared the bar, so
+    # deferring reopens research via a fresh `research_goals` row
+    # (`handlers/promote.py`), not by resuming this strategy's own loop.
+    "pending_promotion": frozenset({"awaiting_human_review", "rejected", "quarantined"}),
     "awaiting_human_review": frozenset({"paper_trading", "rejected", "quarantined"}),
     "paper_trading": frozenset({"pending_live_review", "retired", "quarantined"}),
     "pending_live_review": frozenset({"live_small", "paper_trading", "retired", "quarantined"}),

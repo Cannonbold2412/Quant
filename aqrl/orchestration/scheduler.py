@@ -68,14 +68,17 @@ class TimeDrivenJob:
     payload: dict = field(default_factory=dict)
 
 
-#: TRD §4.2's cadence table, encoded — empty for now. Every one of its rows
-#: (collectors, the A1 nightly batch, A5's weekly mining, weekend sweeps)
-#: needs a producer that does not exist until Stage 5+. Declaring the
-#: mechanism now and leaving the schedule empty means Stage 5 registers a
-#: `TimeDrivenJob` rather than building the firing logic — and means Stage 4
-#: never enqueues a job type nothing can service (`NotImplementedHandler`
-#: would just fail it immediately, which is worse than not queuing at all).
-TIME_DRIVEN_SCHEDULE: list[TimeDrivenJob] = []
+#: TRD §4.2's cadence table, encoded. Most rows (collectors, weekend sweeps)
+#: still need a producer that does not exist until Stage 10+, so the schedule
+#: stays otherwise empty for the same reason it started empty at Stage 4:
+#: Stage 4 never enqueues a job type nothing can service
+#: (`NotImplementedHandler` would just fail it immediately, which is worse
+#: than not queuing at all). `MINE_PATTERNS` is Stage 8's first real entry —
+#: App-Flow §8.2's weekly cross-experiment pattern mining, now that
+#: `handlers/archive.py` exists to service it.
+TIME_DRIVEN_SCHEDULE: list[TimeDrivenJob] = [
+    TimeDrivenJob("mine_patterns", "MINE_PATTERNS", "weekly"),
+]
 
 
 @dataclass(frozen=True)

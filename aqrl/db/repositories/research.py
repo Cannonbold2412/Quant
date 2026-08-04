@@ -353,3 +353,26 @@ class ResearchQuestionRepository(Repository):
         linkage the schema doesn't have); see `context._open_questions_section`
         for the same note where it matters to the brief's reader."""
         return self.find(status="open", order_by="priority DESC, id", limit=limit)
+
+    def push(
+        self,
+        question: str,
+        *,
+        motivation: str | None = None,
+        origin_type: str,
+        origin_experiment_id: int | None = None,
+        origin_knowledge_id: int | None = None,
+        priority: int = 0,
+    ) -> int:
+        """A5's write path into the curiosity queue (TRD §12.4,
+        Backend-Schema §10). Always opens `status='open'` — the queue's own
+        default; whether a collector ever answers it is Stage 10's concern."""
+        return self.insert(
+            question=question,
+            motivation=motivation,
+            origin_type=origin_type,
+            origin_experiment_id=origin_experiment_id,
+            origin_knowledge_id=origin_knowledge_id,
+            priority=priority,
+            status="open",
+        )
