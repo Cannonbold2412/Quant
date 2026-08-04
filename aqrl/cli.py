@@ -1017,6 +1017,20 @@ def cmd_knowledge_rate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_knowledge_curiosity(args: argparse.Namespace) -> int:
+    """Stage 10's done-when, `repeat_failure_rate`'s counterpart: *"did
+    asking this question ever pay off?"* (TRD §12.4)."""
+    from .db.repositories import curiosity_payoff_rate
+
+    conn = connect()
+    result = curiosity_payoff_rate(conn, since=args.since)
+    print(f"total:     {result['total']}")
+    print(f"answered:  {result['answered']}")
+    print(f"paid off:  {result['paid_off']}")
+    print(f"rate:      {result['rate']:.3f}")
+    return 0
+
+
 # -- review (Stage 9 — Implementation_Plan §12) --------------------------------
 
 
@@ -1139,6 +1153,82 @@ def cmd_review_reject(args: argparse.Namespace) -> int:
     print(f"promotion {args.uid} rejected by {args.by}")
     print(f"  knowledge_entries {result['knowledge_entry_id']}")
     print(f"  research_questions {result['research_question_ids']}")
+    return 0
+
+
+# -- librarian (Stage 10 — Implementation_Plan §13) ----------------------------
+
+
+def cmd_librarian_collect(args: argparse.Namespace) -> int:
+    """Run one `COLLECT_PAPERS` pass directly, outside the job queue —
+    targeted at open `research_questions` if there are any, a broad sweep
+    otherwise (App-Flow §12)."""
+    from .orchestration.handlers import librarian as handler
+
+    conn = connect()
+    job = {"job_type": "COLLECT_PAPERS", "payload": {}}
+    outcome = handler.run_collect(conn, job)
+    with transaction(conn, immediate=True):
+        handler.persist_collect(conn, job, outcome)
+    relevant = sum(1 for r in outcome.records if r.relevance >= get_settings().librarian_relevance_threshold)
+    print(f"collected {len(outcome.records)} document(s), {relevant} relevant")
+    print(f"consulted {len(outcome.consulted_questions)} open research question(s)")
+    return 0
+
+
+def cmd_librarian_extract(args: argparse.Namespace) -> int:
+    """Run `EXTRACT_KNOWLEDGE` for one document directly, outside the job
+    queue. A document is read exactly once, ever (TRD §12.2) — re-running
+    this on an already-processed uid is a no-op."""
+    from .db.repositories import ExternalDocumentRepository
+    from .orchestration.handlers import librarian as handler
+
+    conn = connect()
+    document = ExternalDocumentRepository(conn).get_by_uid(args.uid)
+    if document is None:
+        print(f"no external_documents {args.uid}", file=sys.stderr)
+        return 1
+    job = {"job_type": "EXTRACT_KNOWLEDGE", "payload": {"document_id": document["id"]}}
+    outcome = handler.run_extract(conn, job)
+    with transaction(conn, immediate=True):
+        handler.persist_extract(conn, job, outcome)
+    if outcome.stale:
+        print(f"document {args.uid} already processed (status={document['extraction_status']!r})")
+        return 0
+    print(f"extracted {len(outcome.ideas)} idea(s) from {len(outcome.chunks)} chunk(s)")
+    return 0
+
+
+def cmd_librarian_documents(args: argparse.Namespace) -> int:
+    from .db.repositories import ExternalDocumentRepository
+
+    conn = connect()
+    repo = ExternalDocumentRepository(conn)
+    rows = repo.find(
+        order_by="id DESC", limit=args.limit, **({"extraction_status": args.status} if args.status else {})
+    )
+    print(_table(rows, ["uid", "source", "title", "extraction_status", "relevance_score", "chunk_count"]))
+    return 0
+
+
+def cmd_librarian_ideas(args: argparse.Namespace) -> int:
+    from .db.repositories import ExternalKnowledgeRepository
+
+    conn = connect()
+    rows = ExternalKnowledgeRepository(conn).find(order_by="novelty_score DESC, id DESC", limit=args.limit)
+    print(_table(rows, ["uid", "core_idea", "category", "novelty_score", "extraction_confidence"]))
+    return 0
+
+
+def cmd_librarian_questions(args: argparse.Namespace) -> int:
+    from .db.repositories import ResearchQuestionRepository
+
+    conn = connect()
+    repo = ResearchQuestionRepository(conn)
+    rows = repo.find(
+        order_by="priority DESC, id", limit=args.limit, **({"status": args.status} if args.status else {})
+    )
+    print(_table(rows, ["uid", "question", "status", "priority", "answer_knowledge_ids", "produced_spec_ids"]))
     return 0
 
 
@@ -1415,6 +1505,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = knowledge.add_parser("rate", help="repeat-failure rate — Implementation_Plan §11's done-when")
     p.add_argument("--since", help="ISO-8601 timestamp; only experiments created at or after this")
     p.set_defaults(func=cmd_knowledge_rate)
+    p = knowledge.add_parser("curiosity", help="curiosity payoff rate — Implementation_Plan §13's done-when")
+    p.add_argument("--since", help="ISO-8601 timestamp; only research_questions created at or after this")
+    p.set_defaults(func=cmd_knowledge_curiosity)
 
     review = subs.add_parser("review", help="the human gates (Stage 9)").add_subparsers(
         dest="cmd", required=True
@@ -1440,6 +1533,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="repeatable; at least one required (future_ideas is mandatory, TRD §12.1)",
     )
     p.set_defaults(func=cmd_review_reject)
+
+    librarian = subs.add_parser("librarian", help="the Librarian & curiosity engine (Stage 10)").add_subparsers(
+        dest="cmd", required=True
+    )
+    librarian.add_parser("collect", help="run one COLLECT_PAPERS pass now").set_defaults(
+        func=cmd_librarian_collect
+    )
+    p = librarian.add_parser("extract", help="run EXTRACT_KNOWLEDGE for one document now")
+    p.add_argument("uid", help="external_documents.uid")
+    p.set_defaults(func=cmd_librarian_extract)
+    p = librarian.add_parser("documents", help="list collected documents")
+    p.add_argument("--status", choices=["pending", "chunked", "done", "failed", "irrelevant"])
+    p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(func=cmd_librarian_documents)
+    p = librarian.add_parser("ideas", help="list extracted external_knowledge rows, most novel first")
+    p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(func=cmd_librarian_ideas)
+    p = librarian.add_parser("questions", help="the curiosity queue")
+    p.add_argument("--status", choices=["open", "searching", "answered", "abandoned"])
+    p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(func=cmd_librarian_questions)
 
     return parser
 

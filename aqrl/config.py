@@ -89,6 +89,39 @@ class Settings(BaseSettings):
         default=1, description="Lifetime vault opens per strategy family (TRD §15.2)."
     )
 
+    # -- Stage 10: The Librarian (Implementation_Plan §13) -----------------------
+    documents_root: Path = Field(
+        default=Path("documents"), description="Archived raw text of every collected external_documents row."
+    )
+    http_timeout_seconds: float = Field(default=15.0, description="Collector fetch timeout (librarian/fetch.py).")
+    http_user_agent: str = Field(
+        default="aqrl-librarian/1.0 (research collector; contact: research@local)",
+        description="User-Agent header every collector fetch sends.",
+    )
+    librarian_min_request_interval_seconds: float = Field(
+        default=3.0, description="Minimum gap between requests to the same host (UrllibFetcher)."
+    )
+    librarian_relevance_threshold: float = Field(
+        default=0.34, description="Below this term-overlap score, a document is stored 'irrelevant' and never extracted."
+    )
+    librarian_novelty_threshold: float = Field(
+        default=0.5, description="Above this embedding-distance novelty score, HIGH_NOVELTY_EXTRACTION fires (App-Flow §3.1)."
+    )
+    librarian_max_documents_per_run: int = Field(
+        default=20, description="Cap on documents a single COLLECT_PAPERS job archives."
+    )
+    librarian_max_chunks_per_document: int = Field(
+        default=12, description="Cap on Pass-1 chunk-extraction calls per document."
+    )
+    librarian_broad_terms: list[str] = Field(
+        default_factory=lambda: ["quantitative trading", "systematic strategy", "market anomaly"],
+        description="Broad-sweep search terms used when the curiosity queue has no open questions.",
+    )
+    librarian_feeds: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description="(source, feed_url) pairs FeedCollector polls — source in {'ssrn','blog','journal'}.",
+    )
+
     @classmethod
     def settings_customise_sources(
         cls,
@@ -106,7 +139,7 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    @field_validator("db_path", "data_root", "profiles_dir")
+    @field_validator("db_path", "data_root", "profiles_dir", "documents_root")
     @classmethod
     def _resolve_against_root(cls, value: Path) -> Path:
         return value if value.is_absolute() else (PROJECT_ROOT / value).resolve()

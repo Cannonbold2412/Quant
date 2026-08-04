@@ -22,7 +22,13 @@ from .knowledge import (
     KnowledgeEdgeRepository,
     KnowledgeEntryRepository,
     LabNotebookRepository,
+    curiosity_payoff_rate,
     repeat_failure_rate,
+)
+from .librarian import (
+    DocumentChunkRepository,
+    ExternalDocumentRepository,
+    ExternalKnowledgeRepository,
 )
 from .operators import (
     DuplicateSpecError,
@@ -60,11 +66,14 @@ __all__ = [
     "CorporateActionRepository",
     "CostModelRepository",
     "DeploymentRepository",
+    "DocumentChunkRepository",
     "DuplicateSpecError",
     "EmbeddingRepository",
     "EvaluationRepository",
     "EvaluationTestRepository",
     "ExperimentRepository",
+    "ExternalDocumentRepository",
+    "ExternalKnowledgeRepository",
     "IndexMembershipRepository",
     "JobRepository",
     "KnowledgeEdgeRepository",
@@ -88,6 +97,7 @@ __all__ = [
     "TimeframeProfileRepository",
     "UnknownJobType",
     "ValidationFlagRepository",
+    "curiosity_payoff_rate",
     "new_uid",
     "repeat_failure_rate",
     "utcnow_iso",

@@ -42,17 +42,22 @@ from typing import Any
 
 from ..db.repositories.base import Row
 from ..hashing import content_hash
+from ..librarian.chunking import Chunk
 from ..operators.registry import all_operators
 from ..operators.spec import StrategySpec
 
 __all__ = [
     "archive_prompt_version",
     "assemble_archive_brief",
+    "assemble_chunk_brief",
     "assemble_generate_brief",
     "assemble_implement_brief",
     "assemble_mine_brief",
     "assemble_promote_brief",
     "assemble_review_brief",
+    "assemble_synthesis_brief",
+    "extract_chunk_prompt_version",
+    "extract_synthesis_prompt_version",
     "generate_prompt_version",
     "implement_prompt_version",
     "mine_prompt_version",
@@ -67,6 +72,8 @@ _GENERATE_PROMPT_PATH = Path(__file__).parent / "prompts" / "generate_v1.md"
 _PROMOTE_PROMPT_PATH = Path(__file__).parent / "prompts" / "promote_v1.md"
 _ARCHIVE_PROMPT_PATH = Path(__file__).parent / "prompts" / "archive_v1.md"
 _MINE_PROMPT_PATH = Path(__file__).parent / "prompts" / "mine_v1.md"
+_EXTRACT_CHUNK_PROMPT_PATH = Path(__file__).parent / "prompts" / "extract_chunk_v1.md"
+_EXTRACT_SYNTHESIS_PROMPT_PATH = Path(__file__).parent / "prompts" / "extract_synthesis_v1.md"
 
 
 def _template(path: Path) -> str:
@@ -735,5 +742,80 @@ def assemble_mine_brief(
         _family_failure_groups_section(family_failure_groups),
         "## Existing family/market/global knowledge entries (extend or supersede, don't duplicate)",
         _existing_entries_section(existing_entries),
+    ]
+    return "\n\n".join(sections)
+
+
+# -- the Librarian's Chunk / Synthesis Briefs (Stage 10) ----------------------
+#
+# TRD §12.2: a document is read exactly once, ever — so unlike every brief
+# above, neither of these is ever assembled twice for the same input. No
+# redaction concerns apply either way: the Librarian never sees `evaluate.py`,
+# scoring internals, or anything else App-Flow §4.1's rule protects, because
+# it operates entirely outside the five-agent loop (PRD §6.4) and reads only
+# externally-sourced text.
+
+
+def extract_chunk_prompt_version() -> str:
+    """`implement_prompt_version`'s Librarian (pass 1) counterpart — same derivation."""
+    return f"extract-chunk-v1-{content_hash(_template(_EXTRACT_CHUNK_PROMPT_PATH))[:12]}"
+
+
+def extract_synthesis_prompt_version() -> str:
+    """`implement_prompt_version`'s Librarian (pass 2) counterpart — same derivation."""
+    return f"extract-synthesis-v1-{content_hash(_template(_EXTRACT_SYNTHESIS_PROMPT_PATH))[:12]}"
+
+
+def _document_identity_section(document: Row) -> str:
+    fields = {
+        "source": document.get("source"),
+        "title": document.get("title"),
+        "authors": document.get("authors"),
+        "published_at": document.get("published_at"),
+        "url": document.get("url"),
+    }
+    return json.dumps(fields, indent=2, sort_keys=True, default=str)
+
+
+def assemble_chunk_brief(*, document: Row, chunk: Chunk) -> str:
+    """Build the complete brief `LibrarianSession.extract_chunk` receives —
+    pass 1, one call per chunk. Only this one chunk's text is included:
+    pass 1 deliberately cannot see the rest of the document (module
+    docstring, TRD §12.2's "per chunk: what claim/method is here?")."""
+    sections = [
+        _template(_EXTRACT_CHUNK_PROMPT_PATH),
+        "## Document",
+        _document_identity_section(document),
+        "## This chunk",
+        json.dumps(
+            {"index": chunk.index, "section_title": chunk.section_title}, indent=2, sort_keys=True, default=str
+        ),
+        "## Chunk text",
+        chunk.text,
+    ]
+    return "\n\n".join(sections)
+
+
+def _chunks_with_claims_section(chunks: list[Chunk], claims_by_chunk: list[list[str]]) -> str:
+    if not chunks:
+        return "(no chunks — the document was empty or unreadable)"
+    rows = [
+        {"index": chunk.index, "section_title": chunk.section_title, "claims": claims}
+        for chunk, claims in zip(chunks, claims_by_chunk, strict=True)
+    ]
+    return json.dumps(rows, indent=2, sort_keys=True, default=str)
+
+
+def assemble_synthesis_brief(*, document: Row, chunks: list[Chunk], claims_by_chunk: list[list[str]]) -> str:
+    """Build the complete brief `LibrarianSession.synthesize` receives —
+    pass 2, one call per document, every chunk's pass-1 output included so
+    synthesis can draw connections across chunks pass 1 could not see
+    (TRD §12.2)."""
+    sections = [
+        _template(_EXTRACT_SYNTHESIS_PROMPT_PATH),
+        "## Document",
+        _document_identity_section(document),
+        "## Chunks, each with its pass-1 extraction",
+        _chunks_with_claims_section(chunks, claims_by_chunk),
     ]
     return "\n\n".join(sections)

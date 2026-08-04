@@ -21,3 +21,8 @@ __pycache__/
 /data/
 nanoaqrl/*.db
 nanoaqrl/results.tsv.bak
+
+# The Librarian's archived raw text (Stage 10) — reproduced by re-collecting,
+# never source. Anchored for the same reason `/data/` is: an unanchored
+# `documents/` would match a directory of that name at any depth.
+/documents/

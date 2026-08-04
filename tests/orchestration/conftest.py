@@ -28,12 +28,16 @@ ASSET_CLASS = "cash_equity"
 def settings(tmp_path: Path) -> Settings:
     """Overrides the root fixture to add `strategy_repo_path` — Stage 5's
     `IMPLEMENT`/`FIX_CODE` handler tests need their own scratch git repo, and
-    every other test in this suite ignores the field entirely."""
+    every other test in this suite ignores the field entirely. `documents_root`
+    is Stage 10's own scratch dir — without it, `handlers/librarian.py`'s
+    default (`documents/` under the repo root) would write real files into
+    the working tree during a test run."""
     return Settings(
         db_path=tmp_path / "test.db",
         data_root=tmp_path / "data",
         profiles_dir=PROJECT_ROOT / "profiles",
         strategy_repo_path=tmp_path / "strategy_repo",
+        documents_root=tmp_path / "documents",
         log_level="WARNING",
     )
 
@@ -49,6 +53,7 @@ def _env_settings(settings, monkeypatch):
     monkeypatch.setenv("AQRL_DB_PATH", str(settings.db_path))
     monkeypatch.setenv("AQRL_DATA_ROOT", str(settings.data_root))
     monkeypatch.setenv("AQRL_STRATEGY_REPO_PATH", str(settings.strategy_repo_path))
+    monkeypatch.setenv("AQRL_DOCUMENTS_ROOT", str(settings.documents_root))
     monkeypatch.setenv("AQRL_LOG_LEVEL", "WARNING")
     reset_settings_cache()
     yield

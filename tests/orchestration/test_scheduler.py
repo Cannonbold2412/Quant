@@ -97,14 +97,17 @@ def test_fire_due_time_jobs_with_empty_schedule_is_a_noop(conn):
 
 
 def test_real_schedule_fires_weekly_mine_patterns(conn):
-    """Stage 8's first real `TIME_DRIVEN_SCHEDULE` entry (App-Flow §8.2) —
-    exercised against the actual module-level schedule, not a fixture copy,
-    so a future edit to it is caught here."""
+    """Stage 8's first real `TIME_DRIVEN_SCHEDULE` entry (App-Flow §8.2),
+    plus Stage 10's `collect_papers`/`collect_market_data` — exercised
+    against the actual module-level schedule, not a fixture copy, so a
+    future edit to it is caught here."""
     fired = fire_due_time_jobs(conn, TIME_DRIVEN_SCHEDULE, now=datetime(2026, 8, 3, tzinfo=UTC))
     assert JobRepository(conn).count(job_type="MINE_PATTERNS") == 1
-    assert len(fired) == 1
+    assert len(fired) == len(TIME_DRIVEN_SCHEDULE)
 
-    # Same week, different day: dedupes (`_period_key`'s "weekly" cadence).
+    # Same week, different day: the weekly entry dedupes (`_period_key`'s
+    # "weekly" cadence); the hourly/daily collector entries fire again for
+    # their own shorter periods.
     fire_due_time_jobs(conn, TIME_DRIVEN_SCHEDULE, now=datetime(2026, 8, 4, tzinfo=UTC))
     assert JobRepository(conn).count(job_type="MINE_PATTERNS") == 1
 
@@ -114,15 +117,16 @@ def test_real_schedule_fires_weekly_mine_patterns(conn):
 
 def test_tick_expires_leases_and_reports_the_orphan(conn, dispatcher, strategy_id):
     jobs = JobRepository(conn)
-    job_id = jobs.enqueue("COLLECT_PAPERS", strategy_id=strategy_id)
+    job_id = jobs.enqueue("COLLECT_GITHUB", strategy_id=strategy_id)
     with transaction(conn, immediate=True):
         jobs.claim("some-dead-worker", lease_seconds=1)
 
     # `schedule=[]`: isolates this test from `TIME_DRIVEN_SCHEDULE`'s real
-    # weekly `MINE_PATTERNS` entry (Stage 8) — this tick's reclaimed
-    # `COLLECT_PAPERS` job would otherwise be dispatched alongside a real
-    # `MINE_PATTERNS` job neither this test nor its fixtures are set up to
-    # service (no `KnowledgeSession` installed process-wide).
+    # entries (Stage 8's weekly `MINE_PATTERNS`, Stage 10's hourly/daily
+    # collectors) — this tick's reclaimed `COLLECT_GITHUB` job would
+    # otherwise be dispatched alongside real jobs neither this test nor its
+    # fixtures are set up to service (no `KnowledgeSession`/`LibrarianSession`
+    # installed process-wide).
     report = tick(conn, dispatcher, schedule=[], now=datetime(2999, 1, 1, tzinfo=UTC))
     assert job_id in report.expired_leases
 
@@ -138,7 +142,7 @@ def test_tick_with_nothing_queued_reports_queue_empty(conn, dispatcher):
 
 
 def test_tick_dispatches_and_reaps_a_fast_failing_job(conn, dispatcher, strategy_id):
-    job_id = JobRepository(conn).enqueue("COLLECT_PAPERS", strategy_id=strategy_id)
+    job_id = JobRepository(conn).enqueue("COLLECT_GITHUB", strategy_id=strategy_id)
     report = tick(conn, dispatcher, schedule=[])
     assert report.dispatched == [job_id]
 

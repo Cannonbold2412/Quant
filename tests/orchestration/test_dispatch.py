@@ -1,12 +1,13 @@
 """`Dispatcher` — spawning, reaping, concurrency and time-budget enforcement.
 
-Uses real `COLLECT_PAPERS` jobs (a valid `job_type` with no registered
-handler — still true post-Stage 8; that's Stage 10's collector work) to
-exercise spawn/reap against genuine subprocesses without paying for a real
-evaluation run — the worker fails fast with `NotImplementedHandler`, which is
-exactly the "job type nobody can service" path `handlers/__init__.py`
-documents. `enforce_time_budgets` is tested against a fake `Popen` double
-instead, since a real overrun would mean a real multi-minute sleep.
+Uses real `COLLECT_GITHUB` jobs (a valid `job_type` with no registered
+handler — Stage 10 implemented arXiv/RSS collection but deliberately left
+GitHub out, Implementation_Plan §13) to exercise spawn/reap against genuine
+subprocesses without paying for a real evaluation run — the worker fails
+fast with `NotImplementedHandler`, which is exactly the "job type nobody
+can service" path `handlers/__init__.py` documents. `enforce_time_budgets`
+is tested against a fake `Popen` double instead, since a real overrun would
+mean a real multi-minute sleep.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ def strategy_id(conn) -> int:
 def test_dispatch_pending_respects_concurrency_cap(conn, strategy_id):
     jobs = JobRepository(conn)
     for _ in range(5):
-        jobs.enqueue("COLLECT_PAPERS", strategy_id=strategy_id)
+        jobs.enqueue("COLLECT_GITHUB", strategy_id=strategy_id)
 
     dispatcher = Dispatcher(conn, worker_id="test-scheduler", max_concurrent=2)
     dispatched = dispatcher.dispatch_pending()
@@ -43,7 +44,7 @@ def test_dispatch_pending_respects_concurrency_cap(conn, strategy_id):
 
 def test_reap_records_notimplementedhandler_as_a_deterministic_failure(conn, strategy_id):
     jobs = JobRepository(conn)
-    job_id = jobs.enqueue("COLLECT_PAPERS", strategy_id=strategy_id)
+    job_id = jobs.enqueue("COLLECT_GITHUB", strategy_id=strategy_id)
 
     dispatcher = Dispatcher(conn, worker_id="test-scheduler", max_concurrent=1)
     dispatched = dispatcher.dispatch_pending()
@@ -62,7 +63,7 @@ def test_reap_records_notimplementedhandler_as_a_deterministic_failure(conn, str
 
 def test_dispatch_pending_stops_when_the_global_budget_is_exhausted(conn, strategy_id):
     jobs = JobRepository(conn)
-    jobs.enqueue("COLLECT_PAPERS", strategy_id=strategy_id)
+    jobs.enqueue("COLLECT_GITHUB", strategy_id=strategy_id)
     BudgetRepository(conn).upsert("global", "experiments", "day", 0)
 
     dispatcher = Dispatcher(conn, worker_id="test-scheduler", max_concurrent=4)

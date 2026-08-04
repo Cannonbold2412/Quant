@@ -13,7 +13,13 @@ from typing import Any
 
 from .base import Repository, Row, utcnow_iso
 
-__all__ = ["KnowledgeEdgeRepository", "KnowledgeEntryRepository", "LabNotebookRepository", "repeat_failure_rate"]
+__all__ = [
+    "KnowledgeEdgeRepository",
+    "KnowledgeEntryRepository",
+    "LabNotebookRepository",
+    "curiosity_payoff_rate",
+    "repeat_failure_rate",
+]
 
 
 class KnowledgeEntryRepository(Repository):
@@ -237,3 +243,36 @@ def repeat_failure_rate(conn, *, since: str | None = None) -> dict[str, Any]:
 
     rate = repeats / total if total else 0.0
     return {"repeats": repeats, "total": total, "rate": rate}
+
+
+def curiosity_payoff_rate(conn, *, since: str | None = None) -> dict[str, Any]:
+    """Stage 10's done-when metric, the counterpart to `repeat_failure_rate`
+    above: *"did asking this question ever pay off?"* (TRD §12.4).
+
+    A `research_questions` row counts as answered once a collector's find
+    reaches `EXTRACT_KNOWLEDGE` (`ResearchQuestionRepository.record_answer`)
+    and as *paid off* once one of its answers is cited in a spec A1
+    proposes (`record_produced_spec`, `handlers/generate.py`). Scoped to
+    every row ever pushed, not just `open` ones, since a question's
+    lifecycle (`open` -> `searching` -> `answered`) has already moved past
+    `open` by the time it could possibly have paid off.
+    """
+    sql = "SELECT status, produced_spec_ids FROM research_questions"
+    params: list[Any] = []
+    if since is not None:
+        sql += " WHERE created_at >= ?"
+        params.append(since)
+    rows = conn.execute(sql, params).fetchall()
+
+    total = len(rows)
+    answered = 0
+    paid_off = 0
+    for row in rows:
+        if row["status"] in ("answered",):
+            answered += 1
+        raw = row["produced_spec_ids"]
+        if raw and raw not in ("[]", "null"):
+            paid_off += 1
+
+    rate = paid_off / total if total else 0.0
+    return {"total": total, "answered": answered, "paid_off": paid_off, "rate": rate}

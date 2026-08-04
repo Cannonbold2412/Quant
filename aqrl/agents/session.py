@@ -45,6 +45,8 @@ __all__ = [
     "AgentResponse",
     "AgentSession",
     "AnthropicSession",
+    "ChunkExtraction",
+    "ChunkResponse",
     "HypothesisResponse",
     "HypothesisSession",
     "KnowledgeEdgeDraft",
@@ -52,8 +54,10 @@ __all__ = [
     "KnowledgeResponse",
     "KnowledgeSession",
     "LabNotebookDraft",
+    "LibrarianSession",
     "PromotionResponse",
     "PromotionSession",
+    "ProposedExternalKnowledge",
     "ProposedHypothesis",
     "ProposedKnowledge",
     "ProposedPlan",
@@ -61,6 +65,7 @@ __all__ = [
     "ProposedSpec",
     "ReplayHypothesisSession",
     "ReplayKnowledgeSession",
+    "ReplayLibrarianSession",
     "ReplayPromotionSession",
     "ReplayReviewSession",
     "ReplaySession",
@@ -69,9 +74,11 @@ __all__ = [
     "ReviewSession",
     "StubHypothesisSession",
     "StubKnowledgeSession",
+    "StubLibrarianSession",
     "StubPromotionSession",
     "StubReviewSession",
     "StubSession",
+    "SynthesisResponse",
 ]
 
 #: Backend-Schema §14.5's *research-finding* half of `experiments.failure_reason`
@@ -327,6 +334,58 @@ class ProposedKnowledge(BaseModel):
     questions: list[ResearchQuestionDraft] = Field(default_factory=list)
 
 
+class ChunkExtraction(BaseModel):
+    """Pass 1's one output shape — what claim or method is in *this chunk
+    alone*, before any cross-chunk synthesis (TRD §12.2). Stored verbatim
+    into `document_chunks.chunk_extraction`. Never mixed with pass 2's
+    `evidence_tier`/`extraction_confidence` — this is raw reading, not yet
+    an idea."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claims: list[str] = Field(
+        default_factory=list, description="Candidate claims or methods found in this chunk, one per list item."
+    )
+
+
+class ProposedExternalKnowledge(BaseModel):
+    """One `external_knowledge` row — pass 2's synthesis output, one per
+    DISTINCT idea, never one per document (Backend-Schema §10). Mirrors the
+    table field-for-field, with two deliberate omissions: no `evidence_tier`
+    (the repository hardcodes `'external_claim'`, TRD §12.3 — a model-
+    supplied value could never be trusted anyway) and no `document_id`/
+    `extracted_by`/`extraction_prompt_version` (handler-assigned, not the
+    model's to name). `source_chunk_indices` are 0-based positions into
+    *this document's* chunk list, converted to real `document_chunks.id`
+    values by `persist()` — the model never sees database ids."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_chunk_indices: list[int] = Field(min_length=1)
+    layer: Literal["research", "market", "software", "infrastructure"] | None = None
+    core_idea: str
+    category: str | None = None
+    applicable_markets: list[str] = Field(default_factory=list)
+    applicable_timeframes: list[str] = Field(default_factory=list)
+    strengths: str | None = None
+    weaknesses: str | None = None
+    implementation_difficulty: Literal["low", "medium", "high"] | None = None
+    required_operators: list[str] = Field(default_factory=list)
+    proposed_experiments: list[dict[str, Any]] = Field(default_factory=list)
+    # The Librarian's confidence that it read the source correctly — NEVER a
+    # claim the idea is true (TRD §12.3, Backend-Schema §10).
+    extraction_confidence: float | None = None
+
+
+class SynthesisOutput(BaseModel):
+    """Pass 2's complete response — a FEW distinct ideas, never one blob
+    per document (TRD §12.2: "a 40-page paper usually yields 2-3")."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ideas: list[ProposedExternalKnowledge] = Field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class AgentResponse:
     """What a session call returns — everything a caller needs to persist."""
@@ -377,6 +436,28 @@ class KnowledgeResponse:
     raw_output: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ChunkResponse:
+    """What a pass-1 call returns — the Librarian counterpart to
+    `AgentResponse`, one per chunk."""
+
+    extraction: ChunkExtraction
+    prompt_version: str
+    tokens_spent: int
+    raw_output: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SynthesisResponse:
+    """What a pass-2 call returns — one per document, carrying every idea
+    synthesized from it."""
+
+    ideas: list[ProposedExternalKnowledge]
+    prompt_version: str
+    tokens_spent: int
+    raw_output: dict[str, Any]
+
+
 class AgentSession(Protocol):
     def propose_spec(self, brief: str, *, prompt_version: str) -> AgentResponse:
         """Turn one complete brief into one `ProposedSpec`. Stateless."""
@@ -404,6 +485,17 @@ class PromotionSession(Protocol):
 class KnowledgeSession(Protocol):
     def archive(self, brief: str, *, prompt_version: str) -> KnowledgeResponse:
         """Turn one complete Archive/Mining Brief into one `ProposedKnowledge`. Stateless."""
+        ...
+
+
+class LibrarianSession(Protocol):
+    def extract_chunk(self, brief: str, *, prompt_version: str) -> ChunkResponse:
+        """Pass 1: turn one Chunk Brief into one `ChunkExtraction`. Stateless."""
+        ...
+
+    def synthesize(self, brief: str, *, prompt_version: str) -> SynthesisResponse:
+        """Pass 2: turn one Synthesis Brief (every chunk's pass-1 output)
+        into a few distinct `ProposedExternalKnowledge` ideas. Stateless."""
         ...
 
 
@@ -605,6 +697,75 @@ class ReplayKnowledgeSession:
         return KnowledgeResponse(knowledge=knowledge, prompt_version=prompt_version, tokens_spent=0, raw_output=raw)
 
 
+class StubLibrarianSession:
+    """`StubSession`'s Librarian counterpart. Fixed (or brief-derived)
+    responses for both passes — no network, ever. One call to
+    `extract_chunk` per chunk, one call to `synthesize` per document; a
+    single fixed `ChunkExtraction`/`list[ProposedExternalKnowledge]` answers
+    every call unless a callable is supplied."""
+
+    def __init__(
+        self,
+        chunk_response: ChunkExtraction | Callable[[str], ChunkExtraction],
+        ideas: list[ProposedExternalKnowledge] | Callable[[str], list[ProposedExternalKnowledge]],
+    ) -> None:
+        self._chunk_response = chunk_response
+        self._ideas = ideas
+        self.chunk_calls: list[str] = []
+        self.synthesis_calls: list[str] = []
+
+    def extract_chunk(self, brief: str, *, prompt_version: str) -> ChunkResponse:
+        self.chunk_calls.append(brief)
+        extraction = self._chunk_response(brief) if callable(self._chunk_response) else self._chunk_response
+        return ChunkResponse(
+            extraction=extraction, prompt_version=prompt_version, tokens_spent=0,
+            raw_output=extraction.model_dump(mode="json"),
+        )
+
+    def synthesize(self, brief: str, *, prompt_version: str) -> SynthesisResponse:
+        self.synthesis_calls.append(brief)
+        ideas = self._ideas(brief) if callable(self._ideas) else self._ideas
+        return SynthesisResponse(
+            ideas=ideas, prompt_version=prompt_version, tokens_spent=0,
+            raw_output={"ideas": [idea.model_dump(mode="json") for idea in ideas]},
+        )
+
+
+class ReplayLibrarianSession:
+    """`ReplaySession`'s Librarian counterpart — separate replay queues for
+    the two passes, since one document drives several `extract_chunk` calls
+    followed by exactly one `synthesize` call, unlike every other agent's
+    one-call-per-job shape."""
+
+    def __init__(
+        self, *, chunk_fixtures: Sequence[dict[str, Any]] = (), synthesis_fixtures: Sequence[dict[str, Any]] = ()
+    ) -> None:
+        self._chunk_fixtures = list(chunk_fixtures)
+        self._chunk_index = 0
+        self._synthesis_fixtures = list(synthesis_fixtures)
+        self._synthesis_index = 0
+
+    def extract_chunk(self, brief: str, *, prompt_version: str) -> ChunkResponse:
+        if self._chunk_index >= len(self._chunk_fixtures):
+            raise RuntimeError(
+                f"ReplayLibrarianSession.extract_chunk exhausted after {self._chunk_index} call(s)"
+            )
+        raw = self._chunk_fixtures[self._chunk_index]
+        self._chunk_index += 1
+        extraction = ChunkExtraction(**raw)
+        return ChunkResponse(extraction=extraction, prompt_version=prompt_version, tokens_spent=0, raw_output=raw)
+
+    def synthesize(self, brief: str, *, prompt_version: str) -> SynthesisResponse:
+        if self._synthesis_index >= len(self._synthesis_fixtures):
+            raise RuntimeError(
+                f"ReplayLibrarianSession.synthesize exhausted after {self._synthesis_index} call(s)"
+            )
+        raw = self._synthesis_fixtures[self._synthesis_index]
+        self._synthesis_index += 1
+        ideas = [ProposedExternalKnowledge(**item) for item in raw.get("ideas", [])]
+        return SynthesisResponse(ideas=ideas, prompt_version=prompt_version, tokens_spent=0, raw_output=raw)
+
+
 class AnthropicSession:
     """The real wrapper — one stateless call per `propose_spec`/`review`/
     `generate` call (TRD §16).
@@ -681,4 +842,22 @@ class AnthropicSession:
             prompt_version=prompt_version,
             tokens_spent=tokens_spent,
             raw_output=knowledge.model_dump(mode="json"),
+        )
+
+    def extract_chunk(self, brief: str, *, prompt_version: str) -> ChunkResponse:
+        extraction, tokens_spent = self._parse(brief, output_format=ChunkExtraction)
+        return ChunkResponse(
+            extraction=extraction,
+            prompt_version=prompt_version,
+            tokens_spent=tokens_spent,
+            raw_output=extraction.model_dump(mode="json"),
+        )
+
+    def synthesize(self, brief: str, *, prompt_version: str) -> SynthesisResponse:
+        output, tokens_spent = self._parse(brief, output_format=SynthesisOutput)
+        return SynthesisResponse(
+            ideas=output.ideas,
+            prompt_version=prompt_version,
+            tokens_spent=tokens_spent,
+            raw_output=output.model_dump(mode="json"),
         )

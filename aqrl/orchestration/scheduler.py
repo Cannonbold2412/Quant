@@ -68,16 +68,19 @@ class TimeDrivenJob:
     payload: dict = field(default_factory=dict)
 
 
-#: TRD §4.2's cadence table, encoded. Most rows (collectors, weekend sweeps)
-#: still need a producer that does not exist until Stage 10+, so the schedule
-#: stays otherwise empty for the same reason it started empty at Stage 4:
-#: Stage 4 never enqueues a job type nothing can service
-#: (`NotImplementedHandler` would just fail it immediately, which is worse
-#: than not queuing at all). `MINE_PATTERNS` is Stage 8's first real entry —
-#: App-Flow §8.2's weekly cross-experiment pattern mining, now that
-#: `handlers/archive.py` exists to service it.
+#: TRD §4.2's cadence table, encoded. `MINE_PATTERNS` is Stage 8's entry —
+#: App-Flow §8.2's weekly cross-experiment pattern mining. `collect_papers`
+#: and `collect_market_data` are Stage 10's — App-Flow §12's collector
+#: cadence table (`arXiv/SSRN`/blogs hourly, market data daily
+#: post-close), now that `handlers/librarian.py` exists to service them.
+#: `COLLECT_GITHUB` has no handler yet and stays out of this list for the
+#: same reason every prior stage's still-unimplemented job types did: a
+#: schedule entry with nothing to service it just fails immediately
+#: (`NotImplementedHandler`), which is worse than not queuing at all.
 TIME_DRIVEN_SCHEDULE: list[TimeDrivenJob] = [
     TimeDrivenJob("mine_patterns", "MINE_PATTERNS", "weekly"),
+    TimeDrivenJob("collect_papers", "COLLECT_PAPERS", "hourly"),
+    TimeDrivenJob("collect_market_data", "COLLECT_MARKET_DATA", "daily"),
 ]
 
 

@@ -376,3 +376,55 @@ class ResearchQuestionRepository(Repository):
             priority=priority,
             status="open",
         )
+
+    def mark_searching(self, question_id: int, *, search_terms: list[str]) -> None:
+        """Stage 10's `COLLECT_PAPERS` consulted this question — App-Flow
+        §12's "targeted mode." Does not require the question stay `open`
+        first: a question already `searching` from a prior collector run
+        may be consulted again (another cadence, another source), and each
+        pass's terms overwrite the last rather than accumulate — the terms
+        that mattered are whatever produced the eventual answer, visible on
+        `record_answer`'s row, not the full history of guesses."""
+        self.update(question_id, status="searching", search_terms=search_terms)
+
+    def record_answer(self, question_id: int, knowledge_ids: list[int]) -> None:
+        """`EXTRACT_KNOWLEDGE` found something answering this question —
+        closes the curiosity loop's first half (App-Flow §12: collector
+        finds -> Librarian extracts). `answer_knowledge_ids` accumulates
+        rather than overwrites, since more than one document may eventually
+        answer the same question."""
+        question = self.get(question_id)
+        if question is None:
+            raise ValueError(f"no research_questions row {question_id}")
+        merged = sorted(set(question.get("answer_knowledge_ids") or []) | set(knowledge_ids))
+        self.update(question_id, status="answered", answer_knowledge_ids=merged, resolved_at=utcnow_iso())
+
+    def answered_by(self, external_knowledge_ids: list[int]) -> list[Row]:
+        """Every `answered` question whose `answer_knowledge_ids` overlaps
+        `external_knowledge_ids` — the read-only half of
+        `record_produced_spec`, exposed separately so a caller can look
+        this up *before* a `spec_id` exists yet (e.g. to set
+        `strategy_specs.source_question_id` at insert time)."""
+        if not external_knowledge_ids:
+            return []
+        cited = set(external_knowledge_ids)
+        return [
+            question
+            for question in self.find(status="answered")
+            if set(question.get("answer_knowledge_ids") or []) & cited
+        ]
+
+    def record_produced_spec(self, external_knowledge_ids: list[int], spec_id: int) -> list[int]:
+        """The loop-closure write (`produced_spec_ids`, TRD §12.4): *"did
+        asking this ever pay off?"* Any answered question whose
+        `answer_knowledge_ids` overlaps the ideas A1 actually cited gets
+        `spec_id` appended. Returns the ids of every question updated —
+        usually zero or one, but a spec drawing on ideas from two different
+        questions' answers updates both.
+        """
+        touched: list[int] = []
+        for question in self.answered_by(external_knowledge_ids):
+            produced = sorted(set(question.get("produced_spec_ids") or []) | {spec_id})
+            self.update(question["id"], produced_spec_ids=produced)
+            touched.append(question["id"])
+        return touched

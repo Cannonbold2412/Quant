@@ -241,17 +241,29 @@ def persist(conn: sqlite3.Connection, job: Row, outcome: GenerateOutcome) -> Han
 
     strategies = StrategyRepository(conn)
     specs = SpecRepository(conn)
+    questions = ResearchQuestionRepository(conn)
 
     strategy_id = strategies.get_or_create(
         hypothesis.name, hypothesis.family, hypothesis.market, hypothesis.timeframe
     )
+    # The curiosity loop's cycle back-edge (TRD §12.4, Backend-Schema §3's
+    # "source_question_id: if curiosity-driven"): a spec that cites an idea
+    # answering an open question names that question at insert time, even
+    # though — Stage 10's Librarian — is the only current writer of
+    # `answer_knowledge_ids`.
+    answering = questions.answered_by(hypothesis.source_external_knowledge_ids)
     spec_id = specs.insert_spec(
         outcome.spec,
         strategy_id,
         prompt_version=outcome.prompt_version,
         source_external_knowledge_ids=hypothesis.source_external_knowledge_ids,
         source_internal_knowledge_ids=hypothesis.source_internal_knowledge_ids,
+        source_question_id=answering[0]["id"] if answering else None,
     )
+    # Loop-closure tracking: did asking ever pay off? (TRD §12.4). Covers
+    # every matching question, not just the one named above — a spec may
+    # draw on ideas answering more than one question.
+    questions.record_produced_spec(hypothesis.source_external_knowledge_ids, spec_id)
 
     strategy = strategies.get(strategy_id)
     if strategy["status"] == "draft":

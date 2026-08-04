@@ -26,6 +26,7 @@ from . import archive as _archive
 from . import evaluate as _evaluate
 from . import generate as _generate
 from . import implement as _implement
+from . import librarian as _librarian
 from . import promote as _promote
 from . import review as _review
 from .base import HandlerResult, JobHandler, NotImplementedHandler
@@ -48,6 +49,11 @@ _HANDLERS: dict[str, _FunctionHandler] = {
     "PROMOTE": _FunctionHandler(run=_promote.run, persist=_promote.persist),
     "ARCHIVE": _FunctionHandler(run=_archive.run_archive, persist=_archive.persist_archive),
     "MINE_PATTERNS": _FunctionHandler(run=_archive.run_mine, persist=_archive.persist_mine),
+    "COLLECT_PAPERS": _FunctionHandler(run=_librarian.run_collect, persist=_librarian.persist_collect),
+    "EXTRACT_KNOWLEDGE": _FunctionHandler(run=_librarian.run_extract, persist=_librarian.persist_extract),
+    "COLLECT_MARKET_DATA": _FunctionHandler(
+        run=_librarian.run_market_stats, persist=_librarian.persist_market_stats
+    ),
 }
 
 

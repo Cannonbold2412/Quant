@@ -1,6 +1,6 @@
 # Implementation Plan — AQRL
 
-> **Status:** **Stages 0–9 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised, the Nervous System job queue/scheduler, A2 the Quant Engineer, A3 the Research Reviewer, A1 the Research Scientist, A4 the Promotion Committee, A5 the Knowledge Manager, the Human Gates). Stage 4a and Stages 10–13 not started.
+> **Status:** **Stages 0–10 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised, the Nervous System job queue/scheduler, A2 the Quant Engineer, A3 the Research Reviewer, A1 the Research Scientist, A4 the Promotion Committee, A5 the Knowledge Manager, the Human Gates, the Librarian & Curiosity Engine). Stage 4a and Stages 11–13 not started.
 > **Last updated:** 2026-08-05
 > **Companion docs:** `PRD.md` (why) · `TRD.md` (how) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences)
 
@@ -726,6 +726,91 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 
 **Done when:** a failure pattern automatically produces a targeted literature search whose results measurably influence a subsequent hypothesis, **and** a sample of extracted papers shows correctly-separated distinct ideas rather than one blob per document.
 
+> ✅ **Built.** `aqrl/librarian/` (collectors, chunker, relevance filter, fetch
+> layer) plus `aqrl/orchestration/handlers/librarian.py` (`COLLECT_PAPERS`,
+> `EXTRACT_KNOWLEDGE`, `COLLECT_MARKET_DATA`) and two new repositories
+> (`ExternalDocumentRepository`, `DocumentChunkRepository`,
+> `ExternalKnowledgeRepository` — `db/repositories/librarian.py`). **No
+> migration** — Stage 1 already created every table, job type, and event
+> this stage needed; the gap was code, not schema, the same situation
+> Stages 8–9 were in.
+>
+> **Collectors: arXiv + SSRN/blogs/journals. GitHub scoped out on purpose**
+> (`COLLECT_GITHUB` stays unregistered, and became the new "valid job type
+> nobody services yet" fixture in `test_dispatch.py`/`test_scheduler.py`,
+> replacing `COLLECT_PAPERS` now that it has a real handler — the exact
+> regression class Stage 8's own notes on `ARCHIVE` already predicted). One
+> `Collector` protocol serves both real sources: `ArxivCollector` (the Atom
+> API, full HTML text with an abstract fallback) and `FeedCollector`
+> (RSS/Atom, SSRN and blogs as the same code path with different config).
+> Zero new dependencies — `urllib.request` / `xml.etree.ElementTree` /
+> `html.parser` cover everything a `feedparser`/`httpx`/`beautifulsoup4`
+> would have, for work a few hundred stdlib lines already do.
+>
+> **The chunker is structural, not a token window** (`librarian/chunking.py`):
+> headings first (Markdown ATX, setext, numbered sections), a
+> paragraph-boundary fallback for anything oversized with no sub-headings —
+> proven never to cut a formula's own paragraph across a chunk boundary even
+> under an artificially tiny `max_chars`. Two-pass extraction (pass 1 per
+> chunk, pass 2 synthesizes across all of a document's chunks into a few
+> distinct ideas) mirrors `archive.py`'s `run`/`persist` split exactly, and
+> `novelty_score` (`agents/research_brief.py`) is `1 - max cosine` against
+> the existing knowledge base, reusing the embedding cache Stage 7 already
+> built rather than a second similarity path.
+>
+> **One real bug caught before merge.** `HIGH_NOVELTY_EXTRACTION` was
+> already wired to enqueue `GENERATE_SPEC` (Stage 4's event table), but
+> `GENERATE_SPEC.run()` has required a `goal_id` in its payload since Stage 7
+> — a requirement this event's payload never carried, because nothing had
+> ever actually fired it before Stage 10. First real fire would have failed
+> every novelty-push job. Fixed by targeting every **active** research goal
+> the idea's own `applicable_markets`/`applicable_timeframes` match (any
+> active goal if it named none), one job per match, none if none match —
+> proven with a real active goal and, separately, with none at all.
+>
+> **`COLLECT_MARKET_DATA` scoped down from the full spec, stated rather than
+> hidden.** No data vendor is configured — Stage 1 deliberately made ingest a
+> local-file operation — so this reads freshness/coverage per already-
+> ingested `(market, timeframe)` pair from `data_snapshots` and records it to
+> `audit_log`; it does not recompute regimes or realised volatility. That
+> needs a real vendor feed, which is Stage 11's daily post-close job to add.
+>
+> **Loop closure needed no schema or prompt change.** A1's
+> `ProposedHypothesis` already reported `source_external_knowledge_ids`
+> (Stage 7); `handlers/generate.py`'s `persist` now calls
+> `ResearchQuestionRepository.answered_by`/`record_produced_spec` right
+> after `insert_spec`, writing both `produced_spec_ids` and
+> `strategy_specs.source_question_id` — the "cycle back-edge" column
+> Stage 1's schema named but nothing had written until now.
+> `db.repositories.knowledge.curiosity_payoff_rate` operationalises this
+> stage's own done-when the same way `repeat_failure_rate` operationalised
+> Stage 8's, exposed via `aqrl knowledge curiosity`.
+>
+> Proven directly (61 new tests: pure chunker/relevance/collector coverage
+> in `tests/librarian/`, repository behaviour in
+> `tests/test_librarian_repositories.py`, handler behaviour — including the
+> relevance filter spending *zero* LLM calls on a below-threshold document,
+> and a multi-idea document yielding multiple `external_knowledge` rows with
+> `source_chunk_ids` resolving to the exact chunk — in
+> `tests/orchestration/test_librarian_handler.py`) and end to end through
+> the real job queue (`tests/orchestration/test_curiosity_loop.py`): a
+> pushed research question drives a targeted `COLLECT_PAPERS` search, the
+> Librarian's extraction answers it, that idea reaches a subsequent
+> `GENERATE_SPEC` call through the exact reader A1 uses, A1 cites it, and
+> `produced_spec_ids` plus `curiosity_payoff_rate` record the payoff —
+> Stage 10's actual done-when, not a proxy for it.
+>
+> **Known limits, stated rather than papered over.** `tests/orchestration/*`
+> still fail to *collect* on native Windows (`vcs.py` imports `fcntl`, a
+> pre-existing gap predating this stage, Stage 9's notes) — the new
+> `tests/librarian/` and `tests/test_librarian_repositories.py` suites are
+> pure and run anywhere; the orchestration suite (including this stage's
+> handler and curiosity-loop tests) needs a WSL/Linux run to close out, and
+> was verified there via a local-only `fcntl` stub, not committed. Document
+> depth is full text where a source publishes it (arXiv HTML, article
+> bodies) with an abstract/summary fallback — a paywalled or JS-rendered
+> source is read as whatever `urllib` alone can see, no headless browser.
+
 ---
 
 ## 14. Stage 11 — Paper Trading & Health Monitoring
@@ -891,3 +976,4 @@ Not in the v1 build:
 | 2026-07-30 | **Stage 5 built.** `aqrl/agents/` (render, sandbox, session, context) and `aqrl/orchestration/handlers/implement.py` — A2 translates a spec (hand-written for iteration 1, Claude-proposed for a plan-driven iteration or a `FIX_CODE` retry) into `strategies/<uid>/strategy.py` via a deterministic renderer, never freeform code, since `evaluate.py` compiles specs (TRD §6.1's no-forking rule extended to codegen). Static checks run in a scrubbed-env, resource-limited, timed-out subprocess reusing Stage 3's own P0 scanners; a passing spec commits to an idempotent, orphan-per-strategy git branch (`aqrl/vcs.py`) and enqueues `EVALUATE` unattended, exactly as Stage 5's done-when requires — proven both via direct handler calls and through a real claimed job in a real worker subprocess. A failing spec is a bounded `FIX_CODE` retry loop (default 3 attempts, counted from `code_versions`) ending in quarantine, not a failed job. No new migration: `code_versions` and `research_plans` already existed in Stage 1's schema, needing only new repositories (`CodeVersionRepository`, `ResearchPlanRepository`) and `ExperimentRepository.open_pending` for the `created → code_pending → code_ready → evaluating` chain Stage 4 defined but never drove. New optional dependency: `anthropic`, imported lazily so no test in the suite needs a network connection or an API key — `StubSession`/`ReplaySession` stand in throughout. **Review caught one real bug before merge:** `aqrl/vcs.py`'s shared working tree had no cross-process locking, so `Dispatcher`'s default `max_concurrent=4` (Stage 4) could run two strategies' `IMPLEMENT` jobs in parallel subprocesses racing `git checkout`/`init`/`commit` against the one shared repo — reproduced directly (four concurrent processes, three ended up crashed or missing their file entirely). Fixed with an exclusive `fcntl.flock` held across each public method's full git sequence, with a regression test exercising real concurrent subprocesses. |
 | 2026-08-04 | **Stage 8 built.** `aqrl/orchestration/handlers/promote.py` (A4) and `handlers/archive.py` (A5, serving both `ARCHIVE` and `MINE_PATTERNS`) close the two dead ends the loop had run into since Stage 6/7: a bar-clearing evaluation's `PROMOTE` job and a plateaued/rejected strategy's `ARCHIVE` job both previously hit `NotImplementedHandler`. New repositories (`PromotionRepository`, `KnowledgeEdgeRepository`, `LabNotebookRepository`, write paths on `KnowledgeEntryRepository`/`ResearchQuestionRepository`) and two new `Proposed*` session shapes (`ProposedPromotion`, `ProposedKnowledge`) follow every existing convention — no migration needed, since Stages 1/3 already created every table Stage 8 writes. A4's brief is the one deliberate exception to the system's usual redaction: it may see `honest_score` and full metrics, since A4 only ever emits a human-confirmed recommendation, never a spec-shaping signal; A5's brief keeps A3's asymmetric redaction instead, because A5's lessons **do** reach a future A1 brief. `states.py` gained `pending_promotion → rejected` (a deliberate, documented deviation from Backend-Schema §14.1, following the precedent Stages 3/5/6 already set for gaps this specific), and `scheduler.TIME_DRIVEN_SCHEDULE` got its first live entry (`MINE_PATTERNS`, weekly) — the mechanism Stage 4 built and deliberately left empty until there was a real producer. `db.repositories.knowledge.repeat_failure_rate` operationalises Implementation_Plan §11's done-when as a structured-field comparison (`knowledge_entries.evidence.failure_reasons`, populated by `handlers/archive.py`) rather than free-text matching, exposed via `aqrl knowledge rate`. Proven both directly (`tests/test_knowledge_repositories.py`, `test_promote_handler.py`, `test_archive_handler.py`) and end to end through the real job queue (`test_memory_loop.py`): a rejected experiment's lesson is visible through the exact reader a future A1 brief calls, and a second, later strategy failing the identical way is correctly counted as a preventable repeat. **One regression caught and fixed on the way:** populating `TIME_DRIVEN_SCHEDULE` for the first time broke three Stage 4/6 tests that had assumed it was permanently empty (two asserted `tick()` dispatched nothing; one used `ARCHIVE` as its example of "a job type nobody services yet," which stopped being true) — fixed by isolating the dispatch-mechanics tests with an explicit `schedule=[]` and swapping that fixture to `COLLECT_PAPERS`, still genuinely unimplemented. |
 | 2026-08-05 | **Stage 9 built.** `aqrl/gates.py` (`pending`/`evidence`/`approve`/`reject`) closes the loop's last dead end: A4's `promotions` row previously sat at `human_decision='pending'` forever with nothing reading it back. `approve` is the only code path in the system that merges `strategy/<uid>` into `deploy/paper`/`deploy/live` (`StrategyRepo.merge`, new in `vcs.py`), opens the vault (`VaultAccessRepository`, budget derived from `vault_access_log`'s own row count, no new counter table), and inserts a `deployments` row (`DeploymentRepository`, `LifecycleEventRepository` — both new, same migration as the existing `PromotionRepository`) — TRD §18's "no code path may bypass these gates," made true rather than merely stated. `aqrl review list/show/approve/reject` in `cli.py` is a thin shell over it. No migration: every column already existed. Scoped down from the full spec on purpose: vault access is gate-only (logs and decrements the family budget; does not load the vault snapshot or score against it — App-Flow §15's full flow needs a vault snapshot that does not exist yet), and a human rejection reaches A5's knowledge base by a direct, human-authored `knowledge_entries` write rather than re-running `ARCHIVE` (its `lab_notebooks` idempotency guard makes a second run for the same strategy a no-op by design, TRD §12.1). `agents/context.py`'s `assemble_promote_brief` was split to expose `promotion_evidence_sections()` publicly, so `aqrl review show` renders exactly the evidence A4 judged on with no second renderer to drift. Proven directly against a real migrated database (`tests/orchestration/test_human_gates.py`, `tests/test_vcs.py`'s new merge cases) — including a human rejection counted by Stage 8's `repeat_failure_rate` exactly like an A5-recorded one. **One real bug caught before merge:** the deferred `vcs` import (kept out of `gates.py`'s module scope so `pending`/`evidence`/`reject` stay usable on a platform without `fcntl`) was originally placed at the top of `approve`, ahead of its own validation guards — an empty note or an already-decided promotion failed on an unrelated import instead of its own clear error. Moved to sit right before its one use, verified by exercising every guard clause directly. |
+| 2026-08-05 | **Stage 10 built.** `aqrl/librarian/` (collectors, structural chunker, relevance filter, stdlib-only fetch layer) and `aqrl/orchestration/handlers/librarian.py` (`COLLECT_PAPERS`, `EXTRACT_KNOWLEDGE`, `COLLECT_MARKET_DATA`) close PRD §7.1's risk — the loop rediscovering itself — with the two inputs it named: external knowledge and curiosity. No migration: every table, job type, and event Stage 10 needed already existed since Stage 1. Collectors cover arXiv and SSRN/blogs/journals (one `Collector` protocol, `ArxivCollector` and `FeedCollector`); GitHub is deliberately out (`COLLECT_GITHUB` stays unregistered, and replaced `COLLECT_PAPERS` as the "job type nobody services yet" fixture in `test_dispatch.py`/`test_scheduler.py` — the exact regression class Stage 8's own notes on `ARCHIVE` predicted). Zero new dependencies. `novelty_score` (`agents/research_brief.py`) is `1 - max cosine` against the existing knowledge base, reusing Stage 7's embedding cache. Loop closure needed no schema or prompt change: `handlers/generate.py`'s `persist` now writes `research_questions.produced_spec_ids` and `strategy_specs.source_question_id` via two new `ResearchQuestionRepository` methods, and `curiosity_payoff_rate` operationalises this stage's done-when the way `repeat_failure_rate` did Stage 8's. **One real bug caught before merge:** `HIGH_NOVELTY_EXTRACTION` had been wired to fire `GENERATE_SPEC` since Stage 4 but never actually fired until this stage — and `GENERATE_SPEC.run()` has required a `goal_id` since Stage 7, which this event's payload never carried. Fixed by targeting every active goal the idea's own market/timeframe match, one job each, none if none match. Proven with 61 new tests (pure `tests/librarian/`, repository behaviour, handler behaviour including a zero-LLM-calls relevance-filter proof and multi-idea `source_chunk_ids` traceability) and end to end through the real job queue (`test_curiosity_loop.py`): a pushed question drives a targeted search, the Librarian's answer reaches a subsequent `GENERATE_SPEC` call through the exact reader A1 uses, and `produced_spec_ids`/`curiosity_payoff_rate` record the payoff. Known limit: `COLLECT_MARKET_DATA` is freshness/coverage only, no vendor configured (Stage 11's concern); `tests/orchestration/*` still need WSL/Linux to run on native Windows, a pre-existing gap. |

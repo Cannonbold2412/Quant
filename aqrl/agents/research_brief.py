@@ -32,7 +32,7 @@ from ..db.repositories.base import Row
 from ..db.repositories.embeddings import EmbeddingRepository
 from .embeddings import Embedder, embedding_model_name
 
-__all__ = ["top_k_relevant"]
+__all__ = ["novelty_score", "top_k_relevant"]
 
 KnowledgeTable = Literal["knowledge_entries", "external_knowledge"]
 
@@ -130,3 +130,49 @@ def top_k_relevant(
         decoded["_relevance_score"] = score
         results.append(decoded)
     return results
+
+
+def novelty_score(
+    conn,
+    embedder: Embedder,
+    text: str,
+    *,
+    candidate_limit: int = _CANDIDATE_LIMIT,
+) -> float:
+    """How much `text` differs from what the lab already knows (Backend-
+    Schema §10: `external_knowledge.novelty_score`, "above a threshold,
+    triggers a GENERATE_SPEC job immediately").
+
+    `1 - max(cosine similarity)` against the same two candidate pools
+    `top_k_relevant` already draws from (`external_knowledge` and
+    `knowledge_entries`) — reusing `_candidate_rows`/`_cosine`/
+    `EmbeddingRepository` rather than adding a second similarity code path.
+    An empty knowledge base (no candidates in either table) is maximally
+    novel by definition: `1.0`.
+    """
+    candidates = _candidate_rows(conn, "external_knowledge", candidate_limit) + _candidate_rows(
+        conn, "knowledge_entries", candidate_limit
+    )
+    if not candidates or not text.strip():
+        return 1.0
+
+    model = embedding_model_name(embedder)
+    repo = EmbeddingRepository(conn)
+    by_table: dict[KnowledgeTable, list[Row]] = {"external_knowledge": [], "knowledge_entries": []}
+    for row in candidates:
+        by_table["external_knowledge" if "core_idea" in row else "knowledge_entries"].append(row)
+
+    max_similarity = 0.0
+    query_vector = repo.embed_query(embedder, text)
+    for table, rows in by_table.items():
+        if not rows:
+            continue
+        with transaction(conn, immediate=True):
+            vectors = repo.ensure_embedded(embedder, model, table, [(int(r["id"]), _row_text(table, r)) for r in rows])
+        for row in rows:
+            vector = vectors.get(int(row["id"]))
+            if vector is None:
+                continue
+            max_similarity = max(max_similarity, _cosine(query_vector, vector))
+
+    return 1.0 - max_similarity
