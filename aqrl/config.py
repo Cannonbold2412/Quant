@@ -84,6 +84,11 @@ class Settings(BaseSettings):
         default=3, description="Consecutive job failures on one strategy before it is quarantined."
     )
 
+    # -- Stage 9: Human Gates (Implementation_Plan §12) --------------------------
+    vault_budget_per_family: int = Field(
+        default=1, description="Lifetime vault opens per strategy family (TRD §15.2)."
+    )
+
     @classmethod
     def settings_customise_sources(
         cls,

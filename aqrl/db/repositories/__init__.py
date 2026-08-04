@@ -30,7 +30,12 @@ from .operators import (
     SpecOperatorRepository,
     SpecRepository,
 )
-from .promotion import PromotionRepository
+from .promotion import (
+    DeploymentRepository,
+    LifecycleEventRepository,
+    PromotionRepository,
+    VaultAccessRepository,
+)
 from .registry import CostModelRepository, MarketProfileRepository, TimeframeProfileRepository
 from .research import (
     VERDICT_TO_STATUS,
@@ -54,6 +59,7 @@ __all__ = [
     "CodeVersionRepository",
     "CorporateActionRepository",
     "CostModelRepository",
+    "DeploymentRepository",
     "DuplicateSpecError",
     "EmbeddingRepository",
     "EvaluationRepository",

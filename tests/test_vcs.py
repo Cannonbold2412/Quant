@@ -78,6 +78,42 @@ def test_commit_file_survives_a_missing_working_tree_file(tmp_path):
     assert diff == ""
 
 
+def test_merge_produces_a_commit_reachable_from_the_target_branch(tmp_path):
+    repo = StrategyRepo(tmp_path)
+    repo.commit_file("strategy/a", "strategies/a/strategy.py", "a = 1\n", "a: iteration 1")
+    merge_commit = repo.merge("deploy/paper", "strategy/a", "promote a")
+    assert merge_commit
+    result = subprocess.run(
+        ["git", "show", "deploy/paper:strategies/a/strategy.py"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert result.returncode == 0
+    assert result.stdout == "a = 1\n"
+
+
+def test_merge_two_strategies_into_the_same_deploy_branch_without_conflict(tmp_path):
+    """TRD §5.3 — many strategies can merge into one `deploy/*` branch
+    because each lives at its own path (`strategies/<uid>/strategy.py`)."""
+    repo = StrategyRepo(tmp_path)
+    repo.commit_file("strategy/a", "strategies/a/strategy.py", "a = 1\n", "a: iteration 1")
+    repo.commit_file("strategy/b", "strategies/b/strategy.py", "b = 1\n", "b: iteration 1")
+    repo.merge("deploy/paper", "strategy/a", "promote a")
+    repo.merge("deploy/paper", "strategy/b", "promote b")
+
+    subprocess.run(["git", "checkout", "deploy/paper"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    tracked = sorted(
+        subprocess.run(["git", "ls-files"], cwd=tmp_path, capture_output=True, text=True).stdout.split()
+    )
+    assert tracked == ["strategies/a/strategy.py", "strategies/b/strategy.py"]
+
+
+def test_merge_is_idempotent(tmp_path):
+    repo = StrategyRepo(tmp_path)
+    repo.commit_file("strategy/a", "strategies/a/strategy.py", "a = 1\n", "a: iteration 1")
+    first = repo.merge("deploy/paper", "strategy/a", "promote a")
+    second = repo.merge("deploy/paper", "strategy/a", "promote a (retry)")
+    assert first == second
+
+
 def _commit_many(root, n: int, attempts: int) -> None:
     """Module-level (not a closure) so it is picklable for `multiprocessing`
     regardless of start method."""

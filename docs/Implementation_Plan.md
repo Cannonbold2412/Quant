@@ -1,7 +1,7 @@
 # Implementation Plan — AQRL
 
-> **Status:** **Stages 0–8 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised, the Nervous System job queue/scheduler, A2 the Quant Engineer, A3 the Research Reviewer, A1 the Research Scientist, A4 the Promotion Committee, A5 the Knowledge Manager). Stage 4a and Stages 9–13 not started.
-> **Last updated:** 2026-08-04
+> **Status:** **Stages 0–9 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised, the Nervous System job queue/scheduler, A2 the Quant Engineer, A3 the Research Reviewer, A1 the Research Scientist, A4 the Promotion Committee, A5 the Knowledge Manager, the Human Gates). Stage 4a and Stages 10–13 not started.
+> **Last updated:** 2026-08-05
 > **Companion docs:** `PRD.md` (why) · `TRD.md` (how) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences)
 
 ---
@@ -632,6 +632,81 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 
 **Done when:** a human can make a fully-informed gate decision from the terminal. The dashboard is deferred — a CLI is sufficient to validate the loop.
 
+> ✅ **Built.** `aqrl/gates.py` (`pending`/`evidence`/`approve`/`reject`) plus
+> three new thin repositories — `DeploymentRepository`, `LifecycleEventRepository`,
+> `VaultAccessRepository` — added to `db/repositories/promotion.py` alongside the
+> existing `PromotionRepository`, since all four tables share one migration
+> (`0003_promotion_lifecycle.sql`) and one lifecycle. `StrategyRepo.merge()`
+> (`vcs.py`) is the one new git operation. `aqrl review list/show/approve/reject`
+> in `cli.py` is a thin argparse shell over `gates.py` — the logic is tested
+> without going through `main()`. **No migration** — every column Stage 9
+> writes already existed.
+>
+> **`gates.approve` is the only code path in the system that merges a branch,
+> opens the vault, or inserts a `deployments` row** (TRD §18). Git runs
+> OUTSIDE the transaction — the same `run`/`persist` split `implement.py`
+> uses for `commit_file` — and `StrategyRepo.merge` is idempotent by git's
+> own semantics (an already-merged branch just returns HEAD), so a crash
+> between the merge and the database write is safe to recover by re-running
+> `approve`. Every validation guard (empty note, unknown promotion,
+> already-decided, exhausted vault budget) runs and can raise before the
+> git-touching import (`vcs.py`, which pulls in `fcntl`) is even reached —
+> deliberate, so `pending`/`evidence`/`reject` and every failure path of
+> `approve` stay importable and testable on a platform without it.
+>
+> **Vault: gate only, not App-Flow §15's full scoring flow.** `approve` logs
+> the open and decrements the family's lifetime budget (`Settings.
+> vault_budget_per_family`, default 1, derived from `vault_access_log`'s own
+> row count rather than a second stored counter that could drift from it) —
+> it does not load the vault snapshot or re-score the strategy against it.
+> `vault_access_log.result_score`/`outcome` stay `NULL`, a known limit rather
+> than a shortcut papered over: that needs a vault snapshot that does not
+> exist yet.
+>
+> **Structured rejection reasons reach A5's knowledge base by direct write,
+> not by re-running A5.** `ARCHIVE` already fired on `PROMOTION_DECIDED`,
+> before the human ever saw this queue, and `archive.py`'s `lab_notebooks`
+> idempotency guard makes a second `ARCHIVE` for the same strategy a no-op
+> (TRD §12.1: "A5 runs once, ever"). `gates.reject` writes the
+> `knowledge_entries` row itself — human-authored, no LLM call — in the same
+> `evidence.failure_reasons` shape `repeat_failure_rate` already reads, so a
+> human rejection counts toward Stage 8's metric exactly like an
+> A5-recorded one (proven in `tests/orchestration/test_human_gates.py`).
+> `reason` is validated against `experiments.failure_reason`'s existing
+> sixteen-value vocabulary — no new enum — mirroring `archive.py`'s own
+> `_BUG_FAILURE_REASONS` precedent for reusing that CHECK constraint in
+> Python.
+>
+> **`aqrl review show` renders exactly the evidence A4 judged on.**
+> `assemble_promote_brief` (`agents/context.py`) was split into a public
+> `promotion_evidence_sections()` plus the prompt template, so there is one
+> renderer, not two that could drift.
+>
+> **Deployment fields are derived, not invented.** `expected_sharpe`/
+> `expected_max_dd`/`expected_win_rate`/`expected_avg_trade` are copied from
+> the winning evaluation; `trades_required` from the resolved timeframe
+> profile's `min_trades`; `regimes_required` from `eval.regimes.REGIMES`
+> minus `crisis` — the four PRD §9.3 actually names.
+>
+> **Known limits, stated rather than papered over.** "Request more research"
+> (a human defer) is not implemented — `promotions.human_decision`'s CHECK
+> allows only `approved|rejected|pending`, so it needs a migration; A4's own
+> `defer` path already shows the mechanism (`handlers/promote.py`).
+> Portfolio correlation and the four UI-UX §3.2 charts are Stage 12's
+> concern, needing live deployments and a dashboard respectively, neither of
+> which exist yet. Gate 2 (paper→live) is wired via `promotions.stage_to ==
+> 'live_small'` but has no real producer until Stage 11 — untested against
+> anything but Gate 1's actual shape.
+>
+> **Pre-existing environment gap, not introduced here.** `vcs.py` imports
+> `fcntl`, unavailable on native Windows — `tests/orchestration/*` and
+> `tests/test_vcs.py` already failed to *collect* on that platform before
+> this stage. `test_human_gates.py` inherits it for the same reason
+> `test_promote_handler.py` does; every non-git code path in `gates.py`
+> (`pending`, `evidence`, `reject`, and `approve`'s guard clauses) was
+> smoke-tested directly against a real migrated database on Windows as a
+> substitute, and the full suite needs a WSL/Linux run to close out.
+
 ---
 
 ## 13. Stage 10 — The Librarian & Curiosity Engine
@@ -815,3 +890,4 @@ Not in the v1 build:
 | 2026-07-29 | **Stage 4 built.** `aqrl/orchestration/` — the `jobs` queue (`JobRepository`: atomic `BEGIN IMMEDIATE` claim, lease/heartbeat, `dedupe_key`), explicit state machines for `strategies`/`experiments` that raise on an invalid transition and write `audit_log`, the TRD §4.1 event→job_type table, transient/deterministic failure classification with exponential backoff and *k*-consecutive-failure quarantine, budget back-pressure gating dispatch, a subprocess worker with the `EVALUATE` handler wired end to end (queued job → rebuilt `EvaluationInputs` → Stage 3's engine → persisted report → the bar-clear short-circuit straight to `PROMOTE`, or `REVIEW` on a bar failure — never invoking A3, which doesn't exist yet), and the App-Flow §13 scheduler tick with TRD §4.5 idle-cause reporting. `aqrl.db.connection` gained WAL mode, `busy_timeout`, and `BEGIN IMMEDIATE` for the first time two processes write the database at once. Migration 0008 added `jobs.dedupe_key`. The crash test *is* the done-when: a real subprocess is `SIGKILL`ed mid-job and a re-run produces exactly one evaluation, and losing the scheduler process itself still recovers via lease expiry on the next tick — both proven against real OS processes, not mocks. |
 | 2026-07-30 | **Stage 5 built.** `aqrl/agents/` (render, sandbox, session, context) and `aqrl/orchestration/handlers/implement.py` — A2 translates a spec (hand-written for iteration 1, Claude-proposed for a plan-driven iteration or a `FIX_CODE` retry) into `strategies/<uid>/strategy.py` via a deterministic renderer, never freeform code, since `evaluate.py` compiles specs (TRD §6.1's no-forking rule extended to codegen). Static checks run in a scrubbed-env, resource-limited, timed-out subprocess reusing Stage 3's own P0 scanners; a passing spec commits to an idempotent, orphan-per-strategy git branch (`aqrl/vcs.py`) and enqueues `EVALUATE` unattended, exactly as Stage 5's done-when requires — proven both via direct handler calls and through a real claimed job in a real worker subprocess. A failing spec is a bounded `FIX_CODE` retry loop (default 3 attempts, counted from `code_versions`) ending in quarantine, not a failed job. No new migration: `code_versions` and `research_plans` already existed in Stage 1's schema, needing only new repositories (`CodeVersionRepository`, `ResearchPlanRepository`) and `ExperimentRepository.open_pending` for the `created → code_pending → code_ready → evaluating` chain Stage 4 defined but never drove. New optional dependency: `anthropic`, imported lazily so no test in the suite needs a network connection or an API key — `StubSession`/`ReplaySession` stand in throughout. **Review caught one real bug before merge:** `aqrl/vcs.py`'s shared working tree had no cross-process locking, so `Dispatcher`'s default `max_concurrent=4` (Stage 4) could run two strategies' `IMPLEMENT` jobs in parallel subprocesses racing `git checkout`/`init`/`commit` against the one shared repo — reproduced directly (four concurrent processes, three ended up crashed or missing their file entirely). Fixed with an exclusive `fcntl.flock` held across each public method's full git sequence, with a regression test exercising real concurrent subprocesses. |
 | 2026-08-04 | **Stage 8 built.** `aqrl/orchestration/handlers/promote.py` (A4) and `handlers/archive.py` (A5, serving both `ARCHIVE` and `MINE_PATTERNS`) close the two dead ends the loop had run into since Stage 6/7: a bar-clearing evaluation's `PROMOTE` job and a plateaued/rejected strategy's `ARCHIVE` job both previously hit `NotImplementedHandler`. New repositories (`PromotionRepository`, `KnowledgeEdgeRepository`, `LabNotebookRepository`, write paths on `KnowledgeEntryRepository`/`ResearchQuestionRepository`) and two new `Proposed*` session shapes (`ProposedPromotion`, `ProposedKnowledge`) follow every existing convention — no migration needed, since Stages 1/3 already created every table Stage 8 writes. A4's brief is the one deliberate exception to the system's usual redaction: it may see `honest_score` and full metrics, since A4 only ever emits a human-confirmed recommendation, never a spec-shaping signal; A5's brief keeps A3's asymmetric redaction instead, because A5's lessons **do** reach a future A1 brief. `states.py` gained `pending_promotion → rejected` (a deliberate, documented deviation from Backend-Schema §14.1, following the precedent Stages 3/5/6 already set for gaps this specific), and `scheduler.TIME_DRIVEN_SCHEDULE` got its first live entry (`MINE_PATTERNS`, weekly) — the mechanism Stage 4 built and deliberately left empty until there was a real producer. `db.repositories.knowledge.repeat_failure_rate` operationalises Implementation_Plan §11's done-when as a structured-field comparison (`knowledge_entries.evidence.failure_reasons`, populated by `handlers/archive.py`) rather than free-text matching, exposed via `aqrl knowledge rate`. Proven both directly (`tests/test_knowledge_repositories.py`, `test_promote_handler.py`, `test_archive_handler.py`) and end to end through the real job queue (`test_memory_loop.py`): a rejected experiment's lesson is visible through the exact reader a future A1 brief calls, and a second, later strategy failing the identical way is correctly counted as a preventable repeat. **One regression caught and fixed on the way:** populating `TIME_DRIVEN_SCHEDULE` for the first time broke three Stage 4/6 tests that had assumed it was permanently empty (two asserted `tick()` dispatched nothing; one used `ARCHIVE` as its example of "a job type nobody services yet," which stopped being true) — fixed by isolating the dispatch-mechanics tests with an explicit `schedule=[]` and swapping that fixture to `COLLECT_PAPERS`, still genuinely unimplemented. |
+| 2026-08-05 | **Stage 9 built.** `aqrl/gates.py` (`pending`/`evidence`/`approve`/`reject`) closes the loop's last dead end: A4's `promotions` row previously sat at `human_decision='pending'` forever with nothing reading it back. `approve` is the only code path in the system that merges `strategy/<uid>` into `deploy/paper`/`deploy/live` (`StrategyRepo.merge`, new in `vcs.py`), opens the vault (`VaultAccessRepository`, budget derived from `vault_access_log`'s own row count, no new counter table), and inserts a `deployments` row (`DeploymentRepository`, `LifecycleEventRepository` — both new, same migration as the existing `PromotionRepository`) — TRD §18's "no code path may bypass these gates," made true rather than merely stated. `aqrl review list/show/approve/reject` in `cli.py` is a thin shell over it. No migration: every column already existed. Scoped down from the full spec on purpose: vault access is gate-only (logs and decrements the family budget; does not load the vault snapshot or score against it — App-Flow §15's full flow needs a vault snapshot that does not exist yet), and a human rejection reaches A5's knowledge base by a direct, human-authored `knowledge_entries` write rather than re-running `ARCHIVE` (its `lab_notebooks` idempotency guard makes a second run for the same strategy a no-op by design, TRD §12.1). `agents/context.py`'s `assemble_promote_brief` was split to expose `promotion_evidence_sections()` publicly, so `aqrl review show` renders exactly the evidence A4 judged on with no second renderer to drift. Proven directly against a real migrated database (`tests/orchestration/test_human_gates.py`, `tests/test_vcs.py`'s new merge cases) — including a human rejection counted by Stage 8's `repeat_failure_rate` exactly like an A5-recorded one. **One real bug caught before merge:** the deferred `vcs` import (kept out of `gates.py`'s module scope so `pending`/`evidence`/`reject` stay usable on a platform without `fcntl`) was originally placed at the top of `approve`, ahead of its own validation guards — an empty note or an already-decided promotion failed on an unrelated import instead of its own clear error. Moved to sit right before its one use, verified by exercising every guard clause directly. |

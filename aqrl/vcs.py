@@ -153,6 +153,29 @@ class StrategyRepo:
         with self._locked():
             return self._head_commit_unlocked(branch)
 
+    def merge(self, into: str, from_branch: str, message: str) -> str:
+        """Merge `from_branch` into `into`, creating `into` if it does not
+        exist yet, and return the resulting commit (TRD §5.3).
+
+        `--allow-unrelated-histories` is mandatory: `_ensure_branch_unlocked`
+        creates every strategy branch as an orphan, so `strategy/<uid>` and
+        `deploy/paper` share no history by construction (TRD §5.2 — "two
+        unrelated hypotheses have no shared content to combine"). Conflicts
+        cannot occur because each strategy's file lives at its own path,
+        `strategies/<uid>/strategy.py` (`render.py`), the property TRD §5.2
+        exists to guarantee.
+
+        Idempotent by git's own semantics: re-merging an already-merged
+        branch is a no-op ("Already up to date") and simply returns the
+        current HEAD — what makes a crash between this call and the
+        caller's database write safe to recover by re-running the approval.
+        """
+        with self._locked():
+            self._ensure_branch_unlocked(into)
+            _run(["checkout", into], self.root)
+            _run(["merge", "--allow-unrelated-histories", "--no-ff", "-m", message, from_branch], self.root)
+            return self._head_commit_unlocked(into)
+
     # -- unlocked internals — never call these without holding `_locked()` ------
 
     def _ensure_repo_unlocked(self) -> None:

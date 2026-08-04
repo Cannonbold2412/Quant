@@ -1017,6 +1017,131 @@ def cmd_knowledge_rate(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- review (Stage 9 — Implementation_Plan §12) --------------------------------
+
+
+def cmd_review_list(args: argparse.Namespace) -> int:
+    from . import gates
+    from .db.repositories import StrategyRepository
+
+    conn = connect()
+    promotions = gates.pending(conn)
+    strategies = StrategyRepository(conn)
+    rows = []
+    for promotion in promotions:
+        strategy = strategies.get(promotion["strategy_id"]) or {}
+        rows.append(
+            {
+                "uid": promotion["uid"],
+                "strategy": strategy.get("name"),
+                "family": strategy.get("family"),
+                "market": strategy.get("market"),
+                "a4_decision": promotion["decision"],
+                "overfitting_risk": promotion["overfitting_risk"],
+                "confidence": promotion["confidence"],
+                "iterations": promotion["iterations_considered"],
+                "alloc_pct": promotion["recommended_allocation_pct"],
+            }
+        )
+    print(_table(rows, ["uid", "strategy", "family", "market", "a4_decision",
+                        "overfitting_risk", "confidence", "iterations", "alloc_pct"]))
+    return 0
+
+
+def cmd_review_show(args: argparse.Namespace) -> int:
+    from . import gates
+    from .db.repositories import (
+        EvaluationRepository,
+        EvaluationTestRepository,
+        PromotionRepository,
+        RegimePerformanceRepository,
+        StrategyRepository,
+        VaultAccessRepository,
+    )
+
+    conn = connect()
+    promotion = PromotionRepository(conn).get_by_uid(args.uid)
+    if promotion is None:
+        print(f"no promotion {args.uid}", file=sys.stderr)
+        return 1
+
+    print(gates.evidence(conn, promotion))
+
+    print("\n## A4's recommendation")
+    for key in (
+        "decision", "rationale", "overfitting_risk", "confidence",
+        "capacity_liquidity_ok", "recommended_allocation_pct", "iterations_considered",
+    ):
+        print(f"  {key:<26} {promotion.get(key)}")
+
+    evaluation = EvaluationRepository(conn).latest_for_experiment(promotion["best_experiment_id"])
+    if evaluation is not None:
+        tests = EvaluationTestRepository(conn).for_evaluation(evaluation["id"])
+        print(f"\n## checks ({len(tests)})")
+        print(_table(tests, ["test_name", "category", "result", "gating", "value", "threshold"]))
+
+        regimes = RegimePerformanceRepository(conn).for_evaluation(evaluation["id"])
+        if regimes:
+            print("\n## regime performance")
+            print(_table(regimes, ["regime", "sharpe", "cagr", "max_drawdown", "trade_count"]))
+
+    strategy = StrategyRepository(conn).get(promotion["strategy_id"])
+    if strategy is not None:
+        settings = get_settings()
+        remaining = settings.vault_budget_per_family - VaultAccessRepository(conn).opens_for_family(
+            strategy["family"]
+        )
+        print(f"\nvault budget remaining for family {strategy['family']!r}: {remaining}")
+    return 0
+
+
+def cmd_review_approve(args: argparse.Namespace) -> int:
+    from . import gates
+    from .db.repositories import PromotionRepository
+
+    conn = connect()
+    promotion = PromotionRepository(conn).get_by_uid(args.uid)
+    if promotion is None:
+        print(f"no promotion {args.uid}", file=sys.stderr)
+        return 1
+    result = gates.approve(
+        conn,
+        promotion["id"],
+        by=args.by,
+        note=args.note,
+        vault_segment=args.vault_segment,
+        capital_minor_units=args.capital,
+    )
+    print(f"promotion {args.uid} approved by {args.by}")
+    print(f"  deployment {result['deployment_id']}  mode={result['mode']}  branch={result['deploy_branch']}")
+    print(f"  merge commit  {result['merge_commit']}")
+    print(f"  strategy status -> {result['strategy_status']}")
+    return 0
+
+
+def cmd_review_reject(args: argparse.Namespace) -> int:
+    from . import gates
+    from .db.repositories import PromotionRepository
+
+    conn = connect()
+    promotion = PromotionRepository(conn).get_by_uid(args.uid)
+    if promotion is None:
+        print(f"no promotion {args.uid}", file=sys.stderr)
+        return 1
+    result = gates.reject(
+        conn,
+        promotion["id"],
+        by=args.by,
+        note=args.note,
+        reason=args.reason,
+        next_questions=args.next_question,
+    )
+    print(f"promotion {args.uid} rejected by {args.by}")
+    print(f"  knowledge_entries {result['knowledge_entry_id']}")
+    print(f"  research_questions {result['research_question_ids']}")
+    return 0
+
+
 # -- wiring --------------------------------------------------------------------
 
 
@@ -1291,7 +1416,41 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--since", help="ISO-8601 timestamp; only experiments created at or after this")
     p.set_defaults(func=cmd_knowledge_rate)
 
+    review = subs.add_parser("review", help="the human gates (Stage 9)").add_subparsers(
+        dest="cmd", required=True
+    )
+    review.add_parser("list", help="promotions awaiting a human decision").set_defaults(func=cmd_review_list)
+    p = review.add_parser("show", help="the full evidence package A4 saw, plus its recommendation")
+    p.add_argument("uid", help="promotions.uid")
+    p.set_defaults(func=cmd_review_show)
+    p = review.add_parser("approve", help="merge to deploy/*, open the vault, create the deployment")
+    p.add_argument("uid", help="promotions.uid")
+    p.add_argument("--by", required=True, help="who is approving")
+    p.add_argument("--note", required=True, help="mandatory — friction on purpose (Backend-Schema §7)")
+    p.add_argument("--vault-segment", dest="vault_segment")
+    p.add_argument("--capital", type=int, dest="capital", help="capital_minor_units")
+    p.set_defaults(func=cmd_review_approve)
+    p = review.add_parser("reject", help="reject, recording a structured reason as knowledge")
+    p.add_argument("uid", help="promotions.uid")
+    p.add_argument("--by", required=True, help="who is rejecting")
+    p.add_argument("--note", required=True, help="mandatory typed note")
+    p.add_argument("--reason", required=True, choices=sorted(_gates_failure_reasons()))
+    p.add_argument(
+        "--next-question", required=True, action="append", dest="next_question",
+        help="repeatable; at least one required (future_ideas is mandatory, TRD §12.1)",
+    )
+    p.set_defaults(func=cmd_review_reject)
+
     return parser
+
+
+def _gates_failure_reasons() -> frozenset[str]:
+    """Deferred import — `aqrl.gates` pulls in `aqrl.vcs`, which is not
+    importable on a platform without `fcntl`; nothing else in `build_parser`
+    needs that module just to list `--reason`'s choices."""
+    from .gates import FAILURE_REASONS
+
+    return FAILURE_REASONS
 
 
 def main(argv: Sequence[str] | None = None) -> int:

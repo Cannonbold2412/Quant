@@ -57,6 +57,7 @@ __all__ = [
     "implement_prompt_version",
     "mine_prompt_version",
     "promote_prompt_version",
+    "promotion_evidence_sections",
     "review_prompt_version",
 ]
 
@@ -538,7 +539,7 @@ def _overfitting_signal_section(*, iteration_count: int, n_trials_used: int | No
     return json.dumps(fields, indent=2, sort_keys=True)
 
 
-def assemble_promote_brief(
+def promotion_evidence_sections(
     *,
     strategy: Row,
     spec: StrategySpec,
@@ -547,11 +548,16 @@ def assemble_promote_brief(
     diagnostic_checks: list[Row],
     iteration_count: int,
 ) -> str:
-    """Build the complete brief `PromotionSession.decide` receives (App-Flow
-    §7). Only ever called on a bar-clearing evaluation — `winning_evaluation`
-    here always has `bar_result = 'pass'`."""
+    """The evidence half of A4's brief — everything but the prompt template.
+
+    Pulled out of `assemble_promote_brief` so Stage 9's `aqrl review show`
+    can render **exactly the evidence A4 judged on** with no second renderer
+    to drift out of sync. A4's brief is the one place in the system that
+    already withholds nothing but the bar's own thresholds and scoring
+    formula (this section's own comment block above); a human is entitled
+    to at least that.
+    """
     sections = [
-        _template(_PROMOTE_PROMPT_PATH),
         "## Strategy",
         json.dumps(
             {
@@ -577,6 +583,29 @@ def assemble_promote_brief(
         _capacity_evidence_section(diagnostic_checks),
     ]
     return "\n\n".join(sections)
+
+
+def assemble_promote_brief(
+    *,
+    strategy: Row,
+    spec: StrategySpec,
+    experiment_history: list[Row],
+    winning_evaluation: Row,
+    diagnostic_checks: list[Row],
+    iteration_count: int,
+) -> str:
+    """Build the complete brief `PromotionSession.decide` receives (App-Flow
+    §7). Only ever called on a bar-clearing evaluation — `winning_evaluation`
+    here always has `bar_result = 'pass'`."""
+    evidence = promotion_evidence_sections(
+        strategy=strategy,
+        spec=spec,
+        experiment_history=experiment_history,
+        winning_evaluation=winning_evaluation,
+        diagnostic_checks=diagnostic_checks,
+        iteration_count=iteration_count,
+    )
+    return f"{_template(_PROMOTE_PROMPT_PATH)}\n\n{evidence}"
 
 
 # -- the Archive / Mining Briefs (A5, Stage 8) --------------------------------
