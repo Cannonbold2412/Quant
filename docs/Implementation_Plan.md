@@ -830,6 +830,108 @@ Before trusting it, `evaluate.py` must be tested against cases whose correct ans
 
 **Done when:** a paper-traded strategy is monitored automatically and correctly distinguishes *"normal losing period"* from *"behaviour has changed."*
 
+> ✅ **Built.** `aqrl/monitoring.py` (the logic layer, mirroring how `gates.py`
+> held Stage 9's) plus `aqrl/orchestration/handlers/monitor.py`
+> (`MONITOR_DEPLOYMENT`, `run`/`persist`), a daily per-deployment fan-out in
+> `scheduler.fire_due_monitor_batch`, two new repositories
+> (`TradeRepository`, `HealthCheckRepository` — `db/repositories/promotion.py`,
+> alongside Stage 9's three), and `aqrl deploy list/show/kill/retire`. **No
+> migration** — `deployments`/`trades`/`health_checks`/`lifecycle_events` and
+> `MONITOR_DEPLOYMENT` itself all landed in Stage 1/9's schema, unused until
+> now — the same "gap was code, not schema" situation Stages 8–10 were in.
+>
+> **Paper trading executor: snapshot replay, not a broker connection.** There
+> is no live feed or credentials in this codebase and live broker
+> integration is explicitly deferred to M7 (§20), so `monitoring.replay`
+> backtests the deployed spec once over the newest ingested snapshot — via
+> `compile_spec` and `run_backtest`, the exact functions `evaluate.py`
+> validated the strategy with, never a second execution path — and splits
+> the single result at `deployments.started_at`: bars before are the
+> baseline (the yardstick), bars after are genuine forward evidence, since
+> they did not exist at validation time. `eval/engine.py`'s private
+> `_full_signals` became the public `full_signals`, the one signal-generation
+> call site both paths now share.
+>
+> **Z-scores derive their spread, not their anchor, from the replay.**
+> `deployments.expected_*` (copied from the winning evaluation at Gate 1) is
+> the fixed point estimate a paper Sharpe/win-rate/avg-trade is tested
+> against; the standard error comes from `eval/stats/honest_score.se_sharpe`
+> (sharpe, reusing Stage 3's own formula) and from the baseline era's own
+> trade dispersion (win rate, avg trade) — nothing here recomputes the
+> approved baseline itself, so a later replay can never silently drift from
+> what a human actually saw. One correctness fix from a self-check before
+> committing: a genuinely zero-variance baseline (every baseline trade
+> identical, as a clean synthetic series produces) collapsed the SE to zero,
+> and dividing by it was being silently treated as "no evidence" — a real
+> deviation from a zero-variance baseline is maximally significant, not
+> neutral, so `_zscore` now saturates at a large magnitude in the
+> deviation's direction instead.
+>
+> **The regime rule — the point of the stage — is one demotion step, capped
+> at yellow.** `health_verdict` computes `weak_regimes` from the baseline
+> era's own `regime_performance` (a regime where this strategy's baseline
+> Sharpe was negative); when the current regime is in that set, a would-be
+> red demotes to orange and orange demotes to yellow, never further — an
+> expected drawdown is still flagged, just not killed over. Proven directly
+> in `tests/test_monitoring.py`: the identical degraded paper era reads
+> `red` outside a weak regime and `orange` inside one.
+>
+> **The promotion row is written directly, with no LLM call**, the same
+> shape `gates.reject` uses for a rejection lesson. App-Flow §10 says
+> "enqueue PROMOTE," but `promote.py` is A4 reasoning over validation
+> evidence and the robustness battery — the wrong agent for a mechanical
+> five-condition check (PRD §9.3) over forward paper results. `persist()`
+> writes the `stage_to='live_small'` row itself and moves the strategy to
+> `pending_live_review`; `aqrl review`/`gates.approve` then drive Gate 2
+> through `_STAGE_TO_TARGET["live_small"]`, wired since Stage 9 but never
+> exercised until now.
+>
+> **The kill switch is independent of the health verdict, deliberately**
+> (TRD §18: "enforced outside strategy logic"). `risk_breach` checks
+> cumulative loss and peak-to-trough drawdown against `Settings.
+> risk_max_loss_pct`/`risk_max_drawdown_pct` on its own, and a breach
+> discards every trade at or after the breach bar — never recorded, not
+> merely flagged — regardless of what the level would otherwise have been.
+> `aqrl deploy kill` is the same stop path a human can trigger directly,
+> `triggered_by='human'` the only difference from the automatic rule.
+>
+> **Retirement removes the file from the deploy branch, never from the
+> research branch** (App-Flow §11.2). `StrategyRepo.remove_from_branch` is
+> the one new git operation, mirroring `merge`'s idempotency: re-running
+> `retire` against an already-removed file is a no-op returning the current
+> HEAD, the same crash-safety `gates.approve` relies on for its merge.
+>
+> **Known limits, stated rather than papered over.** Execution quality is
+> wired but not measurable: `actual_slippage_bps` equals
+> `expected_slippage_bps` by construction in a snapshot-replay simulation
+> (both come from `cost_model.slippage_bps`), so `slippage_deviation` and
+> `missed_fill_rate` stay at zero until a real broker exists to disagree
+> with the model — the columns and the scoring path are exercised, the
+> dimension itself is not. `liquidity_change` stays NULL; it needs ADV
+> history the data layer does not collect. Forward evidence is bounded by
+> what `COLLECT_MARKET_DATA` has actually ingested — Stage 10's own note
+> already flagged that job as reading freshness only, no real vendor feed
+> configured, and that gap is still open here, not closed by this stage.
+> Health thresholds (`health_zscore_yellow/red`, `health_loss_pvalue`,
+> `health_orange_signals`, `risk_max_loss_pct`/`risk_max_drawdown_pct`) are
+> `Settings` defaults, not pre-registered per deployment the way
+> `acceptance_bars` locks the research bar — nothing varies them yet, so a
+> stored bar would be an unused abstraction, the same call Stage 9 made for
+> the vault budget.
+>
+> **`tests/orchestration/test_monitoring.py` needs a WSL/Linux run to close
+> out** — built and written on native Windows, where `vcs.py`'s `fcntl`
+> import means the suite fails to *collect*, not merely to pass, a
+> pre-existing gap every stage since Stage 5 has inherited. Confirmed here
+> only as far as Windows allows: the module imports cleanly up to the exact
+> same `fcntl` failure `test_human_gates.py` already has (parity, not a new
+> break), and every name it references was checked against its real
+> definition by hand. Unlike Stage 10's note, this was **not** verified even
+> via a local `fcntl` stub — that verification is still owed. The pure
+> scoring suite (`tests/test_monitoring.py`, 14 tests) needs no database and
+> runs anywhere; it is what was actually executed and passing before this
+> note was written.
+
 ---
 
 ## 15. Stage 12 — Dashboard (decision layer)
@@ -977,3 +1079,4 @@ Not in the v1 build:
 | 2026-08-04 | **Stage 8 built.** `aqrl/orchestration/handlers/promote.py` (A4) and `handlers/archive.py` (A5, serving both `ARCHIVE` and `MINE_PATTERNS`) close the two dead ends the loop had run into since Stage 6/7: a bar-clearing evaluation's `PROMOTE` job and a plateaued/rejected strategy's `ARCHIVE` job both previously hit `NotImplementedHandler`. New repositories (`PromotionRepository`, `KnowledgeEdgeRepository`, `LabNotebookRepository`, write paths on `KnowledgeEntryRepository`/`ResearchQuestionRepository`) and two new `Proposed*` session shapes (`ProposedPromotion`, `ProposedKnowledge`) follow every existing convention — no migration needed, since Stages 1/3 already created every table Stage 8 writes. A4's brief is the one deliberate exception to the system's usual redaction: it may see `honest_score` and full metrics, since A4 only ever emits a human-confirmed recommendation, never a spec-shaping signal; A5's brief keeps A3's asymmetric redaction instead, because A5's lessons **do** reach a future A1 brief. `states.py` gained `pending_promotion → rejected` (a deliberate, documented deviation from Backend-Schema §14.1, following the precedent Stages 3/5/6 already set for gaps this specific), and `scheduler.TIME_DRIVEN_SCHEDULE` got its first live entry (`MINE_PATTERNS`, weekly) — the mechanism Stage 4 built and deliberately left empty until there was a real producer. `db.repositories.knowledge.repeat_failure_rate` operationalises Implementation_Plan §11's done-when as a structured-field comparison (`knowledge_entries.evidence.failure_reasons`, populated by `handlers/archive.py`) rather than free-text matching, exposed via `aqrl knowledge rate`. Proven both directly (`tests/test_knowledge_repositories.py`, `test_promote_handler.py`, `test_archive_handler.py`) and end to end through the real job queue (`test_memory_loop.py`): a rejected experiment's lesson is visible through the exact reader a future A1 brief calls, and a second, later strategy failing the identical way is correctly counted as a preventable repeat. **One regression caught and fixed on the way:** populating `TIME_DRIVEN_SCHEDULE` for the first time broke three Stage 4/6 tests that had assumed it was permanently empty (two asserted `tick()` dispatched nothing; one used `ARCHIVE` as its example of "a job type nobody services yet," which stopped being true) — fixed by isolating the dispatch-mechanics tests with an explicit `schedule=[]` and swapping that fixture to `COLLECT_PAPERS`, still genuinely unimplemented. |
 | 2026-08-05 | **Stage 9 built.** `aqrl/gates.py` (`pending`/`evidence`/`approve`/`reject`) closes the loop's last dead end: A4's `promotions` row previously sat at `human_decision='pending'` forever with nothing reading it back. `approve` is the only code path in the system that merges `strategy/<uid>` into `deploy/paper`/`deploy/live` (`StrategyRepo.merge`, new in `vcs.py`), opens the vault (`VaultAccessRepository`, budget derived from `vault_access_log`'s own row count, no new counter table), and inserts a `deployments` row (`DeploymentRepository`, `LifecycleEventRepository` — both new, same migration as the existing `PromotionRepository`) — TRD §18's "no code path may bypass these gates," made true rather than merely stated. `aqrl review list/show/approve/reject` in `cli.py` is a thin shell over it. No migration: every column already existed. Scoped down from the full spec on purpose: vault access is gate-only (logs and decrements the family budget; does not load the vault snapshot or score against it — App-Flow §15's full flow needs a vault snapshot that does not exist yet), and a human rejection reaches A5's knowledge base by a direct, human-authored `knowledge_entries` write rather than re-running `ARCHIVE` (its `lab_notebooks` idempotency guard makes a second run for the same strategy a no-op by design, TRD §12.1). `agents/context.py`'s `assemble_promote_brief` was split to expose `promotion_evidence_sections()` publicly, so `aqrl review show` renders exactly the evidence A4 judged on with no second renderer to drift. Proven directly against a real migrated database (`tests/orchestration/test_human_gates.py`, `tests/test_vcs.py`'s new merge cases) — including a human rejection counted by Stage 8's `repeat_failure_rate` exactly like an A5-recorded one. **One real bug caught before merge:** the deferred `vcs` import (kept out of `gates.py`'s module scope so `pending`/`evidence`/`reject` stay usable on a platform without `fcntl`) was originally placed at the top of `approve`, ahead of its own validation guards — an empty note or an already-decided promotion failed on an unrelated import instead of its own clear error. Moved to sit right before its one use, verified by exercising every guard clause directly. |
 | 2026-08-05 | **Stage 10 built.** `aqrl/librarian/` (collectors, structural chunker, relevance filter, stdlib-only fetch layer) and `aqrl/orchestration/handlers/librarian.py` (`COLLECT_PAPERS`, `EXTRACT_KNOWLEDGE`, `COLLECT_MARKET_DATA`) close PRD §7.1's risk — the loop rediscovering itself — with the two inputs it named: external knowledge and curiosity. No migration: every table, job type, and event Stage 10 needed already existed since Stage 1. Collectors cover arXiv and SSRN/blogs/journals (one `Collector` protocol, `ArxivCollector` and `FeedCollector`); GitHub is deliberately out (`COLLECT_GITHUB` stays unregistered, and replaced `COLLECT_PAPERS` as the "job type nobody services yet" fixture in `test_dispatch.py`/`test_scheduler.py` — the exact regression class Stage 8's own notes on `ARCHIVE` predicted). Zero new dependencies. `novelty_score` (`agents/research_brief.py`) is `1 - max cosine` against the existing knowledge base, reusing Stage 7's embedding cache. Loop closure needed no schema or prompt change: `handlers/generate.py`'s `persist` now writes `research_questions.produced_spec_ids` and `strategy_specs.source_question_id` via two new `ResearchQuestionRepository` methods, and `curiosity_payoff_rate` operationalises this stage's done-when the way `repeat_failure_rate` did Stage 8's. **One real bug caught before merge:** `HIGH_NOVELTY_EXTRACTION` had been wired to fire `GENERATE_SPEC` since Stage 4 but never actually fired until this stage — and `GENERATE_SPEC.run()` has required a `goal_id` since Stage 7, which this event's payload never carried. Fixed by targeting every active goal the idea's own market/timeframe match, one job each, none if none match. Proven with 61 new tests (pure `tests/librarian/`, repository behaviour, handler behaviour including a zero-LLM-calls relevance-filter proof and multi-idea `source_chunk_ids` traceability) and end to end through the real job queue (`test_curiosity_loop.py`): a pushed question drives a targeted search, the Librarian's answer reaches a subsequent `GENERATE_SPEC` call through the exact reader A1 uses, and `produced_spec_ids`/`curiosity_payoff_rate` record the payoff. Known limit: `COLLECT_MARKET_DATA` is freshness/coverage only, no vendor configured (Stage 11's concern); `tests/orchestration/*` still need WSL/Linux to run on native Windows, a pre-existing gap. |
+| 2026-08-05 | **Stage 11 built.** `aqrl/monitoring.py` (replay/scoring/gate logic, plus the human-triggered `kill`/`retire`, mirroring how `gates.py` splits Stage 9's automatic and human halves) and `aqrl/orchestration/handlers/monitor.py` (`MONITOR_DEPLOYMENT`) close the last dead end: an approved paper deployment previously sat inert forever. No migration — `deployments`/`trades`/`health_checks`/`lifecycle_events` and `MONITOR_DEPLOYMENT` all existed since Stage 1/9. The paper executor is snapshot replay, not a broker (none exists in this codebase; live integration is M7's concern) — one full-panel backtest via `compile_spec`/`run_backtest`, split at `deployments.started_at` into a baseline yardstick and genuine forward evidence. Z-score anchors come from the human-approved `expected_*` baseline, never recomputed; the spread comes from `se_sharpe` (Stage 3's own formula) and the baseline era's own trade dispersion. The regime rule — the stage's actual point — demotes a would-be red/orange one step when the current regime is one the baseline shows this strategy struggling in, never below yellow; proven directly (`tests/test_monitoring.py`, 14 tests, no database, runs anywhere) with the identical degradation reading `red` outside a weak regime and `orange` inside one. The promotion row (`stage_to='live_small'`) is written directly on a passing gate, no LLM call, the same shape `gates.reject` uses — `_STAGE_TO_TARGET["live_small"]`, wired since Stage 9, finally has a producer. The kill switch (`risk_breach`) is checked independently of the health verdict per TRD §18 and discards every trade at or after a breach bar rather than merely flagging it; `aqrl deploy kill` is the same path, human-triggered. Retirement (`aqrl deploy retire`) removes the file from the deploy branch only, via the one new git operation `StrategyRepo.remove_from_branch`. **One correctness fix from a pre-commit self-check:** a zero-variance baseline collapsed the SE denominator to zero, and the original code treated that as "no evidence" (z=0, reads healthy) rather than "maximally significant deviation" — `_zscore` now saturates at a large magnitude in the deviation's direction instead of going silent. Known limits: execution quality is wired but not measurable until a real broker exists (`actual_slippage_bps` equals `expected_slippage_bps` by construction); `tests/orchestration/test_monitoring.py` was written and checked by hand against every real signature it calls, and confirmed to fail to *collect* only at the same pre-existing `fcntl` gap `test_human_gates.py` already has — but unlike Stage 10, it was not verified passing even via a local `fcntl` stub, and still needs a real WSL/Linux run to close out. |

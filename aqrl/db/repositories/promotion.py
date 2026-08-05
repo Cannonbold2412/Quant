@@ -1,6 +1,9 @@
 """A4's decision record (Backend-Schema §7, TRD §11.2/App-Flow §7), and the
-three tables Stage 9's `aqrl review` gate writes on approval (Backend-Schema
-§8): `deployments`, `lifecycle_events`, `vault_access_log`.
+five tables Stage 9's `aqrl review` gate and Stage 11's `MONITOR_DEPLOYMENT`
+handler write against: `deployments`, `trades`, `health_checks`,
+`lifecycle_events`, `vault_access_log` — all six tables (including
+`promotions`) share one migration (`0003_promotion_lifecycle.sql`) and one
+lifecycle, so one module holds every repository over them.
 
 A4 has no execution authority — `promotions.requires_human_approval` is
 always 1; nothing in A4's own handler merges a branch or moves capital. That
@@ -11,7 +14,14 @@ from __future__ import annotations
 
 from .base import Repository, Row
 
-__all__ = ["DeploymentRepository", "LifecycleEventRepository", "PromotionRepository", "VaultAccessRepository"]
+__all__ = [
+    "DeploymentRepository",
+    "HealthCheckRepository",
+    "LifecycleEventRepository",
+    "PromotionRepository",
+    "TradeRepository",
+    "VaultAccessRepository",
+]
 
 
 class PromotionRepository(Repository):
@@ -36,6 +46,54 @@ class DeploymentRepository(Repository):
 
     def active_for_strategy(self, strategy_id: int) -> list[Row]:
         return self.find(strategy_id=strategy_id, status="active", order_by="id")
+
+    def active(self) -> list[Row]:
+        """Every deployment still being monitored, across all strategies — the
+        source list for Stage 11's daily `MONITOR_DEPLOYMENT` fan-out."""
+        return self.find(status="active", order_by="id")
+
+    def record_trade_progress(self, deployment_id: int, *, new_trades: int, regimes_seen: list[str]) -> None:
+        """Bump `trades_completed` and union `regimes_seen` into
+        `regimes_observed` — the two PRD §9.3 gate inputs a replay produces
+        incrementally, run over run, rather than recomputable from `trades`
+        alone (a regime once observed stays observed even if later bars don't
+        repeat it)."""
+        deployment = self.get(deployment_id)
+        if deployment is None:
+            raise ValueError(f"no deployment {deployment_id}")
+        observed = set(deployment["regimes_observed"] or [])
+        observed.update(regimes_seen)
+        self.update(
+            deployment_id,
+            trades_completed=(deployment["trades_completed"] or 0) + new_trades,
+            regimes_observed=sorted(observed),
+        )
+
+
+class TradeRepository(Repository):
+    table = "trades"
+
+    def for_deployment(self, deployment_id: int) -> list[Row]:
+        return self.find(deployment_id=deployment_id, order_by="entry_time")
+
+    def existing_keys(self, deployment_id: int) -> set[tuple[str, str]]:
+        """`(instrument, entry_time)` pairs already recorded — what makes a
+        replay re-run idempotent instead of double-inserting the same trade."""
+        rows = self.conn.execute(
+            "SELECT instrument, entry_time FROM trades WHERE deployment_id = ?", (deployment_id,)
+        ).fetchall()
+        return {(row["instrument"], row["entry_time"]) for row in rows}
+
+
+class HealthCheckRepository(Repository):
+    table = "health_checks"
+
+    def latest_for_deployment(self, deployment_id: int) -> Row | None:
+        rows = self.find(deployment_id=deployment_id, order_by="id DESC", limit=1)
+        return rows[0] if rows else None
+
+    def for_deployment(self, deployment_id: int) -> list[Row]:
+        return self.find(deployment_id=deployment_id, order_by="check_time")
 
 
 class LifecycleEventRepository(Repository):

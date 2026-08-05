@@ -1156,6 +1156,96 @@ def cmd_review_reject(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- deploy (Stage 11 — Implementation_Plan §14) -------------------------------
+
+
+def cmd_deploy_list(args: argparse.Namespace) -> int:
+    from .db.repositories import DeploymentRepository, StrategyRepository
+
+    conn = connect()
+    deployments = DeploymentRepository(conn)
+    rows = deployments.find(status=args.status) if args.status else deployments.find(order_by="id")
+    strategies = StrategyRepository(conn)
+    out = []
+    for deployment in rows:
+        strategy = strategies.get(deployment["strategy_id"]) or {}
+        out.append(
+            {
+                "uid": deployment["uid"],
+                "strategy": strategy.get("name"),
+                "mode": deployment["mode"],
+                "status": deployment["status"],
+                "health": deployment["current_health"],
+                "trades": f"{deployment['trades_completed']}/{deployment['trades_required']}",
+                "started_at": deployment["started_at"],
+            }
+        )
+    print(_table(out, ["uid", "strategy", "mode", "status", "health", "trades", "started_at"]))
+    return 0
+
+
+def cmd_deploy_show(args: argparse.Namespace) -> int:
+    from .db.repositories import DeploymentRepository, HealthCheckRepository, StrategyRepository, TradeRepository
+
+    conn = connect()
+    deployment = DeploymentRepository(conn).get_by_uid(args.uid)
+    if deployment is None:
+        print(f"no deployment {args.uid}", file=sys.stderr)
+        return 1
+
+    strategy = StrategyRepository(conn).get(deployment["strategy_id"])
+    print(f"# {strategy['name'] if strategy else deployment['strategy_id']}  ({deployment['uid']})")
+    for key in (
+        "mode", "status", "deploy_branch", "allocation_pct", "started_at", "ended_at",
+        "trades_completed", "trades_required", "regimes_observed", "regimes_required",
+        "expected_sharpe", "expected_max_dd", "expected_win_rate", "expected_avg_trade",
+        "current_health", "retirement_reason",
+    ):
+        print(f"  {key:<20} {deployment.get(key)}")
+
+    checks = HealthCheckRepository(conn).for_deployment(deployment["id"])
+    if checks:
+        print(f"\n## health checks ({len(checks)})")
+        print(_table(
+            checks[-10:],
+            ["check_time", "level", "live_sharpe", "sharpe_zscore", "current_regime",
+             "regime_historically_weak", "recommended_action"],
+        ))
+
+    trades = TradeRepository(conn).for_deployment(deployment["id"])
+    print(f"\ntrades recorded: {len(trades)}")
+    return 0
+
+
+def cmd_deploy_kill(args: argparse.Namespace) -> int:
+    from . import monitoring
+    from .db.repositories import DeploymentRepository
+
+    conn = connect()
+    deployment = DeploymentRepository(conn).get_by_uid(args.uid)
+    if deployment is None:
+        print(f"no deployment {args.uid}", file=sys.stderr)
+        return 1
+    result = monitoring.kill(conn, deployment["id"], by=args.by, reason=args.reason)
+    print(f"deployment {args.uid} -> {result['status']}")
+    return 0
+
+
+def cmd_deploy_retire(args: argparse.Namespace) -> int:
+    from . import monitoring
+    from .db.repositories import DeploymentRepository
+
+    conn = connect()
+    deployment = DeploymentRepository(conn).get_by_uid(args.uid)
+    if deployment is None:
+        print(f"no deployment {args.uid}", file=sys.stderr)
+        return 1
+    result = monitoring.retire(conn, deployment["id"], by=args.by, reason=args.reason)
+    print(f"deployment {args.uid} -> retired  (strategy -> {result['strategy_status']})")
+    print(f"  removal commit  {result['removal_commit']}")
+    return 0
+
+
 # -- librarian (Stage 10 — Implementation_Plan §13) ----------------------------
 
 
@@ -1554,6 +1644,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--status", choices=["open", "searching", "answered", "abandoned"])
     p.add_argument("--limit", type=int, default=50)
     p.set_defaults(func=cmd_librarian_questions)
+
+    deploy = subs.add_parser("deploy", help="paper/live deployments & health monitoring (Stage 11)").add_subparsers(
+        dest="cmd", required=True
+    )
+    p = deploy.add_parser("list", help="list deployments")
+    p.add_argument("--status", choices=["active", "paused", "stopped", "retired"])
+    p.set_defaults(func=cmd_deploy_list)
+    p = deploy.add_parser("show", help="one deployment's detail plus recent health checks")
+    p.add_argument("uid", help="deployments.uid")
+    p.set_defaults(func=cmd_deploy_show)
+    p = deploy.add_parser("kill", help="human-triggerable kill switch (App-Flow §11.1)")
+    p.add_argument("uid", help="deployments.uid")
+    p.add_argument("--by", required=True, help="who is triggering it")
+    p.add_argument("--reason", required=True)
+    p.set_defaults(func=cmd_deploy_kill)
+    p = deploy.add_parser("retire", help="retire — removes the deploy-branch file, keeps the research branch")
+    p.add_argument("uid", help="deployments.uid")
+    p.add_argument("--by", required=True, help="who is retiring it")
+    p.add_argument("--reason", required=True)
+    p.set_defaults(func=cmd_deploy_retire)
 
     return parser
 

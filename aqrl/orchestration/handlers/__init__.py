@@ -8,12 +8,13 @@ involved, not in the render -> check -> commit path both end at. Stage 6 adds
 since its job is a verdict plus a research plan, not code. Stage 8 adds
 `PROMOTE` (A4, `promote.py`) and `ARCHIVE`/`MINE_PATTERNS` (A5,
 `archive.py`, one module for both jobs the same way `implement.py` serves
-two) — Implementation_Plan §11. Every other `job_type` in the schema's CHECK
-constraint (`aqrl/db/repositories/jobs.py`, `JOB_TYPES`) is a real future
-stage, not a stub: `get_handler` raises `NotImplementedHandler` for anything
-unregistered, which `failures.py` classifies deterministic — one clear
-failure, not a retry storm, and a job type nobody can service yet never
-silently succeeds.
+two) — Implementation_Plan §11. Stage 11 adds `MONITOR_DEPLOYMENT`
+(`monitor.py`) — Implementation_Plan §14. Every other `job_type` in the
+schema's CHECK constraint (`aqrl/db/repositories/jobs.py`, `JOB_TYPES`) is a
+real future stage, not a stub: `get_handler` raises `NotImplementedHandler`
+for anything unregistered, which `failures.py` classifies deterministic —
+one clear failure, not a retry storm, and a job type nobody can service yet
+never silently succeeds.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from . import evaluate as _evaluate
 from . import generate as _generate
 from . import implement as _implement
 from . import librarian as _librarian
+from . import monitor as _monitor
 from . import promote as _promote
 from . import review as _review
 from .base import HandlerResult, JobHandler, NotImplementedHandler
@@ -54,6 +56,7 @@ _HANDLERS: dict[str, _FunctionHandler] = {
     "COLLECT_MARKET_DATA": _FunctionHandler(
         run=_librarian.run_market_stats, persist=_librarian.persist_market_stats
     ),
+    "MONITOR_DEPLOYMENT": _FunctionHandler(run=_monitor.run, persist=_monitor.persist),
 }
 
 

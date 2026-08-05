@@ -122,6 +122,32 @@ class Settings(BaseSettings):
         description="(source, feed_url) pairs FeedCollector polls — source in {'ssrn','blog','journal'}.",
     )
 
+    # -- Stage 11: Paper Trading & Health Monitoring (Implementation_Plan §14) ---
+    risk_max_loss_pct: float = Field(
+        default=0.25, description="Cumulative loss, as a fraction of paper-era starting equity, that trips the kill switch."
+    )
+    risk_max_drawdown_pct: float = Field(
+        default=0.30, description="Peak-to-trough drawdown, paper era, that trips the kill switch (TRD §18)."
+    )
+    health_min_trades_for_verdict: int = Field(
+        default=20, description="Below this many paper trades, health defaults to green — too few observations for a z-score to mean anything."
+    )
+    health_zscore_yellow: float = Field(
+        default=-1.5, description="A metric z-score below this counts as one tripped health signal."
+    )
+    health_zscore_red: float = Field(
+        default=-3.0, description="Any single z-score below this is red on its own, regime demotion aside."
+    )
+    health_loss_pvalue: float = Field(
+        default=0.01, description="KS two-sample p-value floor; below this, paper losses no longer match the validated distribution."
+    )
+    health_slippage_deviation: float = Field(
+        default=2.0, description="Slippage deviation (bps) above this counts as one tripped health signal."
+    )
+    health_orange_signals: int = Field(
+        default=2, description="Tripped-signal count that promotes yellow to orange — PRD §9.4's 'multiple warning signals'."
+    )
+
     @classmethod
     def settings_customise_sources(
         cls,

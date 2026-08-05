@@ -58,6 +58,21 @@ class SnapshotRepository(Repository):
         self.update(snapshot_id, validation_status=status)
         return status
 
+    def latest_usable(self, market: str, timeframe: str, asset_class: str) -> Row | None:
+        """The newest valid, non-vaulted snapshot for a (market, timeframe,
+        asset_class) — what Stage 11's replay backtests against. `valid` and
+        `in_vault = 0` mirror `assert_loadable`'s two gates; `period_end DESC`
+        picks the snapshot with the most forward bars to replay."""
+        return self._decode(
+            self.conn.execute(
+                """SELECT * FROM data_snapshots
+                    WHERE market = ? AND timeframe = ? AND asset_class = ?
+                      AND validation_status = 'valid' AND in_vault = 0
+                    ORDER BY period_end DESC, id DESC LIMIT 1""",
+                (market, timeframe, asset_class),
+            ).fetchone()
+        )
+
     def assert_loadable(self, snapshot_id: int) -> Row:
         """Fetch a snapshot, refusing anything not cleared for experiments.
 

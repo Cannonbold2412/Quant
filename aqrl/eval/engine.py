@@ -72,7 +72,7 @@ from .tradebook import extract_trades
 from .version import engine_version
 from .walk_forward import run_best_of_three
 
-__all__ = ["EvaluationInputs", "evaluate_experiment"]
+__all__ = ["EvaluationInputs", "evaluate_experiment", "full_signals"]
 
 #: The fraction of the panel P1 checks — recent history, cheap and fast.
 P1_SLICE_FRACTION = 0.25
@@ -182,7 +182,7 @@ def evaluate_experiment(inputs: EvaluationInputs) -> EvaluationReport:
     # -- P1: fast, frictionless, small slice — is there any signal at all? ------
     slice_start_index = int(inputs.panel.n_bars * (1.0 - P1_SLICE_FRACTION))
     p1_panel = inputs.panel.slice_bars(slice_start_index, inputs.panel.n_bars)
-    p1_signals = _full_signals(compiled, p1_panel)
+    p1_signals = full_signals(compiled, p1_panel)
     p1_result = run_backtest(p1_panel, p1_signals, inputs.resolved, cost_multiplier=0.0)
     p1_check = CheckResult(
         "p1_any_signal",
@@ -196,9 +196,9 @@ def evaluate_experiment(inputs: EvaluationInputs) -> EvaluationReport:
         return _failed(provenance, "P1", "no_signal", checks, _elapsed(start_time))
 
     # -- P2: full history, realistic costs — a real, survivable edge? ----------
-    full_signals = _full_signals(compiled, inputs.panel)
-    gross_full = run_backtest(inputs.panel, full_signals, inputs.resolved, cost_multiplier=0.0)
-    net_full = run_backtest(inputs.panel, full_signals, inputs.resolved, cost_multiplier=inputs.cost_multiplier)
+    p2_signals = full_signals(compiled, inputs.panel)
+    gross_full = run_backtest(inputs.panel, p2_signals, inputs.resolved, cost_multiplier=0.0)
+    net_full = run_backtest(inputs.panel, p2_signals, inputs.resolved, cost_multiplier=inputs.cost_multiplier)
 
     checks.append(
         CheckResult(
@@ -329,7 +329,10 @@ def evaluate_experiment(inputs: EvaluationInputs) -> EvaluationReport:
     )
 
 
-def _full_signals(compiled: CompiledSpec, panel: PricePanel) -> np.ndarray:
+def full_signals(compiled: CompiledSpec, panel: PricePanel) -> np.ndarray:
+    """Every instrument's signal series over the given panel — the one
+    signal-generation call site, reused by Stage 11's replay (`monitoring.py`)
+    so a paper-trading run and a validation run never diverge (TRD §6.1)."""
     return np.column_stack(
         [
             compiled.signals_array(panel.instrument_columns(index))

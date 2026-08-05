@@ -176,6 +176,25 @@ class StrategyRepo:
             _run(["merge", "--allow-unrelated-histories", "--no-ff", "-m", message, from_branch], self.root)
             return self._head_commit_unlocked(into)
 
+    def remove_from_branch(self, branch: str, relative_path: str, message: str) -> str:
+        """Remove `relative_path` from `branch` and commit — retirement's "leave
+        the deploy branch, keep the research branch" step (App-Flow §11.2).
+        Never touches `strategy/<uid>`; only ever called against `deploy/paper`
+        or `deploy/live`.
+
+        Idempotent: if the file is already gone from the branch (a retried
+        retirement), this is a no-op that returns the current HEAD rather
+        than failing on `git rm` finding nothing to remove — the same
+        crash-safety `merge` provides.
+        """
+        with self._locked():
+            _run(["checkout", branch], self.root)
+            if not (self.root / relative_path).exists():
+                return self._head_commit_unlocked(branch)
+            _run(["rm", relative_path], self.root)
+            _run(["commit", "-m", message], self.root)
+            return self._head_commit_unlocked(branch)
+
     # -- unlocked internals — never call these without holding `_locked()` ------
 
     def _ensure_repo_unlocked(self) -> None:

@@ -38,8 +38,10 @@ from .operators import (
 )
 from .promotion import (
     DeploymentRepository,
+    HealthCheckRepository,
     LifecycleEventRepository,
     PromotionRepository,
+    TradeRepository,
     VaultAccessRepository,
 )
 from .registry import CostModelRepository, MarketProfileRepository, TimeframeProfileRepository
@@ -74,12 +76,14 @@ __all__ = [
     "ExperimentRepository",
     "ExternalDocumentRepository",
     "ExternalKnowledgeRepository",
+    "HealthCheckRepository",
     "IndexMembershipRepository",
     "JobRepository",
     "KnowledgeEdgeRepository",
     "KnowledgeEntryRepository",
     "LabNotebookRepository",
     "LeaseLost",
+    "LifecycleEventRepository",
     "MarketProfileRepository",
     "NullWorldRunRepository",
     "OperatorRepository",
@@ -95,8 +99,10 @@ __all__ = [
     "SpecRepository",
     "StrategyRepository",
     "TimeframeProfileRepository",
+    "TradeRepository",
     "UnknownJobType",
     "ValidationFlagRepository",
+    "VaultAccessRepository",
     "curiosity_payoff_rate",
     "new_uid",
     "repeat_failure_rate",

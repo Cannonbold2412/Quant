@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from ..db import transaction
-from ..db.repositories import JobRepository, ResearchGoalRepository
+from ..db.repositories import DeploymentRepository, JobRepository, ResearchGoalRepository
 from ..db.repositories.base import Row
 from ..logging import get_logger
 from .budgets import check_global
@@ -42,6 +42,7 @@ __all__ = [
     "TimeDrivenJob",
     "diagnose_idle",
     "fire_due_hypothesis_batch",
+    "fire_due_monitor_batch",
     "fire_due_time_jobs",
     "run_forever",
     "tick",
@@ -93,6 +94,7 @@ class TickReport:
     reaped: list[int]
     idle_cause: str | None
     hypothesis_jobs_fired: list[int] = field(default_factory=list)
+    monitor_jobs_fired: list[int] = field(default_factory=list)
 
 
 def _period_key(cadence: str, now: datetime) -> str:
@@ -195,6 +197,43 @@ def fire_due_hypothesis_batch(conn: sqlite3.Connection, *, now: datetime | None 
     return fired
 
 
+def fire_due_monitor_batch(conn: sqlite3.Connection, *, now: datetime | None = None) -> list[int]:
+    """Stage 11's daily health check trigger (Implementation_Plan §14,
+    App-Flow §10) — one `MONITOR_DEPLOYMENT` job per `deployments.status =
+    'active'` row. Same shape as `fire_due_hypothesis_batch` above and for
+    the same reason: `TIME_DRIVEN_SCHEDULE` fires one fixed job per entry
+    with no id to key on, and this needs one job per *row* found at tick
+    time.
+
+    Idempotent per deployment per day via `dedupe_key` — an overlapping tick
+    never double-checks the same deployment. Deliberately not derived from
+    `emit(Event.PAPER_TRADING_MILESTONE)`'s per-entity default key
+    (`events.py`'s own warning): that key is `f"{event}:{deployment_id}"`
+    with no date component, which would collapse every day's check into the
+    same job forever.
+    """
+    now = now or datetime.now(UTC)
+    deployments = DeploymentRepository(conn).active()
+    if not deployments:
+        return []
+
+    date_key = now.strftime("%Y-%m-%d")
+    jobs = JobRepository(conn)
+    fired: list[int] = []
+    with transaction(conn, immediate=True):
+        for deployment in deployments:
+            key = f"monitor:{deployment['id']}:{date_key}"
+            fired.append(
+                jobs.enqueue(
+                    "MONITOR_DEPLOYMENT",
+                    {"deployment_id": deployment["id"]},
+                    strategy_id=deployment["strategy_id"],
+                    dedupe_key=key,
+                )
+            )
+    return fired
+
+
 def diagnose_idle(conn: sqlite3.Connection, dispatcher: Dispatcher) -> str:
     """Why did this tick dispatch nothing? TRD §4.5's table, evaluated in
     priority order — the first true condition is reported."""
@@ -247,6 +286,7 @@ def tick(
 
     time_jobs = fire_due_time_jobs(conn, schedule, now=now)
     hypothesis_jobs = fire_due_hypothesis_batch(conn, now=now)
+    monitor_jobs = fire_due_monitor_batch(conn, now=now)
     dispatched = dispatcher.dispatch_pending()
     terminated = dispatcher.enforce_time_budgets()
     reaped = dispatcher.reap()
@@ -257,7 +297,9 @@ def tick(
         level = _log.warning if idle_cause in ("queue_empty",) else _log.info
         level("scheduler idle", extra={"idle_cause": idle_cause})
 
-    return TickReport(expired, time_jobs, dispatched, terminated, reaped, idle_cause, hypothesis_jobs)
+    return TickReport(
+        expired, time_jobs, dispatched, terminated, reaped, idle_cause, hypothesis_jobs, monitor_jobs
+    )
 
 
 def run_forever(
