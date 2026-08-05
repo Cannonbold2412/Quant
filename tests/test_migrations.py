@@ -100,7 +100,7 @@ def test_partial_migration_target(tmp_path: Path):
     migrate(conn, target=1)
     state = status(conn)
     assert state["applied"] == [1]
-    assert state["pending"] == [2, 3, 4, 5, 6, 7, 8, 9]
+    assert state["pending"] == [2, 3, 4, 5, 6, 7, 8, 9, 10]
     assert "data_snapshots" in state["tables"]
     assert "strategies" not in state["tables"]
 

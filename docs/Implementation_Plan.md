@@ -1,6 +1,6 @@
 # Implementation Plan — AQRL
 
-> **Status:** **Stages 0–10 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised, the Nervous System job queue/scheduler, A2 the Quant Engineer, A3 the Research Reviewer, A1 the Research Scientist, A4 the Promotion Committee, A5 the Knowledge Manager, the Human Gates, the Librarian & Curiosity Engine). Stage 4a and Stages 11–13 not started.
+> **Status:** **Stages 0–12 are built** (nanoAQRL, Foundations, Operator Library, `evaluate.py` productionised, the Nervous System job queue/scheduler, A2 the Quant Engineer, A3 the Research Reviewer, A1 the Research Scientist, A4 the Promotion Committee, A5 the Knowledge Manager, the Human Gates, the Librarian & Curiosity Engine, Paper Trading & Health Monitoring, the Dashboard decision layer). Stage 4a and Stage 13 not started.
 > **Last updated:** 2026-08-05
 > **Companion docs:** `PRD.md` (why) · `TRD.md` (how) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences)
 
@@ -940,6 +940,92 @@ Built to `UI-UX-Brief.md`. Order: Decisions → Health → Pipeline → Laborato
 
 **Observability is not part of this stage** — it shipped at Stage 4a. Stage 12 is the *decision* layer only: a **read-only view plus two decision buttons**. By this point the human has been watching agents work and browsing the database for several stages; this adds only what is needed to approve or reject.
 
+> ✅ **Built.** `aqrl/dashboard/` — a local, read-only-except-the-decision-
+> controls web app over the existing SQLite database, `aqrl dashboard serve`
+> (`cli.py`). **Zero new dependencies**: `http.server.ThreadingHTTPServer`,
+> a decorator-populated route table (`server.py`), f-string HTML (`html.py`)
+> and hand-built inline SVG (`charts.py`) — the same call Stage 10 made for
+> `urllib` over `httpx`, extended here to the whole HTTP layer. All five
+> screens shipped in the brief's own order (Decisions → Health → Pipeline →
+> Laboratory → Knowledge); every write routes through `aqrl.gates`/`aqrl.
+> monitoring`/`ValidationFlagRepository.resolve` — Stage 9's and 11's own
+> functions, never a second implementation of a decision.
+>
+> **The review page's four charts are a full-panel replay, computed on
+> demand and cached per session** (`series.py`: `compile_spec` →
+> `full_signals` → `run_backtest`, the exact chain `monitoring.replay`
+> already validated) — `evaluations.equity_curve_path` exists in the schema
+> but nothing has ever written it, and adding a second write path to the
+> eval pipeline for the dashboard's sake was the wrong trade against
+> recomputing through the one path already proven. Stated on the page
+> itself: this is **not** the concatenated walk-forward series the honest
+> score was scored on, a real difference the chart's own caption names
+> rather than implies away. Portfolio correlation (`series.
+> portfolio_correlation`) is the same "computed fresh by plain Python from
+> stored return series, never fed to A4" App-Flow §7.2 specifies — genuinely
+> more than A4 itself saw.
+>
+> **Decisions got a third button.** UI-UX-Brief §3.3 names three controls
+> (Reject / Request more research / Approve), but `promotions.human_decision`
+> only ever had two live outcomes plus `pending` — nothing implemented A4's
+> own `defer` path (`handlers/promote.py`) for a human. `gates.defer` mirrors
+> it: a typed note, a fresh `research_goals` row (`created_by='human'`),
+> `strategies.status` deliberately untouched. One migration
+> (`0010_promotion_defer.sql`, a single portable `ALTER TABLE ... ADD COLUMN
+> deferred_at`) gives a deferred promotion somewhere honest to record that
+> decision without lying into the three-value CHECK; `pending_human_decision`
+> now filters `deferred_at IS NULL` too.
+>
+> **The case-against panel (§3.2②) is assembled, not hand-typed**: iteration
+> count as a warning badge, the evaluation tests closest to failing (by
+> margin, not just the ones that already failed), the worst-performing
+> regimes and unprofitable-fold count, the cost-breakeven multiplier,
+> portfolio correlation above 0.5, and any `knowledge_entries` row carrying
+> counter-evidence for this family/market — all above the evidence section,
+> never below it, the one layout decision the brief calls out as load-
+> bearing.
+>
+> **One real bug caught before merge, found by the route-level test suite
+> itself:** the Pipeline screen's "no strategies yet" early return also
+> skipped the data-quality queue — a snapshot with an unresolved validation
+> flag but no strategy started yet would have hidden the one queue that
+> "directly gates research throughput" (§5.3) behind an empty state. Fixed
+> by rendering the queue independently of whether any strategy exists.
+> **A second bug, found the same way:** the HTTP layer never parsed a
+> request's query string at all — `?group=market` on the Pipeline screen's
+> grouping toggle was silently dropped, every GET handler only ever saw its
+> route-pattern groups. Fixed once in `server.py`'s `_dispatch`, which every
+> screen's query-param reads now share.
+>
+> Proven directly (36 new tests: `tests/test_dashboard_charts.py`, pure SVG/
+> HTML generation with no database; `tests/test_dashboard_views.py`, route
+> handlers driven against a migrated test database, covering the empty-queue
+> state, case-against ordering, approve/reject/defer including their failure
+> paths, the kill switch's typed-confirmation check, the query-string
+> grouping toggle, and data-flag resolution) and, since every dashboard
+> module imports only `aqrl.gates`/`aqrl.monitoring` and never `aqrl.
+> orchestration.handlers`/`aqrl.vcs` at module scope, **this whole suite
+> collects and runs on native Windows** — unlike `tests/orchestration/*`.
+> End-to-end confirmed over a real socket, against a real ingested snapshot
+> and a real backtest replay, for every screen plus `aqrl dashboard serve`
+> launched as its own subprocess.
+>
+> **Known limits, stated rather than papered over.** Laboratory's funnel
+> counts (Hypotheses/Implemented/Passed P0/Cleared the bar) are proxies over
+> the closest existing columns — there is no dedicated funnel-tracking
+> table — and the page says so. Reproducibility rate reads "not measured":
+> nothing in the schema records a re-run against its original result.
+> Agent calibration scores only A4's numeric `confidence` against the
+> human's eventual decision; A1's `expected_behavior` and A3's
+> `expected_effect` are free text with no comparable outcome to calibrate
+> against. The survival curve is a current-state snapshot at each age
+> threshold, not a true point-in-time reconstruction from `health_checks`
+> history. `gates.approve` and `monitoring.retire` still pull in `vcs.py`'s
+> `fcntl` import at call time, the same pre-existing Windows gap every stage
+> since Stage 5 has carried — clicking Approve or Retire needs a WSL/Linux
+> run to close out, though every guard before that import (missing note,
+> wrong confirmation, unknown uid) is proven directly.
+
 ---
 
 ## 16. Stage 13 — Scale-Out
@@ -1080,3 +1166,4 @@ Not in the v1 build:
 | 2026-08-05 | **Stage 9 built.** `aqrl/gates.py` (`pending`/`evidence`/`approve`/`reject`) closes the loop's last dead end: A4's `promotions` row previously sat at `human_decision='pending'` forever with nothing reading it back. `approve` is the only code path in the system that merges `strategy/<uid>` into `deploy/paper`/`deploy/live` (`StrategyRepo.merge`, new in `vcs.py`), opens the vault (`VaultAccessRepository`, budget derived from `vault_access_log`'s own row count, no new counter table), and inserts a `deployments` row (`DeploymentRepository`, `LifecycleEventRepository` — both new, same migration as the existing `PromotionRepository`) — TRD §18's "no code path may bypass these gates," made true rather than merely stated. `aqrl review list/show/approve/reject` in `cli.py` is a thin shell over it. No migration: every column already existed. Scoped down from the full spec on purpose: vault access is gate-only (logs and decrements the family budget; does not load the vault snapshot or score against it — App-Flow §15's full flow needs a vault snapshot that does not exist yet), and a human rejection reaches A5's knowledge base by a direct, human-authored `knowledge_entries` write rather than re-running `ARCHIVE` (its `lab_notebooks` idempotency guard makes a second run for the same strategy a no-op by design, TRD §12.1). `agents/context.py`'s `assemble_promote_brief` was split to expose `promotion_evidence_sections()` publicly, so `aqrl review show` renders exactly the evidence A4 judged on with no second renderer to drift. Proven directly against a real migrated database (`tests/orchestration/test_human_gates.py`, `tests/test_vcs.py`'s new merge cases) — including a human rejection counted by Stage 8's `repeat_failure_rate` exactly like an A5-recorded one. **One real bug caught before merge:** the deferred `vcs` import (kept out of `gates.py`'s module scope so `pending`/`evidence`/`reject` stay usable on a platform without `fcntl`) was originally placed at the top of `approve`, ahead of its own validation guards — an empty note or an already-decided promotion failed on an unrelated import instead of its own clear error. Moved to sit right before its one use, verified by exercising every guard clause directly. |
 | 2026-08-05 | **Stage 10 built.** `aqrl/librarian/` (collectors, structural chunker, relevance filter, stdlib-only fetch layer) and `aqrl/orchestration/handlers/librarian.py` (`COLLECT_PAPERS`, `EXTRACT_KNOWLEDGE`, `COLLECT_MARKET_DATA`) close PRD §7.1's risk — the loop rediscovering itself — with the two inputs it named: external knowledge and curiosity. No migration: every table, job type, and event Stage 10 needed already existed since Stage 1. Collectors cover arXiv and SSRN/blogs/journals (one `Collector` protocol, `ArxivCollector` and `FeedCollector`); GitHub is deliberately out (`COLLECT_GITHUB` stays unregistered, and replaced `COLLECT_PAPERS` as the "job type nobody services yet" fixture in `test_dispatch.py`/`test_scheduler.py` — the exact regression class Stage 8's own notes on `ARCHIVE` predicted). Zero new dependencies. `novelty_score` (`agents/research_brief.py`) is `1 - max cosine` against the existing knowledge base, reusing Stage 7's embedding cache. Loop closure needed no schema or prompt change: `handlers/generate.py`'s `persist` now writes `research_questions.produced_spec_ids` and `strategy_specs.source_question_id` via two new `ResearchQuestionRepository` methods, and `curiosity_payoff_rate` operationalises this stage's done-when the way `repeat_failure_rate` did Stage 8's. **One real bug caught before merge:** `HIGH_NOVELTY_EXTRACTION` had been wired to fire `GENERATE_SPEC` since Stage 4 but never actually fired until this stage — and `GENERATE_SPEC.run()` has required a `goal_id` since Stage 7, which this event's payload never carried. Fixed by targeting every active goal the idea's own market/timeframe match, one job each, none if none match. Proven with 61 new tests (pure `tests/librarian/`, repository behaviour, handler behaviour including a zero-LLM-calls relevance-filter proof and multi-idea `source_chunk_ids` traceability) and end to end through the real job queue (`test_curiosity_loop.py`): a pushed question drives a targeted search, the Librarian's answer reaches a subsequent `GENERATE_SPEC` call through the exact reader A1 uses, and `produced_spec_ids`/`curiosity_payoff_rate` record the payoff. Known limit: `COLLECT_MARKET_DATA` is freshness/coverage only, no vendor configured (Stage 11's concern); `tests/orchestration/*` still need WSL/Linux to run on native Windows, a pre-existing gap. |
 | 2026-08-05 | **Stage 11 built.** `aqrl/monitoring.py` (replay/scoring/gate logic, plus the human-triggered `kill`/`retire`, mirroring how `gates.py` splits Stage 9's automatic and human halves) and `aqrl/orchestration/handlers/monitor.py` (`MONITOR_DEPLOYMENT`) close the last dead end: an approved paper deployment previously sat inert forever. No migration — `deployments`/`trades`/`health_checks`/`lifecycle_events` and `MONITOR_DEPLOYMENT` all existed since Stage 1/9. The paper executor is snapshot replay, not a broker (none exists in this codebase; live integration is M7's concern) — one full-panel backtest via `compile_spec`/`run_backtest`, split at `deployments.started_at` into a baseline yardstick and genuine forward evidence. Z-score anchors come from the human-approved `expected_*` baseline, never recomputed; the spread comes from `se_sharpe` (Stage 3's own formula) and the baseline era's own trade dispersion. The regime rule — the stage's actual point — demotes a would-be red/orange one step when the current regime is one the baseline shows this strategy struggling in, never below yellow; proven directly (`tests/test_monitoring.py`, 14 tests, no database, runs anywhere) with the identical degradation reading `red` outside a weak regime and `orange` inside one. The promotion row (`stage_to='live_small'`) is written directly on a passing gate, no LLM call, the same shape `gates.reject` uses — `_STAGE_TO_TARGET["live_small"]`, wired since Stage 9, finally has a producer. The kill switch (`risk_breach`) is checked independently of the health verdict per TRD §18 and discards every trade at or after a breach bar rather than merely flagging it; `aqrl deploy kill` is the same path, human-triggered. Retirement (`aqrl deploy retire`) removes the file from the deploy branch only, via the one new git operation `StrategyRepo.remove_from_branch`. **One correctness fix from a pre-commit self-check:** a zero-variance baseline collapsed the SE denominator to zero, and the original code treated that as "no evidence" (z=0, reads healthy) rather than "maximally significant deviation" — `_zscore` now saturates at a large magnitude in the deviation's direction instead of going silent. Known limits: execution quality is wired but not measurable until a real broker exists (`actual_slippage_bps` equals `expected_slippage_bps` by construction); `tests/orchestration/test_monitoring.py` was written and checked by hand against every real signature it calls, and confirmed to fail to *collect* only at the same pre-existing `fcntl` gap `test_human_gates.py` already has — but unlike Stage 10, it was not verified passing even via a local `fcntl` stub, and still needs a real WSL/Linux run to close out. |
+| 2026-08-05 | **Stage 12 built.** `aqrl/dashboard/` — the decision layer, stdlib-only (`http.server`, no new dependency), all five UI-UX-Brief screens in order. Every write reuses Stage 9/11's own functions (`aqrl.gates`, `aqrl.monitoring`, `ValidationFlagRepository.resolve`) — nothing here is a second decision path. Review-page charts recompute a full-panel replay on demand (`series.py`, the same `compile_spec`/`full_signals`/`run_backtest` chain `monitoring.replay` validated) since nothing has ever written `evaluations.equity_curve_path`; the page states plainly that this is not the walk-forward-concatenated series the honest score used. Decisions gained a third control A4 already had but a human didn't — `gates.defer`, one migration (`0010_promotion_defer.sql`, a single portable `ADD COLUMN deferred_at`) giving a deferred promotion somewhere honest to live outside the three-value `human_decision` CHECK. **Two real bugs caught before merge, both by the route-level test suite:** the Pipeline screen's empty-strategies early return also hid the data-quality queue, which §5.3 says must gate throughput regardless of whether any strategy exists yet; and the HTTP layer never parsed a request's query string at all, so the Pipeline grouping toggle's `?group=market` was silently dropped for every GET handler — both fixed, the second once in `server.py` for every screen sharing it. Proven with 36 new tests (`tests/test_dashboard_charts.py`, pure SVG/HTML with no database; `tests/test_dashboard_views.py`, route handlers against a migrated database) that — unlike `tests/orchestration/*` — collect and run on native Windows, since no dashboard module imports `aqrl.orchestration.handlers`/`aqrl.vcs` at module scope; confirmed further over a real socket against a real ingested snapshot and backtest replay for every screen, and via `aqrl dashboard serve` launched as its own subprocess. Known limits: Laboratory's funnel counts are stated proxies over existing columns (no dedicated funnel table exists), reproducibility rate reads "not measured," and `gates.approve`/`monitoring.retire` still need a WSL/Linux run for the same pre-existing `fcntl` gap every stage since Stage 5 has carried — every guard before that import is proven directly on Windows. |

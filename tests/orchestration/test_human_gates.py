@@ -20,6 +20,7 @@ from aqrl.db.repositories import (
     ExperimentRepository,
     KnowledgeEntryRepository,
     PromotionRepository,
+    ResearchGoalRepository,
     SpecRepository,
     StrategyRepository,
     VaultAccessRepository,
@@ -217,3 +218,58 @@ def test_reject_requires_at_least_one_next_question(conn, strategy_id, experimen
     promotion = _approve_via_a4(conn, strategy_id, experiment_id)
     with pytest.raises(ValueError, match="next-question"):
         gates.reject(conn, promotion["id"], by="kiran", note="n", reason="no_signal", next_questions=[])
+
+
+# -- defer (Stage 12, UI-UX-Brief §3.3's third button) ---------------------------
+
+
+def test_defer_creates_a_research_goal_and_leaves_strategy_status_untouched(conn, strategy_id, experiment_id):
+    promotion = _approve_via_a4(conn, strategy_id, experiment_id)
+    strategy_before = StrategyRepository(conn).get(strategy_id)
+
+    result = gates.defer(conn, promotion["id"], by="kiran", note="want a longer out-of-sample window first")
+
+    strategy_after = StrategyRepository(conn).get(strategy_id)
+    assert strategy_after["status"] == strategy_before["status"]  # deliberately untouched
+
+    goal = ResearchGoalRepository(conn).get(result["research_goal_id"])
+    assert goal["created_by"] == "human"
+    assert goal["status"] == "active"
+    assert goal["description"] == "want a longer out-of-sample window first"
+
+
+def test_defer_removes_the_promotion_from_the_pending_queue(conn, strategy_id, experiment_id):
+    promotion = _approve_via_a4(conn, strategy_id, experiment_id)
+    assert promotion["id"] in {row["id"] for row in gates.pending(conn)}
+
+    gates.defer(conn, promotion["id"], by="kiran", note="need more data")
+
+    assert promotion["id"] not in {row["id"] for row in gates.pending(conn)}
+    updated = PromotionRepository(conn).get(promotion["id"])
+    assert updated["human_decision"] == "pending"  # CHECK has no 'deferred' value
+    assert updated["deferred_at"] is not None
+
+
+def test_defer_with_empty_note_raises_and_writes_nothing(conn, strategy_id, experiment_id):
+    promotion = _approve_via_a4(conn, strategy_id, experiment_id)
+
+    with pytest.raises(ValueError, match="typed note"):
+        gates.defer(conn, promotion["id"], by="kiran", note="   ")
+
+    assert PromotionRepository(conn).get(promotion["id"])["deferred_at"] is None
+
+
+def test_deferring_an_already_decided_promotion_raises(conn, strategy_id, experiment_id):
+    promotion = _approve_via_a4(conn, strategy_id, experiment_id)
+    gates.reject(conn, promotion["id"], by="kiran", note="n", reason="no_signal", next_questions=["q"])
+
+    with pytest.raises(ValueError, match="already"):
+        gates.defer(conn, promotion["id"], by="kiran", note="n")
+
+
+def test_deferring_an_already_deferred_promotion_raises(conn, strategy_id, experiment_id):
+    promotion = _approve_via_a4(conn, strategy_id, experiment_id)
+    gates.defer(conn, promotion["id"], by="kiran", note="first")
+
+    with pytest.raises(ValueError, match="already deferred"):
+        gates.defer(conn, promotion["id"], by="kiran", note="again")

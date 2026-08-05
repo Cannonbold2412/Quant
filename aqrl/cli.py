@@ -1322,6 +1322,16 @@ def cmd_librarian_questions(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- dashboard (Stage 12 — Implementation_Plan §15) ----------------------------
+
+
+def cmd_dashboard_serve(args: argparse.Namespace) -> int:
+    from .dashboard import serve
+
+    serve(host=args.host, port=args.port)
+    return 0
+
+
 # -- wiring --------------------------------------------------------------------
 
 
@@ -1664,6 +1674,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--by", required=True, help="who is retiring it")
     p.add_argument("--reason", required=True)
     p.set_defaults(func=cmd_deploy_retire)
+
+    dashboard = subs.add_parser("dashboard", help="the decision-layer web app (Stage 12)").add_subparsers(
+        dest="cmd", required=False
+    )
+    p = dashboard.add_parser("serve", help="serve the dashboard (read-only + the human gates)")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8787)
+    p.set_defaults(func=cmd_dashboard_serve)
 
     return parser
 

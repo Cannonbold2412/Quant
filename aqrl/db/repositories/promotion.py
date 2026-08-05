@@ -35,8 +35,12 @@ class PromotionRepository(Repository):
 
     def pending_human_decision(self) -> list[Row]:
         """Every recommendation still awaiting a human — Stage 9's `aqrl
-        review` is the intended first real caller of this."""
-        return self.find(human_decision="pending", order_by="id")
+        review` is the intended first real caller of this. `deferred_at IS
+        NULL` excludes Stage 12's third decision (`gates.defer`,
+        `0010_promotion_defer.sql`): a deferred promotion has already had
+        its human decision (send it back to research), it just has nowhere
+        honest to record that in `human_decision`'s own three-value CHECK."""
+        return self.find(human_decision="pending", deferred_at=None, order_by="id")
 
 
 class DeploymentRepository(Repository):

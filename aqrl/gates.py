@@ -45,6 +45,7 @@ from .db.repositories import (
     KnowledgeEntryRepository,
     LifecycleEventRepository,
     PromotionRepository,
+    ResearchGoalRepository,
     ResearchQuestionRepository,
     SnapshotRepository,
     SpecRepository,
@@ -57,7 +58,7 @@ from .orchestration.events import Event, emit
 from .orchestration.states import transition
 from .profiles import ProfileLoader
 
-__all__ = ["FAILURE_REASONS", "approve", "evidence", "pending", "reject"]
+__all__ = ["FAILURE_REASONS", "approve", "defer", "evidence", "pending", "reject"]
 
 #: `promotions.stage_to` -> (deploy branch, deployment mode, strategies.status
 #: on approval). Only Gate 1 ("research" -> "human_review") has a real
@@ -366,4 +367,61 @@ def reject(
         "knowledge_entry_id": entry_id,
         "research_question_ids": question_ids,
         "strategy_status": "rejected",
+    }
+
+
+def defer(conn: sqlite3.Connection, promotion_id: int, *, by: str, note: str) -> dict[str, Any]:
+    """Human Gate — defer (Stage 12, UI-UX-Brief §3.3's third button;
+    App-Flow §9's DEFER: *"request more research (creates a new goal)"*).
+    No git, no vault — the same "no execution authority beyond a database
+    write" shape `reject` already has.
+
+    Mirrors A4's own defer path (`orchestration/handlers/promote.py:178`) at
+    the human's own authority: `strategies.status` is deliberately left
+    untouched — the idea re-enters research via a fresh `research_goals`
+    row, not by resuming this strategy's own loop.
+
+    `promotions.human_decision`'s CHECK has no 'deferred' value (only
+    approved/rejected/pending — Backend-Schema §7), so the row stays
+    'pending' there; `deferred_at` (`0010_promotion_defer.sql`) is what
+    actually removes it from `pending_human_decision()`'s queue.
+    """
+    if not note or not note.strip():
+        raise ValueError("a deferral requires a typed note")
+
+    promotions = PromotionRepository(conn)
+    promotion = promotions.get(promotion_id)
+    if promotion is None:
+        raise ValueError(f"no promotion {promotion_id}")
+    if promotion["human_decision"] != "pending":
+        raise ValueError(f"promotion {promotion_id} is already {promotion['human_decision']}")
+    if promotion.get("deferred_at"):
+        raise ValueError(f"promotion {promotion_id} is already deferred")
+
+    strategy = StrategyRepository(conn).get(promotion["strategy_id"])
+    if strategy is None:
+        raise ValueError(f"no strategy {promotion['strategy_id']}")
+
+    with transaction(conn, immediate=True):
+        promotions.update(
+            promotion_id,
+            deferred_at=utcnow_iso(),
+            human_decided_by=by,
+            human_decided_at=utcnow_iso(),
+            human_notes=note,
+        )
+        goal_id = ResearchGoalRepository(conn).insert(
+            title=f"Deferred by human: {strategy['name']}",
+            description=note,
+            market=strategy.get("market"),
+            timeframe=strategy.get("timeframe"),
+            allocation_bucket="incremental",
+            status="active",
+            created_by="human",
+        )
+
+    return {
+        "promotion_id": promotion_id,
+        "research_goal_id": goal_id,
+        "strategy_status": strategy["status"],
     }
