@@ -1,0 +1,40 @@
+# Global macro CFD costs (TRD §6.3).
+#
+# Spread-dominated: there is no STT/stamp/exchange-fee stack here, just the
+# broker's spread plus a commission allowance. Rates below assume an ECN-style
+# retail account on liquid symbols (EURUSD, XAUUSD, USA500): ~0.8 bps spread
+# plus ~0.4 bps commission/slippage per side, ~2.4 bps round trip.
+#
+# PROVENANCE: typical published retail ECN pricing, not a real contract note.
+# Exotics and energy widen 5-20x — a single cost model for all 38 instruments
+# is only defensible because the loop's default instrument is a deep-liquidity
+# index; re-derive per symbol before scoring anything thin.
+
+market: global_macro
+asset_class: cfd
+version: "1.0.0"
+currency: USD
+
+stt_buy_bps: 0.0
+stt_sell_bps: 0.0
+
+stamp_duty_buy_bps: 0.0
+stamp_duty_sell_bps: 0.0
+
+exchange_txn_bps: 0.0
+
+sebi_turnover_bps: 0.0
+
+gst_rate: 0.0
+
+brokerage_bps: 0.4
+
+slippage_bps: 1.2
+
+flat_charge_sell: 0.0
+reference_trade_size: 0.0
+
+source: "Typical published retail ECN spread + commission schedule"
+derived_at: "2026-08"
+requires_contract_note_verification: true
+is_placeholder: false

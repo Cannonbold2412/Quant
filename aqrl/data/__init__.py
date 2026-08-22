@@ -16,18 +16,23 @@ from .adjustment import (
     dividend_ratio,
     ratio_for,
 )
+from .market_data import BarFile, MarketDataError, available_instruments, load_ohlcv
 from .snapshots import SnapshotError, SnapshotManager
 from .universe import UniverseError, UniverseResolver
 
 __all__ = [
-    "adjust",
-    "cumulative_factors",
-    "ratio_for",
-    "dividend_ratio",
     "AdjustmentError",
-    "UnverifiedActionError",
-    "SnapshotManager",
+    "BarFile",
+    "MarketDataError",
     "SnapshotError",
-    "UniverseResolver",
+    "SnapshotManager",
     "UniverseError",
+    "UniverseResolver",
+    "UnverifiedActionError",
+    "adjust",
+    "available_instruments",
+    "cumulative_factors",
+    "dividend_ratio",
+    "load_ohlcv",
+    "ratio_for",
 ]

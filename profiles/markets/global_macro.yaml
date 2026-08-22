@@ -1,0 +1,109 @@
+# Global macro CFDs (TRD §6.4) — the market behind the local
+# data/{forex,commodities,indices}/daily tree.
+#
+# One profile for the three asset groups because they share what a profile
+# actually models: a near-24/5 calendar, USD P&L, no corporate actions, and
+# spread-dominated costs. What differs (spread width per instrument) lives in
+# the cost model's slippage allowance, flagged for contract-note verification.
+
+name: global_macro
+version: "1.0.0"
+description: >
+  Forex majors and crosses, spot metals/energy, and cash index CFDs traded
+  against a retail CFD broker. Daily bars from the local parquet tree.
+  Indices are price-only series — total return is overstated by their
+  dividend yield; treat index long-only results accordingly.
+
+asset_classes:
+  - cfd
+
+calendar:
+  timezone: UTC
+  sessions:
+    # Near-24h trading with a daily maintenance break; the exact window does
+    # not affect daily-bar arithmetic, only that session_seconds < one day.
+    - start: "00:00:00"
+      end: "23:55:00"
+  # ~5 sessions/week x 52 weeks. FX has no holiday calendar here because the
+  # venue never fully closes; thin holiday liquidity shows up as wider spread,
+  # which belongs in the cost model.
+  trading_days_per_year: 260
+  holidays: []
+  half_days: {}
+
+constraints:
+  tick_size: 0.00001
+  lot_size: 1
+  contract_multiplier: 1.0
+  margin_pct: 3.33
+  circuit_limit_pct: null
+  short_selling: allowed
+
+universe:
+  index_name: null
+  # Explicit list, not an index membership: these are tradable CFD symbols,
+  # not index constituents. The set matches exactly what exists on disk.
+  instruments:
+    - AUDCAD
+    - AUDCHF
+    - AUDJPY
+    - AUDNZD
+    - AUDUSD
+    - BRENT
+    - CADCHF
+    - CADJPY
+    - CHFJPY
+    - DEU
+    - EURAUD
+    - EURCAD
+    - EURCHF
+    - EURGBP
+    - EURJPY
+    - EURNZD
+    - EURUSD
+    - GBPAUD
+    - GBPCAD
+    - GBPCHF
+    - GBPJPY
+    - GBPNZD
+    - GBPUSD
+    - GBR
+    - NATGAS
+    - NZDCAD
+    - NZDCHF
+    - NZDJPY
+    - NZDUSD
+    - USA30
+    - USA500
+    - USATECH
+    - USDCAD
+    - USDCHF
+    - USDJPY
+    - WTI
+    - XAGUSD
+    - XAUUSD
+  point_in_time_available: true
+
+reference:
+  currency: USD
+  risk_free_rate_source: "US 3-month T-bill"
+  benchmark: USA500
+  adv_participation_cap_pct: null
+
+hazards:
+  survivorship: false
+  contract_roll: false
+  exchange_bad_prints: false
+  unadjusted_prices: false
+  notes: >
+    Spot FX and CFD series have no splits or dividends to adjust. Energy
+    futures-derived symbols (BRENT, WTI, NATGAS) are continuous contracts;
+    if the vendor stitched them without a roll adjustment, contango/backwardation
+    appears as phantom return. Verify against the vendor's roll methodology
+    before trusting commodity results.
+
+max_drawdown_override: null
+
+# No circuit limits on this venue; a 20% single-day move on NATGAS is a real
+# event, not a data error.
+unexplained_jump_threshold: 0.35

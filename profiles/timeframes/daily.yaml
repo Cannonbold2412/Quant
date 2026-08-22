@@ -31,3 +31,4 @@ fidelity_warning: null
 
 periods_per_year_assertions:
   nse_equity: 252
+  global_macro: 260
