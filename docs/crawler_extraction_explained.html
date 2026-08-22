@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AQRL Librarian — How Crawlers Extract Info</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #c9d1d9; --muted: #8b949e;
+    --accent: #58a6ff; --green: #3fb950; --orange: #d29922;
+    --red: #f85149; --purple: #bc8cff;
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.6; padding: 2rem 1rem 4rem; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 1.9rem; margin-bottom: .25rem; color: #f0f6fc; }
+  h1 span { color: var(--accent); }
+  .subtitle { color: var(--muted); margin-bottom: 2rem; font-size: .95rem; }
+  h2 { font-size: 1.35rem; color: #f0f6fc; margin: 2.5rem 0 1rem; padding-bottom: .4rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; color: var(--accent); margin: 1.4rem 0 .6rem; }
+  p { margin-bottom: .8rem; }
+  code { font-family: var(--mono); background: #21262d; padding: .12em .38em; border-radius: 5px; font-size: .86em; color: #79c0ff; }
+  pre { background: #0a0d12; border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow-x: auto; font-family: var(--mono); font-size: .82rem; line-height: 1.55; margin: .8rem 0; }
+  pre .k { color: #ff7b72; } pre .s { color: #a5d6ff; } pre .c { color: #8b949e; font-style: italic; } pre .f { color: #d2a8ff; } pre .n { color: #79c0ff; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .file-ref { display: inline-block; font-family: var(--mono); font-size: .75rem; background: #21262d; color: var(--green); border-radius: 5px; padding: .15em .5em; }
+  .pipeline { display: flex; flex-direction: column; gap: 0; margin: 1.5rem 0; }
+  .stage { background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; padding: .7rem .9rem; position: relative; flex: 1; min-width: 0; }
+  .stage .num { position: absolute; top: -.55rem; left: -.55rem; width: 1.5rem; height: 1.5rem; background: var(--accent); color: #0d1117; border-radius: 50%; font-weight: 700; font-size: .78rem; display: flex; align-items: center; justify-content: center; }
+  .stage b { color: #f0f6fc; display: block; font-size: .92rem; }
+  .stage small { color: var(--muted); font-size: .78rem; line-height: 1.45; display: block; margin-top: .2rem; }
+  .gate { border-left-color: var(--orange); } .llm { border-left-color: var(--purple); } .store { border-left-color: var(--green); }
+  .arrow-down { text-align: center; color: var(--muted); font-size: 1.05rem; line-height: 1; padding: .35rem 0; }
+  .arrow-down em { font-style: normal; font-size: .72rem; display: block; color: var(--muted); }
+  .split { display: flex; gap: .8rem; }
+  table { width: 100%; border-collapse: collapse; margin: .8rem 0; font-size: .87rem; }
+  th { text-align: left; color: #f0f6fc; background: #21262d; padding: .5rem .7rem; border: 1px solid var(--border); }
+  td { padding: .5rem .7rem; border: 1px solid var(--border); vertical-align: top; }
+  td code { white-space: nowrap; }
+  .chips { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
+  .chip { font-family: var(--mono); font-size: .78rem; padding: .25rem .6rem; border-radius: 20px; border: 1px solid var(--border); background: #0a0d12; }
+  .chip.in { color: var(--accent); border-color: var(--accent); }
+  .chip.skip { color: var(--red); border-color: var(--red); text-decoration: line-through; }
+  .meter { margin: .7rem 0; }
+  .meter .label { display: flex; justify-content: space-between; font-size: .8rem; color: var(--muted); margin-bottom: .25rem; }
+  .bar { height: 14px; background: #21262d; border-radius: 7px; overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 7px; }
+  .fill.g { background: linear-gradient(90deg, #238636, #3fb950); }
+  .fill.o { background: linear-gradient(90deg, #9e6a03, #d29922); }
+  .fill.r { background: linear-gradient(90deg, #8b1f1f, #f85149); }
+  svg text { fill: var(--text); font-family: -apple-system, "Segoe UI", sans-serif; }
+  .legend { display: flex; gap: 1.2rem; flex-wrap: wrap; font-size: .8rem; color: var(--muted); margin: .6rem 0; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: .35rem; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>How the <span>Crawlers Extract Info</span></h1>
+<p class="subtitle">AQRL <code>aqrl/librarian/</code> + <code>orchestration/handlers/librarian.py</code> — Stage 10 &ldquo;Librarian &amp; Curiosity Engine&rdquo;. Pure Python collectors (Claude never crawls), one uniform pipeline for every source.</p>
+
+<!-- ============ 1. BIG PICTURE ============ -->
+<h2>1 · The Big Picture — end-to-end pipeline</h2>
+<p>Two jobs do the work: <code>COLLECT_PAPERS</code> (pure Python, zero LLM cost) and <code>EXTRACT_KNOWLEDGE</code> (the only place an LLM touches a document). A third job, <code>COLLECT_MARKET_DATA</code>, is not a crawler at all — it just reads freshness stats over already-ingested data snapshots.</p>
+
+<div class="pipeline">
+  <div class="stage">
+    <span class="num">1</span>
+    <b>Search-term derivation</b> <span class="file-ref">handlers/librarian.py :: _search_terms_for_question</span>
+    <small>Open <code>research_questions</code>? Use each one's stored <code>search_terms</code>, else derive top-6 keywords from the question text (<code>relevance.keywords()</code>). No open questions &rarr; broad sweep with configured <code>librarian_broad_terms</code>. This is the &ldquo;curiosity loop&rdquo; targeting mode.</small>
+  </div>
+  <div class="arrow-down">&darr;<em>one search per question (or one broad search)</em></div>
+  <div class="split">
+    <div class="stage">
+      <span class="num">2a</span>
+      <b>ArxivCollector</b> <span class="file-ref">collectors.py :: ArxivCollector.search</span>
+      <small>Query = <code>all:term AND all:term …</code> against the free Atom API <code>export.arxiv.org/api/query</code>. Parse XML entries &rarr; title/authors/published/id. Then <b>follow each hit</b> to <code>arxiv.org/html/&lt;id&gt;</code> for full sectioned text; fall back to abstract if no HTML rendering exists.</small>
+    </div>
+    <div class="stage">
+      <span class="num">2b</span>
+      <b>FeedCollector</b> <span class="file-ref">collectors.py :: FeedCollector.search</span>
+      <small>One RSS/Atom reader over configured feed URLs (SSRN, blogs, journals — same code path, different config). Parse every <code>&lt;item&gt;</code>/<code>&lt;entry&gt;</code>, then <b>relevance-gate BEFORE fetching the body</b>: if title+summary scores 0 vs terms, the item is never downloaded.</small>
+    </div>
+  </div>
+  <div class="arrow-down">&darr;<em>raw bytes</em></div>
+  <div class="stage">
+    <span class="num">3</span>
+    <b>Fetch layer (polite HTTP)</b> <span class="file-ref">fetch.py :: UrllibFetcher</span>
+    <small>Stdlib <code>urllib.request</code> only — no httpx/feedparser/bs4 dependency. Per-host throttle spaces requests by <code>librarian_min_request_interval_seconds</code>. Custom User-Agent, configurable timeout, failures raise <code>FetchError</code> which collectors swallow as &ldquo;fewer results.&rdquo;</small>
+  </div>
+  <div class="arrow-down">&darr;<em>XML / HTML bytes</em></div>
+  <div class="stage">
+    <span class="num">4</span>
+    <b>HTML &rarr; Markdown-flavoured text</b> <span class="file-ref">html_text.py :: html_to_text</span>
+    <small><code>html.parser.HTMLParser</code> event walk: headings become ATX markers (<code>#</code>, <code>##</code>…), block tags become paragraph breaks, chrome dropped. Output looks like native Markdown so downstream chunking has exactly one code path.</small>
+  </div>
+  <div class="arrow-down">&darr;<em>clean text per document</em></div>
+  <div class="stage gate">
+    <span class="num">5</span>
+    <b>Dedup + cheap relevance gate</b> <span class="file-ref">handlers/librarian.py :: run_collect</span>
+    <small>Content hash — skip if seen this run or already in <code>external_documents</code> (&ldquo;read once, ever&rdquo;). Then term-overlap relevance on title + first 2000 chars. Near-free by design — rejects obviously-irrelevant docs <b>before any LLM cost</b>.</small>
+  </div>
+  <div class="arrow-down">&darr;<em>survivors</em></div>
+  <div class="split">
+    <div class="stage store">
+      <span class="num">6a</span>
+      <b>Archive raw text to disk</b> <span class="file-ref">_archive_raw_text</span>
+      <small><code>documents/&lt;content_hash&gt;.txt</code> — idempotent side effect, safe outside the job's write lock.</small>
+    </div>
+    <div class="stage store">
+      <span class="num">6b</span>
+      <b>Persist + route</b> <span class="file-ref">persist_collect</span>
+      <small>Insert into <code>external_documents</code>: relevance &ge; threshold &rarr; status <code>pending</code> + emit <code>DOCUMENT_INGESTED</code>; else <code>irrelevant</code> (kept, not dropped, so the filter stays auditable).</small>
+    </div>
+  </div>
+  <div class="arrow-down">&darr;<em>EXTRACT_KNOWLEDGE job per relevant document</em></div>
+  <div class="pipeline">
+    <div class="stage">
+      <span class="num">7</span>
+      <b>Structural chunking</b> <span class="file-ref">chunking.py :: chunk_by_structure</span>
+      <small>Never a blind token window. Rule 1: split at detected headings (ATX <code>#</code>, setext underlines, numbered titles like <code>2.1 Method</code>). Rule 2: sections still &gt; <code>max_chars=4000</code> fall back to greedy whole-paragraph accumulation — cuts only at blank lines, never mid-equation.</small>
+    </div>
+    <div class="arrow-down">&darr;<em>chunks[]</em></div>
+    <div class="stage llm">
+      <span class="num">8</span>
+      <b>LLM pass 1 — claims per chunk</b> <span class="file-ref">session.extract_chunk</span>
+      <small>One Claude call per chunk (bounded by <code>librarian_max_chunks_per_document</code>) extracts discrete factual claims.</small>
+    </div>
+    <div class="arrow-down">&darr;<em>claims_by_chunk</em></div>
+    <div class="stage llm">
+      <span class="num">9</span>
+      <b>LLM pass 2 — synthesis across chunks</b> <span class="file-ref">session.synthesize</span>
+      <small>Synthesizes a few distinct strategy ideas from all chunk claims; each idea cites its source-chunk indices (malformed indices are dropped, never guessed).</small>
+    </div>
+    <div class="arrow-down">&darr;<em>ideas[]</em></div>
+    <div class="stage">
+      <span class="num">10</span>
+      <b>Novelty scoring (embeddings)</b> <span class="file-ref">agents/research_brief.novelty_score</span>
+      <small>Voyage embedding similarity of each idea vs what's already known. High-novelty ideas (&ge; threshold) trigger a <code>HIGH_NOVELTY_EXTRACTION</code> &ldquo;novelty push&rdquo; straight to matching active research goals — skipping the nightly wait.</small>
+    </div>
+    <div class="arrow-down">&darr;</div>
+    <div class="stage store">
+      <span class="num">11</span>
+      <b>Persist knowledge + close the loop</b> <span class="file-ref">persist_extract</span>
+      <small>Write <code>document_chunks</code> (with extracted claims) and one <code>external_knowledge</code> row per idea. If the document answered its origin research question, record the answer. Token spend charged to the global daily budget.</small>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <span><i style="background:var(--accent)"></i>pure Python stage</span>
+  <span><i style="background:var(--orange)"></i>filter/gate</span>
+  <span><i style="background:var(--purple)"></i>LLM call</span>
+  <span><i style="background:var(--green)"></i>persistence/side effect</span>
+</div>
+
+<!-- ============ 2. FETCHER ============ -->
+<h2>2 · The fetch layer — polite-by-default HTTP</h2>
+<p>The only outbound-HTTP code in the codebase. Everything sits behind a <code>Fetcher</code> Protocol so tests use <code>StubFetcher</code> — pre-supplied bytes keyed by exact URL; no test ever touches the network.</p>
+
+<table>
+<tr><th>Mechanism</th><th>What it does</th><th>Where</th></tr>
+<tr><td><b>Per-host throttling</b></td><td>A process-wide <code>_last_request_at: dict[host, timestamp]</code>. Before each GET it sleeps the remainder of the minimum interval since that host's last request. A collector sweeping many arXiv pages in a loop can't hammer the host even if it forgets to pace itself.</td><td><code>UrllibFetcher._throttle</code></td></tr>
+<tr><td><b>Headers</b></td><td>Configured <code>User-Agent</code>; optional <code>Accept</code> per call — <code>application/atom+xml</code> for the arXiv API, <code>text/html</code> for full-text pages, mixed RSS/XML accepts for feeds.</td><td><code>UrllibFetcher.get</code></td></tr>
+<tr><td><b>Failure contract</b></td><td>Network errors / timeouts raise <code>FetchError</code>. Collectors treat that as &ldquo;return fewer results, never raise&rdquo; — one dead feed must not kill a multi-source run.</td><td><code>fetch.py:70</code>, <code>collectors.py:139</code>, <code>collectors.py:199</code></td></tr>
+</table>
+
+<pre><span class="k">def</span> <span class="f">_throttle</span>(self, host):
+    last = self._last_request_at.get(host)
+    <span class="k">if</span> last <span class="k">is not</span> <span class="k">None</span>:
+        wait = self._min_interval - (time.monotonic() - last)
+        <span class="k">if</span> wait &gt; <span class="n">0</span>:
+            time.sleep(wait)          <span class="c"># space out same-host requests</span>
+    self._last_request_at[host] = time.monotonic()</pre>
+
+<!-- ============ 3. COLLECTORS ============ -->
+<h2>3 · The two collectors</h2>
+
+<h3>ArxivCollector — query API, then chase full text</h3>
+<svg viewBox="0 0 900 215" width="100%" style="max-width:900px">
+  <defs>
+    <marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#58a6ff"/></marker>
+    <marker id="ao" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#d29922"/></marker>
+  </defs>
+  <rect x="10" y="60" width="160" height="70" rx="8" fill="#161b22" stroke="#30363d"/>
+  <text x="90" y="88" text-anchor="middle" font-size="13" fill="#f0f6fc">terms[]</text>
+  <text x="90" y="108" text-anchor="middle" font-size="11" fill="#8b949e">["momentum","vol"]</text>
+  <line x1="170" y1="95" x2="228" y2="95" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="235" y="60" width="180" height="70" rx="8" fill="#161b22" stroke="#30363d"/>
+  <text x="325" y="84" text-anchor="middle" font-size="12" fill="#f0f6fc">build query</text>
+  <text x="325" y="103" text-anchor="middle" font-size="10" fill="#79c0ff" font-family="monospace">all:momentum AND all:vol</text>
+  <line x1="415" y1="95" x2="473" y2="95" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="480" y="52" width="185" height="86" rx="8" fill="#161b22" stroke="#58a6ff"/>
+  <text x="572" y="76" text-anchor="middle" font-size="12" fill="#f0f6fc">GET export.arxiv.org</text>
+  <text x="572" y="93" text-anchor="middle" font-size="11" fill="#8b949e">Atom API (no key)</text>
+  <text x="572" y="112" text-anchor="middle" font-size="10.5" fill="#8b949e">parse &lt;entry&gt; elements</text>
+  <line x1="665" y1="95" x2="723" y2="65" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="730" y="30" width="160" height="62" rx="8" fill="#161b22" stroke="#bc8cff"/>
+  <text x="810" y="53" text-anchor="middle" font-size="12" fill="#f0f6fc">GET arxiv.org/html/&lt;id&gt;</text>
+  <text x="810" y="71" text-anchor="middle" font-size="10.5" fill="#8b949e">full text w/ real sections</text>
+  <path d="M 725 92 L 810 92 v 45" stroke="#d29922" stroke-width="1.5" fill="none" stroke-dasharray="4 3" marker-end="url(#ao)"/>
+  <rect x="730" y="145" width="160" height="50" rx="8" fill="#161b22" stroke="#d29922"/>
+  <text x="810" y="166" text-anchor="middle" font-size="11.5" fill="#f0f6fc">fallback: abstract</text>
+  <text x="810" y="183" text-anchor="middle" font-size="10" fill="#8b949e">(older papers, no HTML)</text>
+</svg>
+<ul style="margin:.6rem 0 1rem 1.3rem; font-size:.9rem;">
+<li>Each entry yields <code>CollectedDoc(source="arxiv", source_id=arxiv_id, url="https://arxiv.org/abs/&lt;id&gt;", …)</code>.</li>
+<li>Multiple authors joined via <code>_authors_of</code> (arXiv carries one <code>&lt;author&gt;</code> per person).</li>
+<li>A failed full-text fetch degrades gracefully to abstract — the hit is kept either way.</li>
+<li>XML parsing matches tags by <b>local name</b> (<code>tag.rsplit("}", 1)[-1]</code>) so namespaces never break matching.</li>
+</ul>
+
+<h3>FeedCollector — gate first, fetch second</h3>
+<svg viewBox="0 0 900 235" width="100%" style="max-width:900px">
+  <defs>
+    <marker id="ag" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#3fb950"/></marker>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f85149"/></marker>
+  </defs>
+  <rect x="10" y="85" width="150" height="66" rx="8" fill="#161b22" stroke="#30363d"/>
+  <text x="85" y="110" text-anchor="middle" font-size="12" fill="#f0f6fc">feeds: [(source,url)]</text>
+  <text x="85" y="130" text-anchor="middle" font-size="10.5" fill="#8b949e">ssrn / blog / journal</text>
+  <line x1="160" y1="118" x2="213" y2="118" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ag)"/>
+  <rect x="220" y="85" width="155" height="66" rx="8" fill="#161b22" stroke="#3fb950"/>
+  <text x="297" y="112" text-anchor="middle" font-size="12" fill="#f0f6fc">GET feed XML</text>
+  <text x="297" y="131" text-anchor="middle" font-size="10.5" fill="#8b949e">RSS &lt;item&gt; ∪ Atom &lt;entry&gt;</text>
+  <line x1="375" y1="118" x2="428" y2="118" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ag)"/>
+  <polygon points="435,83 585,83 605,118 585,153 435,153" fill="#161b22" stroke="#d29922"/>
+  <text x="520" y="106" text-anchor="middle" font-size="11.5" fill="#f0f6fc">relevance_score(title,</text>
+  <text x="520" y="123" text-anchor="middle" font-size="11.5" fill="#f0f6fc">summary, terms) &gt; 0?</text>
+  <text x="520" y="141" text-anchor="middle" font-size="9.5" fill="#8b949e">checked BEFORE body fetch</text>
+  <line x1="605" y1="100" x2="697" y2="80" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ag)"/>
+  <text x="648" y="78" font-size="10.5" fill="#3fb950">yes</text>
+  <line x1="605" y1="136" x2="697" y2="170" stroke="#f85149" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="705" y="48" width="185" height="64" rx="8" fill="#161b22" stroke="#3fb950"/>
+  <text x="797" y="72" text-anchor="middle" font-size="12" fill="#f0f6fc">GET item link (HTML)</text>
+  <text x="797" y="91" text-anchor="middle" font-size="10.5" fill="#8b949e">on failure → feed summary</text>
+  <rect x="705" y="152" width="185" height="46" rx="8" fill="#161b22" stroke="#f85149"/>
+  <text x="797" y="179" text-anchor="middle" font-size="11.5" fill="#f0f6fc">drop (never fetched)</text>
+</svg>
+<p style="font-size:.9rem;">This ordering is the key economy trick of the feed path: the network-bound part of collection spends bandwidth only on plausibly-relevant items. One shared parser (<code>_parse_feed_items</code>) handles both RSS and Atom by iterating every element whose local name is <code>item</code> or <code>entry</code>, extracting title / description-or-summary / link / pubDate-published-updated / author generically.</p>
+
+<!-- ============ 4. HTML EXTRACTION ============ -->
+<h2>4 · HTML &rarr; text — two-tier normalization</h2>
+<p>When the optional <code>extraction</code> extra is installed (<code>pip install aqrl[extraction]</code> &rarr; <b>trafilatura</b>, Apache-2.0), its main-content algorithm strips boilerplate the stdlib parser keeps — menus, cookie banners, related-posts chrome. Without it (or on any failure/empty result), the built-in stdlib parser handles every input, which is why no test requires trafilatura to be present.</p>
+
+<div class="card">
+  <p style="margin-bottom:.5rem"><b>Heading preservation trick:</b> trafilatura flattens <code>&lt;h1&gt;–&lt;h4&gt;</code> into plain body text, which would cost <code>chunk_by_structure</code> every section boundary. So <code>html_text.py</code> pre-transforms each heading into a paragraph carrying an ASCII sentinel (<code>@H2@ Method</code>), lets trafilatura run, then maps surviving sentinel lines back to ATX markers (<code>## Method</code>). Verified: headings survive, nav chrome does not.</p>
+  <p style="margin-bottom:0"><b>Config:</b> <code>output_format="markdown"</code>, <code>include_formatting=True</code>, <code>include_tables=True</code>, <code>include_images=False</code>, <code>include_links=False</code>. Tiny/degenerate inputs (&lt; main-content threshold) automatically degrade to the stdlib tier.</p>
+</div>
+
+<div class="chips">
+  <span class="chip in">h1–h4 &rarr; #…#### heading lines</span>
+  <span class="chip in">p · div · section · article · li · br · tr · blockquote &rarr; blank-line paragraph break</span>
+  <span class="chip skip">script · style · nav · header · footer · noscript — skipped entirely (skip-depth counter handles nesting)</span>
+</div>
+
+<pre><span class="k">class</span> <span class="f">_TextExtractor</span>(HTMLParser):
+    <span class="k">def</span> <span class="f">handle_starttag</span>(self, tag, attrs):
+        <span class="k">if</span> tag <span class="k">in</span> _SKIP_TAGS: self._skip_depth += <span class="n">1</span>; <span class="k">return</span>
+        <span class="k">if</span> self._skip_depth: <span class="k">return</span>              <span class="c"># inside dropped chrome</span>
+        <span class="k">if</span> tag <span class="k">in</span> _HEADING_TAGS:
+            self._heading_prefix = _HEADING_TAGS[tag]  <span class="c"># remember "#" level</span>
+        <span class="k">elif</span> tag <span class="k">in</span> _BLOCK_TAGS:
+            self._parts.append(<span class="s">"\n\n"</span>)                 <span class="c"># paragraph break</span>
+
+    <span class="k">def</span> <span class="f">handle_data</span>(self, data):
+        <span class="k">if</span> self._skip_depth: <span class="k">return</span>
+        <span class="k">if</span> self._heading_prefix <span class="k">is not</span> <span class="k">None</span>:
+            <span class="c"># only the FIRST data run inside a heading gets the marker:</span>
+            self._parts.append(<span class="s">f"{self._heading_prefix} {data.strip()}"</span>)
+            self._heading_prefix = <span class="k">None</span>
+        <span class="k">else</span>:
+            self._parts.append(data.strip() + <span class="s">" "</span>)</pre>
+<p style="font-size:.88rem; color:var(--muted)">Post-processing collapses runs of blank lines so output is clean paragraphs separated by exactly one blank line. Character refs are decoded automatically (<code>convert_charrefs=True</code>).</p>
+
+<!-- ============ 5. GATES ============ -->
+<h2>5 · The gates every document passes</h2>
+
+<table>
+<tr><th>Gate</th><th>Cost</th><th>Rule</th><th>On failure</th></tr>
+<tr><td><b>Dedup</b> — content hash</td><td>hash of raw text</td><td><code>hash_bytes(text)</code> unseen this run AND not in <code>external_documents.by_content_hash</code></td><td>skipped silently — a document is archived/read <b>once, ever</b></td></tr>
+<tr><td><b>Relevance</b> (pre-collection, feeds only)</td><td>near-free string ops</td><td>fraction of query terms present in title+summary &gt; 0.0</td><td>item never downloaded at all</td></tr>
+<tr><td><b>Relevance</b> (pre-extraction)</td><td>near-free string ops</td><td><code>score &ge; Settings.librarian_relevance_threshold</code></td><td>stored with status <code>irrelevant</code> — kept for auditability, never deleted</td></tr>
+<tr><td><b>Novelty</b> (post-extraction)</td><td>embedding calls only</td><td><code>novelty &ge; Settings.librarian_novelty_threshold</code></td><td>idea still recorded in <code>external_knowledge</code>; waits for the nightly batch instead of a direct push</td></tr>
+</table>
+
+<h3>Relevance score — how it actually works</h3>
+<pre><span class="c"># tokenize lowercase [a-z0-9], drop stopwords ("the","paper","method",…) and words len ≤ 2</span>
+hits   = sum(<span class="n">1</span> <span class="k">for</span> t <span class="k">in</span> query_terms
+             <span class="k">if</span> any(t <span class="k">in</span> dt <span class="k">or</span> dt <span class="k">in</span> t <span class="k">for</span> dt <span class="k">in</span> doc_terms))
+<span class="k">return</span> hits / len(query_terms)          <span class="c"># bidirectional substring match!</span></pre>
+<p style="font-size:.9rem;">Note the bidirectional substring check (<code>"momentum"</code> inside <code>"momentums"</code> counts) — crude but intentionally simple. Its only job: separate &ldquo;plausibly about the right topic&rdquo; from &ldquo;clearly not&rdquo; before anything expensive runs. The same module's <code>keywords()</code> derives search terms from a research question: top-6 most frequent non-stopword terms, ties broken by first appearance.</p>
+
+<div class="card">
+  <div class="meter"><div class="label"><span>score 0.0 — feed item dropped before download</span><span>0%</span></div><div class="bar"><div class="fill r" style="width:8%"></div></div></div>
+  <div class="meter"><div class="label"><span>&lt; librarian_relevance_threshold → status "irrelevant" (archived, auditable)</span></div><div class="bar"><div class="fill o" style="width:45%"></div></div></div>
+  <div class="meter"><div class="label"><span>&ge; threshold → status "pending" + DOCUMENT_INGESTED event → EXTRACT_KNOWLEDGE job</span></div><div class="bar"><div class="fill g" style="width:85%"></div></div></div>
+</div>
+
+<!-- ============ 6. CHUNKING ============ -->
+<h2>6 · Chunking — structure first, never a blind window</h2>
+<p>The motivating rule (TRD §12.2): <i>&ldquo;a blind token window risks cutting an equation across a boundary.&rdquo;</i></p>
+
+<svg viewBox="0 0 900 265" width="100%" style="max-width:900px">
+  <text x="450" y="16" text-anchor="middle" font-size="12" fill="#f0f6fc">A fetched document, after html_to_text()</text>
+  <rect x="60" y="26" width="780" height="26" rx="4" fill="#21262d" stroke="#30363d"/>
+  <rect x="61" y="27" width="120" height="24" fill="#1c3a5e"/>
+  <rect x="255" y="27" width="110" height="24" fill="#5e3a1c"/>
+  <rect x="420" y="27" width="150" height="24" fill="#1c5e2a"/>
+  <rect x="645" y="27" width="194" height="24" fill="#5e1c4a"/>
+  <text x="120" y="43" text-anchor="middle" font-size="10" fill="#a5d6ff">preamble</text>
+  <text x="310" y="43" text-anchor="middle" font-size="10" fill="#ffd9a5"># 1 Introduction</text>
+  <text x="495" y="43" text-anchor="middle" font-size="10" fill="#b8f0c2">## 2.1 Method</text>
+  <text x="742" y="43" text-anchor="middle" font-size="10" fill="#f0b8dd">## 3 Results</text>
+
+  <text x="450" y="76" text-anchor="middle" font-size="11" fill="#8b949e">&#8595; split at detected headings: ATX "#", setext "===" underlines, numbered titles like "2.1 Method"</text>
+
+  <rect x="60" y="88" width="175" height="36" rx="5" fill="#161b22" stroke="#58a6ff"/>
+  <text x="147" y="110" text-anchor="middle" font-size="10.5" fill="#a5d6ff">chunk 0 · title=None</text>
+  <rect x="243" y="88" width="169" height="36" rx="5" fill="#161b22" stroke="#d29922"/>
+  <text x="327" y="110" text-anchor="middle" font-size="10.5" fill="#ffd9a5">chunk 1 · "1 Introduction"</text>
+  <rect x="420" y="88" width="217" height="36" rx="5" fill="#161b22" stroke="#f85149"/>
+  <text x="528" y="103" text-anchor="middle" font-size="10.5" fill="#ffd9a5">chunk 2 · "2.1 Method"</text>
+  <text x="528" y="117" text-anchor="middle" font-size="9" fill="#f85149">len(body) &gt; max_chars=4000 &#9888;</text>
+  <rect x="645" y="88" width="195" height="36" rx="5" fill="#161b22" stroke="#bc8cff"/>
+  <text x="742" y="110" text-anchor="middle" font-size="10.5" fill="#f0b8dd">chunk 3 · "3 Results"</text>
+
+  <text x="450" y="150" text-anchor="middle" font-size="11" fill="#8b949e">&#8595; oversized section &#8594; greedy PARAGRAPH-FALLBACK split: accumulate whole paragraphs up to max_chars,</text>
+  <text x="450" y="166" text-anchor="middle" font-size="11" fill="#8b949e">cut ONLY at blank lines — equations/tables stay intact even with no named subsections</text>
+
+  <rect x="420" y="180" width="104" height="34" rx="5" fill="#161b22" stroke="#d29922"/>
+  <text x="472" y="201" text-anchor="middle" font-size="10.5" fill="#ffd9a5">chunk 2a &#182;&#182;1-4</text>
+  <rect x="533" y="180" width="104" height="34" rx="5" fill="#161b22" stroke="#d29922"/>
+  <text x="585" y="201" text-anchor="middle" font-size="10.5" fill="#ffd9a5">chunk 2b &#182;&#182;5-7</text>
+
+  <text x="450" y="248" text-anchor="middle" font-size="10.5" fill="#8b949e">each chunk = Chunk(index, section_title, char_start, char_end, text) &#8594; document_chunks rows with its claims</text>
+</svg>
+
+<p style="font-size:.9rem;"><b>Overlap resolution:</b> heading candidates from all three regex patterns are pooled, sorted by position, and overlapping spans keep whichever starts first — a setext match landing inside an accepted ATX heading is dropped rather than double-counted. <b>Edge cases:</b> empty input returns <code>[]</code>; a short headingless doc returns a single chunk titled <code>None</code>; a section body with zero paragraph breaks comes back as one span (the only alternative would be the mid-token cut this module exists to avoid).</p>
+
+<!-- ============ 7. EXTRACTION ============ -->
+<h2>7 · EXTRACT_KNOWLEDGE — where the LLM finally reads</h2>
+<div class="card">
+  <p style="margin-bottom:.4rem"><b>Idempotency first:</b> the very first move of <code>run_extract</code> checks <code>extraction_status</code> — if it's already <code>done</code> or <code>irrelevant</code>, return stale. A document is read <b>exactly once, ever</b>.</p>
+  <p style="margin-bottom:.4rem"><b>Pass 1 (per chunk):</b> <code>assemble_chunk_brief(document, chunk)</code> &rarr; <code>session.extract_chunk(...)</code> &rarr; list of factual claims per chunk. Tokens accumulate.</p>
+  <p style="margin-bottom:.4rem"><b>Pass 2 (synthesis):</b> all chunks + their claims &rarr; <code>session.synthesize(...)</code> &rarr; a few distinct <code>ProposedExternalKnowledge</code> ideas, each citing source-chunk indices plus layer, category, applicable markets/timeframes, strengths/weaknesses, required operators, proposed experiments, extraction confidence.</p>
+  <p style="margin-bottom:.4rem"><b>Validation:</b> cited chunk indices outside <code>[0, len(chunks))</code> are dropped, never guessed.</p>
+  <p><b>Closing the curiosity loop:</b> if the document came from a research question, <code>record_answer(origin_question_id, knowledge_ids)</code> links the extracted ideas back to the question that motivated the search.</p>
+</div>
+
+<svg viewBox="0 0 900 190" width="100%" style="max-width:900px">
+  <defs><marker id="ap" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#bc8cff"/></marker>
+        <marker id="an" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#3fb950"/></marker></defs>
+  <rect x="20" y="20" width="130" height="46" rx="8" fill="#161b22" stroke="#58a6ff"/>
+  <text x="85" y="40" text-anchor="middle" font-size="11.5" fill="#f0f6fc">raw .txt on disk</text>
+  <text x="85" y="57" text-anchor="middle" font-size="9.5" fill="#8b949e">content-hash filename</text>
+  <line x1="150" y1="43" x2="205" y2="43" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="210" y="20" width="140" height="46" rx="8" fill="#161b22" stroke="#30363d"/>
+  <text x="280" y="40" text-anchor="middle" font-size="11.5" fill="#f0f6fc">chunks[]</text>
+  <text x="280" y="57" text-anchor="middle" font-size="9.5" fill="#8b949e">structural split</text>
+  <line x1="350" y1="43" x2="405" y2="43" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#ap)"/>
+  <rect x="410" y="12" width="160" height="30" rx="6" fill="#161b22" stroke="#bc8cff"/>
+  <text x="490" y="32" text-anchor="middle" font-size="10.5" fill="#f0f6fc">LLM call × N chunks → claims</text>
+  <rect x="410" y="52" width="160" height="30" rx="6" fill="#161b22" stroke="#bc8cff"/>
+  <text x="490" y="72" text-anchor="middle" font-size="10.5" fill="#f0f6fc">LLM synthesis → ideas[]</text>
+  <line x1="570" y1="67" x2="625" y2="67" stroke="#bc8cff" stroke-width="1.5" marker-end="url(#ap)"/>
+  <rect x="630" y="44" width="120" height="46" rx="8" fill="#161b22" stroke="#58a6ff"/>
+  <text x="690" y="64" text-anchor="middle" font-size="11.5" fill="#f0f6fc">novelty_score</text>
+  <text x="690" y="81" text-anchor="middle" font-size="9.5" fill="#8b949e">Voyage embeddings</text>
+  <path d="M 750 67 H 800 v -25 h 30" stroke="#3fb950" stroke-width="1.5" fill="none" marker-end="url(#an)"/>
+  <rect x="700" y="14" width="185" height="56" rx="8" fill="#161b22" stroke="#3fb950"/>
+  <text x="792" y="35" text-anchor="middle" font-size="11.5" fill="#f0f6fc">HIGH_NOVELTY_EXTRACTION</text>
+  <text x="792" y="53" text-anchor="middle" font-size="9.5" fill="#8b949e">push to matching active goals</text>
+  <text x="792" y="66" text-anchor="middle" font-size="9.5" fill="#8b949e">(skips nightly batch wait)</text>
+</svg>
+
+<!-- ============ 8. SAFETY PROPERTIES ============ -->
+<h2>8 · Design properties worth remembering</h2>
+<table>
+<tr><th>Property</th><th>How it's achieved</th></tr>
+<tr><td><b>Claude never crawls</b></td><td>Collectors are pure Python; the LLM only sees text that already passed the cheap gates.</td></tr>
+<tr><td><b>Read-once guarantee</b></td><td>Content-hash dedup in collect + status check in extract — no document is fetched-then-re-extracted across runs or jobs.</td></tr>
+<tr><td><b>Politeness</b></td><td>Centralized per-host throttle inside the one fetcher object, not left to each collector.</td></tr>
+<tr><td><b>Fault isolation</b></td><td>Every fetch/parse failure collapses to &ldquo;fewer results&rdquo; — a dead feed never aborts a multi-source run; failed full-text falls back to abstract/summary.</td></tr>
+<tr><td><b>Auditability</b></td><td>Irrelevant documents are stored (status <code>irrelevant</code>) rather than deleted, so the relevance filter can be calibrated against what it rejected.</td></tr>
+<tr><td><b>Testability without network</b></td><td><code>StubFetcher</code>, session overrides (<code>set_session</code>/<code>set_embedder</code>/<code>set_fetcher</code>) — heavy run() half is side-effect-free on the DB, persist() half is atomic.</td></tr>
+<tr><td><b>Budget discipline</b></td><td>Zero tokens for collection; extraction token spend charged to the global daily budget via <code>budget_consume</code>.</td></tr>
+</table>
+
+<p style="font-size:.82rem;color:var(--muted);margin-top:2rem;">Source files: <code>aqrl/librarian/fetch.py</code> · <code>collectors.py</code> · <code>html_text.py</code> · <code>relevance.py</code> · <code>chunking.py</code> · <code>aqrl/orchestration/handlers/librarian.py</code></p>
+</div>
+</body>
+</html>

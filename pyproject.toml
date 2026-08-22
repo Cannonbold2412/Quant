@@ -35,6 +35,10 @@ agents = ["anthropic>=0.40"]
 # lazily, same reasoning as `agents` above — StubEmbedder stands in for
 # every test, including the full offline loop.
 embeddings = ["voyageai>=0.3"]
+# Librarian body-text extraction upgrade (aqrl/librarian/html_text.py).
+# Imported lazily like `agents`/`embeddings`: without it installed, html_to_text
+# falls back to the built-in stdlib parser and every test still passes.
+extraction = ["trafilatura>=2.0,<3"]
 
 [project.scripts]
 aqrl = "aqrl.cli:main"
