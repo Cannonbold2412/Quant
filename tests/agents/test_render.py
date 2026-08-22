@@ -32,7 +32,7 @@ def test_round_trip_preserves_metadata(crossover_spec):
 
 
 def test_generate_signals_matches_direct_compilation(crossover_spec):
-    from nanoaqrl._lib.synthetic_data import synthetic_ohlcv
+    from aqrl.research.synthetic_data import synthetic_ohlcv
 
     from aqrl.operators.compile import compile_spec
 

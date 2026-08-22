@@ -16,7 +16,7 @@ The property, stated exactly:
 
 Truncate the input at several checkpoints, recompute, and compare on the
 overlap. Any mismatch means data flowed backwards in time. This is
-`nanoaqrl/_lib/backtest.py:empirical_leakage_scan` applied at operator
+`aqrl/eval/p0.py:empirical_leakage_scan` applied at operator
 granularity rather than to a whole strategy.
 
 The suite is **parametrized over `all_operators()`**, so a newly registered

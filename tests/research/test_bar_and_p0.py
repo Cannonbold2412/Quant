@@ -1,15 +1,16 @@
 """Known-answer tests (Implementation_Plan §5.2): cases whose correct answer
 is known in advance, used to validate the validator itself before any of its
 verdicts are trusted."""
+
 import pytest
 
-from nanoaqrl._lib.backtest import empirical_leakage_scan, static_lookahead_scan
-from nanoaqrl._lib.cost_models import NSE_CASH_EQUITY
-from nanoaqrl._lib.synthetic_data import synthetic_path_ohlcv
-from nanoaqrl._lib.walk_forward import run_best_of_three
-from nanoaqrl.evaluate import _bar_check
-from nanoaqrl.strategy import PARAMS as STRATEGY_PARAMS
-from nanoaqrl.strategy import generate_signals as strategy_generate_signals
+from aqrl.research.backtest import empirical_leakage_scan, max_drawdown_from_returns, static_lookahead_scan
+from aqrl.research.cost_models import NSE_CASH_EQUITY
+from aqrl.research.evaluate import _bar_check
+from aqrl.research.strategy import PARAMS as STRATEGY_PARAMS
+from aqrl.research.strategy import generate_signals as strategy_generate_signals
+from aqrl.research.synthetic_data import synthetic_path_ohlcv
+from aqrl.research.walk_forward import run_best_of_three
 
 LOOKAHEAD_SOURCE = """
 import pandas as pd
@@ -61,7 +62,7 @@ def test_p0_static_catches_backfill():
 def test_p0_static_passes_the_legitimate_example_strategy():
     import inspect
 
-    from nanoaqrl import strategy
+    from aqrl.research import strategy
 
     source = inspect.getsource(strategy)
     assert static_lookahead_scan(source) == []
@@ -77,9 +78,12 @@ def test_p0_empirical_catches_a_leak_the_static_scan_misses():
         return (df["close"] > last_close).astype(float)
 
     df = synthetic_path_ohlcv(252 * 3, seed=5)
-    assert static_lookahead_scan(
-        "def generate_signals(df, params):\n    last_close = df['close'].iloc[-1]\n    return (df['close'] > last_close).astype(float)\n"
-    ) == []
+    assert (
+        static_lookahead_scan(
+            "def generate_signals(df, params):\n    last_close = df['close'].iloc[-1]\n    return (df['close'] > last_close).astype(float)\n"
+        )
+        == []
+    )
     violations = empirical_leakage_scan(df, leaky_last_value_signal, {})
     assert violations, "truncation-invariance check must catch the .iloc[-1] leak"
 
@@ -95,12 +99,15 @@ def test_pure_noise_does_not_clear_the_bar(seed):
     structure (no alpha by construction) must not pass the bar."""
     df = synthetic_path_ohlcv(252 * 8, seed=seed)
     result = run_best_of_three(
-        df, strategy_generate_signals, STRATEGY_PARAMS, NSE_CASH_EQUITY,
-        holding_period_days=10, n_trials_base=1, param_grid=None,
+        df,
+        strategy_generate_signals,
+        STRATEGY_PARAMS,
+        NSE_CASH_EQUITY,
+        holding_period_days=10,
+        n_trials_base=1,
+        param_grid=None,
     )
     win = result.winning_window
-    from nanoaqrl._lib.backtest import max_drawdown_from_returns
-
     max_dd = max_drawdown_from_returns(win.concatenated_returns)
     passed, failed_on = _bar_check(win.score.honest_score, win.total_trades, max_dd, win.concatenated_returns)
     assert not passed, f"pure noise cleared the bar (score={win.score.honest_score})"

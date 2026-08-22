@@ -14,7 +14,8 @@ dependencies = [
     "pydantic>=2",
     "pydantic-settings>=2",
     "pyyaml>=6",
-    # nanoAQRL (Stage 0) — the scoring harness still runs on NumPy/pandas/SciPy.
+    # The research loop (Stage 0, aqrl/research/) — the scoring harness still
+    # runs on NumPy/pandas/SciPy.
     "numpy>=1.26",
     "pandas>=2.0",
     "scipy>=1.11",
@@ -39,21 +40,22 @@ embeddings = ["voyageai>=0.3"]
 aqrl = "aqrl.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["aqrl", "nanoaqrl"]
+packages = ["aqrl"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "nanoaqrl/tests"]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 110
 target-version = "py311"
 
 [tool.ruff.lint.per-file-ignores]
-# nanoAQRL executes the committed strategy source by design (TRD §2.1). It is
+# The research loop executes the committed strategy source by design (TRD §2.1).
+# It is
 # not a security sandbox and does not claim to be — real agent isolation is
 # aqrl/agents/sandbox.py's job (Stage 5). Flagging it here every run adds
 # noise, not safety.
-"nanoaqrl/evaluate.py" = ["S102"]
+"aqrl/research/evaluate.py" = ["S102"]
 # Stage 5's static-check pipeline: executing the rendered module is the whole
 # job of this file, inside the process-isolated subprocess `sandbox.py`
 # spawns — not a place code review needs a warning about `exec`.
@@ -61,6 +63,6 @@ target-version = "py311"
 # The P0 look-ahead scanner keeps its branches explicit rather than collapsing
 # them into a precedence-dependent boolean chain. Readability wins in the one
 # place where a misread condition silently stops catching leaks.
-"nanoaqrl/_lib/backtest.py" = ["SIM114"]
-# Stage 0's tests, left as written.
-"nanoaqrl/tests/*" = ["RUF059", "SIM117"]
+"aqrl/research/backtest.py" = ["SIM114"]
+# The research loop's tests, left as written.
+"tests/research/*" = ["RUF059", "SIM117"]

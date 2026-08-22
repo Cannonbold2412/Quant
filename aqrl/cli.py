@@ -821,7 +821,7 @@ def cmd_evaluate_null_world(args: argparse.Namespace) -> int:
 
 
 def _null_world_generators() -> dict[str, Any]:
-    from nanoaqrl._lib.synthetic_data import (
+    from aqrl.research.synthetic_data import (
         block_bootstrap_ohlcv,
         permuted_returns_ohlcv,
         synthetic_path_ohlcv,
@@ -838,7 +838,7 @@ def _null_world_default_days() -> int:
     """Six years of trading days — derived, not a bare annualisation literal,
     per the same rule `test_no_hardcoded_annualisation_constant_in_the_package`
     enforces everywhere else in this package."""
-    from nanoaqrl._lib.synthetic_data import TRADING_DAYS_PER_YEAR
+    from aqrl.research.synthetic_data import TRADING_DAYS_PER_YEAR
 
     return TRADING_DAYS_PER_YEAR * 6
 

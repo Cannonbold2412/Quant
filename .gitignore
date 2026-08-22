@@ -19,8 +19,7 @@ __pycache__/
 # source package. Only the snapshot store at the repository root is ignored.
 *.db
 /data/
-nanoaqrl/*.db
-nanoaqrl/results.tsv.bak
+aqrl/research/results.tsv.bak
 
 # The Librarian's archived raw text (Stage 10) — reproduced by re-collecting,
 # never source. Anchored for the same reason `/data/` is: an unanchored

@@ -6,8 +6,9 @@ content-hashed market/timeframe profiles, and a data layer whose defining
 property is that **raw prices are immutable and every adjustment happens at
 load time** (TRD §14.2a).
 
-Stage 0 (`nanoaqrl/`) is the research loop itself and predates this package;
-it now persists through `aqrl.db` rather than its own schema.
+Stage 0 (`aqrl/research/`) is the research loop itself and predates this
+package's other stages; it now persists through `aqrl.db` rather than its
+own schema.
 """
 
 __version__ = "0.1.0"

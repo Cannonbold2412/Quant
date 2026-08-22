@@ -3,7 +3,7 @@
 This is what stops Stage 2 being scaffolding. `Implementation_Plan.md` §0 is
 explicit that *"no stage exists purely as scaffolding"* — and a spec format that
 cannot be executed is exactly that. With this module a hand-written spec runs
-through the existing `nanoaqrl/evaluate.py` unchanged, with no Stage 3 and no
+through the existing research loop's `evaluate.py` unchanged, with no Stage 3 and no
 A2, which means the operator library is usable by hand the day it lands.
 
 It also front-runs Stage 5. App-Flow §4.2 describes A2's job as *"translation,
@@ -11,7 +11,7 @@ not invention"* — assembling library blocks exactly as the spec describes. Tha
 is a deterministic tree-walk, so it should be a Python function rather than a
 prompt instruction an LLM might get creatively wrong.
 
-**The output contract** matches `nanoaqrl/_lib/backtest.py`:
+**The output contract** matches `aqrl/research/backtest.py`:
 
     def generate_signals(df: pd.DataFrame, params: dict) -> pd.Series   # in [-1, 1]
 

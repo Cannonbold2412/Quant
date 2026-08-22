@@ -12,6 +12,7 @@ What stays here is the **adapter**: nanoAQRL evaluates one pandas series with a
 a return series in those terms and hands the protocol that callable. The
 protocol never learns which shape of data it is scoring, which is the point.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -65,9 +66,7 @@ class _PandasEvaluator:
         window = self.df.loc[str(start) : str(end)]
         if window.empty:
             return SliceOutcome(np.array([]), np.array([], dtype="datetime64[D]"), 0)
-        result = run_backtest(
-            window, self.generate_signals, params, self.cost_model, self.cost_multiplier
-        )
+        result = run_backtest(window, self.generate_signals, params, self.cost_model, self.cost_multiplier)
         return SliceOutcome(
             returns=result.returns,
             dates=result.dates.to_numpy().astype("datetime64[D]"),
@@ -81,9 +80,7 @@ def _with_pandas_dates(window: WindowResult) -> WindowResult:
     The engine works in `datetime64` arrays; Stage 0 and its tests expect a
     pandas index. Converting at this boundary keeps both honest.
     """
-    return dataclasses.replace(
-        window, concatenated_dates=pd.DatetimeIndex(window.concatenated_dates)
-    )
+    return dataclasses.replace(window, concatenated_dates=pd.DatetimeIndex(window.concatenated_dates))
 
 
 def run_window(

@@ -1,9 +1,9 @@
 import pandas as pd
 import pytest
 
-from nanoaqrl._lib.cost_models import NSE_CASH_EQUITY
-from nanoaqrl._lib.synthetic_data import synthetic_ohlcv
-from nanoaqrl._lib.walk_forward import generate_rolling_folds, run_best_of_three, run_window
+from aqrl.research.cost_models import NSE_CASH_EQUITY
+from aqrl.research.synthetic_data import synthetic_ohlcv
+from aqrl.research.walk_forward import generate_rolling_folds, run_best_of_three, run_window
 
 
 def _flat_signal(df, params):
@@ -39,8 +39,14 @@ def test_fold_count_increases_with_more_data():
 def test_concatenated_returns_are_in_chronological_order():
     df = synthetic_ohlcv(252 * 8, seed=1)
     window = run_window(
-        df, _flat_signal, {}, NSE_CASH_EQUITY,
-        train_years=1, test_years=1, embargo_days=5, n_trials=1,
+        df,
+        _flat_signal,
+        {},
+        NSE_CASH_EQUITY,
+        train_years=1,
+        test_years=1,
+        embargo_days=5,
+        n_trials=1,
     )
     dates = window.concatenated_dates
     assert dates.is_monotonic_increasing
@@ -49,8 +55,12 @@ def test_concatenated_returns_are_in_chronological_order():
 def test_best_of_three_reports_all_three_windows_and_a_winner():
     df = synthetic_ohlcv(252 * 10, seed=2)
     result = run_best_of_three(
-        df, _flat_signal, {}, NSE_CASH_EQUITY,
-        holding_period_days=5, n_trials_base=1,
+        df,
+        _flat_signal,
+        {},
+        NSE_CASH_EQUITY,
+        holding_period_days=5,
+        n_trials_base=1,
     )
     assert set(result.windows.keys()) == {1, 2, 3}
     assert result.winning_train_years in (1, 2, 3)
@@ -60,8 +70,12 @@ def test_best_of_three_reports_all_three_windows_and_a_winner():
 def test_best_of_three_n_trials_is_tripled_vs_base():
     df = synthetic_ohlcv(252 * 10, seed=3)
     result = run_best_of_three(
-        df, _flat_signal, {}, NSE_CASH_EQUITY,
-        holding_period_days=5, n_trials_base=7,
+        df,
+        _flat_signal,
+        {},
+        NSE_CASH_EQUITY,
+        holding_period_days=5,
+        n_trials_base=7,
     )
     for window in result.windows.values():
         assert window.score.n_trials == 21

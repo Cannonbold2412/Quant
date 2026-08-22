@@ -12,6 +12,7 @@ not run inside the automated research loop.
 Opening the vault is logged and decremented against a lifetime budget per
 strategy family (TRD §15.2) — tracked in `db.py`'s `vault_access_log` table.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -72,9 +73,7 @@ class VaultGuard:
 
 
 def get_remaining_budget(conn, family: str, lifetime_budget: int) -> int:
-    row = conn.execute(
-        "SELECT COUNT(*) FROM vault_access_log WHERE family = ?", (family,)
-    ).fetchone()
+    row = conn.execute("SELECT COUNT(*) FROM vault_access_log WHERE family = ?", (family,)).fetchone()
     used = row[0] if row else 0
     return lifetime_budget - used
 

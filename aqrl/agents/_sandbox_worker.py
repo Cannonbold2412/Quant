@@ -38,7 +38,7 @@ def _smoke_frame(n_days: int, seed: int = 0):
     module's `generate_signals` run, stay finite, and stay causal under
     truncation?", the same question P0 asks, at a fraction of the size.
     """
-    from nanoaqrl._lib.synthetic_data import synthetic_ohlcv
+    from aqrl.research.synthetic_data import synthetic_ohlcv
 
     return synthetic_ohlcv(n_days, seed=seed)
 

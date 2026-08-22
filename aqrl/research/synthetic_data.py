@@ -11,6 +11,7 @@ Null-world generators produce data with **no alpha by construction**:
 permuted returns, block bootstrap, and synthetic fat-tailed paths — the three
 named explicitly in TRD §15.3.
 """
+
 from __future__ import annotations
 
 import numpy as np

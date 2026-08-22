@@ -10,6 +10,7 @@ be back-adjusted eventually, and an absolute level does not transfer across
 instruments anyway). This is a starting point to prove the loop runs end to
 end, not a claim that it clears the bar.
 """
+
 from __future__ import annotations
 
 import pandas as pd

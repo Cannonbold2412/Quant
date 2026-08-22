@@ -17,6 +17,7 @@ acceptable in `failure_reason`, and that the three bug categories route back to
 A2 and must never be recorded as research conclusions. Stage 0's ad-hoc strings
 are mapped onto that enum below.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -179,9 +180,7 @@ def best_score(conn: sqlite3.Connection, strategy_id: int) -> float | None:
     return float(row["best_score"])
 
 
-def record_improvement(
-    conn: sqlite3.Connection, strategy_id: int, experiment_id: int, score: float
-) -> None:
+def record_improvement(conn: sqlite3.Connection, strategy_id: int, experiment_id: int, score: float) -> None:
     """Advance the ratchet: this experiment is the new best.
 
     Distinct from `StrategyRepository.record_bar_clear`, which also flips the

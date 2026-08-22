@@ -12,8 +12,8 @@ a scientific requirement and not a style preference: A5 compares experiment
 #6,201 in crypto against #12,483 in Indian equities, and that comparison is
 meaningless unless both were scored by identical code. Two copies of this file
 would diverge silently, and a Sharpe of 1.4 would stop meaning the same thing in
-two rows of the same table. `nanoaqrl/_lib/honest_score.py` now re-exports these
-names.
+two rows of the same table. The research loop imports these names from here
+directly; the former re-export shim is gone with the `nanoaqrl/` package.
 
 Known simplification (TRD §7.7): no autocorrelation correction is applied to
 `n` yet. Frequency fairness across wildly different trade frequencies is an

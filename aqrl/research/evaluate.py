@@ -12,9 +12,10 @@ committed source of `strategy.py`, read via `git show`, never the possibly-
 since-edited working tree.
 
 Usage:
-    python -m nanoaqrl.evaluate score <commit> [--family F] [--name N] [--description D]
-    python -m nanoaqrl.evaluate null-world --generator {permuted,block_bootstrap,synthetic_path} --replications N
+    python -m aqrl.research.evaluate score <commit> [--family F] [--name N] [--description D]
+    python -m aqrl.research.evaluate null-world --generator {permuted,block_bootstrap,synthetic_path} --replications N
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,13 +29,12 @@ import numpy as np
 from aqrl.eval.metrics import drawdown_series, longest_drawdown_days
 from aqrl.eval.stats.monte_carlo import monte_carlo_paths
 
-from . import data
-from ._lib import db
-from ._lib.backtest import empirical_leakage_scan, max_drawdown_from_returns, static_lookahead_scan
-from ._lib.synthetic_data import block_bootstrap_ohlcv, permuted_returns_ohlcv, synthetic_path_ohlcv
-from ._lib.walk_forward import run_best_of_three
+from . import data, db
+from .backtest import empirical_leakage_scan, max_drawdown_from_returns, static_lookahead_scan
+from .synthetic_data import block_bootstrap_ohlcv, permuted_returns_ohlcv, synthetic_path_ohlcv
+from .walk_forward import run_best_of_three
 
-EVAL_ENGINE_VERSION = "nanoaqrl-0.1.0"
+EVAL_ENGINE_VERSION = "aqrl.research-0.1.0"
 
 # ---------------------------------------------------------------------------
 # The pre-registered bar (TRD §7.5). Enforced HERE, not merely stated in
@@ -63,9 +63,9 @@ Z_MULTIPLIER = 1.65
 MC_MEAN_BLOCK = 20.0
 MC_REPLICATIONS = 500
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_TSV = Path(__file__).resolve().parent / "results.tsv"
-DB_PATH = Path(__file__).resolve().parent / "nanoaqrl.db"
+DB_PATH = Path(__file__).resolve().parent / "research.db"
 
 # ---------------------------------------------------------------------------
 # `results.tsv` schema. Everything past `description` is **diagnostic only** —
@@ -75,26 +75,60 @@ DB_PATH = Path(__file__).resolve().parent / "nanoaqrl.db"
 # in a single number.
 # ---------------------------------------------------------------------------
 RESULTS_COLUMNS = [
-    "commit", "status", "score", "n_trades", "description",
+    "commit",
+    "status",
+    "score",
+    "n_trades",
+    "description",
     # verdict detail
-    "bar_failed_on", "baseline_score", "delta_score", "plateau", "winning_train_years",
+    "bar_failed_on",
+    "baseline_score",
+    "delta_score",
+    "plateau",
+    "winning_train_years",
     # headline performance
-    "sharpe", "cagr_pct", "total_return_pct", "maxdd_pct", "avg_dd_pct",
-    "dd_duration_days", "profit_factor",
+    "sharpe",
+    "cagr_pct",
+    "total_return_pct",
+    "maxdd_pct",
+    "avg_dd_pct",
+    "dd_duration_days",
+    "profit_factor",
     # honest-score internals
-    "sr_oos", "se_sr", "trials_haircut", "n_trials", "wf_efficiency",
+    "sr_oos",
+    "se_sr",
+    "trials_haircut",
+    "n_trials",
+    "wf_efficiency",
     # best-of-three spread — a score that only exists at one train length is
     # a choice of window, not an edge
-    "score_1yr", "score_2yr", "score_3yr",
+    "score_1yr",
+    "score_2yr",
+    "score_3yr",
     # walk-forward stability
-    "n_folds", "fold_sharpe_mean", "fold_sharpe_std", "fold_sharpe_min",
-    "folds_positive", "folds_gt1", "fold_sharpes",
-    "decay_pct", "early_sharpe", "late_sharpe",
+    "n_folds",
+    "fold_sharpe_mean",
+    "fold_sharpe_std",
+    "fold_sharpe_min",
+    "folds_positive",
+    "folds_gt1",
+    "fold_sharpes",
+    "decay_pct",
+    "early_sharpe",
+    "late_sharpe",
     # outlier dependence and tail
-    "worst_bar_pct", "best_bar_pct", "top5_bars_pct", "top5pct_bars_pct",
-    "worst_bar", "best_bar", "top_fold_pct",
+    "worst_bar_pct",
+    "best_bar_pct",
+    "top5_bars_pct",
+    "top5pct_bars_pct",
+    "worst_bar",
+    "best_bar",
+    "top_fold_pct",
     # monte carlo
-    "mc_p5_return", "mc_p50_return", "mc_p95_return", "mc_ruin_prob",
+    "mc_p5_return",
+    "mc_p50_return",
+    "mc_p95_return",
+    "mc_ruin_prob",
 ]
 
 #: Columns owned by the verdict, not by `_diagnostics` — kept out of the
@@ -107,17 +141,30 @@ def _wf_config_hash(test_years: int, train_years: tuple[int, ...]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
+#: The strategy's path in the tree, current and historical. Commits made
+#: before the Stage 0 migration kept it at `nanoaqrl/strategy.py`, so both
+#: are tried — the immutable source must stay readable at any commit.
+STRATEGY_TREE_PATHS = ("aqrl/research/strategy.py", "nanoaqrl/strategy.py")
+
+
 def load_strategy_source(commit: str) -> str:
     """Read strategy.py from an immutable git commit — never the working
     tree, so a later edit can never retroactively change what was scored."""
-    result = subprocess.run(
-        ["git", "show", f"{commit}:nanoaqrl/strategy.py"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout
+    last_error: subprocess.CalledProcessError | None = None
+    for path in STRATEGY_TREE_PATHS:
+        try:
+            result = subprocess.run(
+                ["git", "show", f"{commit}:{path}"],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            last_error = e
+            continue
+        return result.stdout
+    raise last_error if last_error else FileNotFoundError("strategy.py not found in commit")
 
 
 def exec_strategy_module(source: str) -> types.SimpleNamespace:
@@ -139,7 +186,7 @@ def estimate_holding_period_days(df, generate_signals, params, cost_model) -> in
     """A coarse P1-style pre-check: one full-sample backtest just to gauge
     roughly how long positions are held, so the walk-forward embargo can be
     set >= holding period (TRD §8.4)."""
-    from ._lib.backtest import run_backtest
+    from .backtest import run_backtest
 
     result = run_backtest(df, generate_signals, params, cost_model, cost_multiplier=1.0)
     if result.n_trades == 0:
@@ -275,9 +322,7 @@ def _diagnostics(result, win, periods_per_year: float, seed: int = 0) -> dict:
             d["top_fold_pct"] = float(max(fold.returns.sum() for fold in folds) / total * 100.0)
 
     # ---- monte carlo -------------------------------------------------------
-    mc = monte_carlo_paths(
-        returns, replications=MC_REPLICATIONS, base_seed=seed, mean_block=MC_MEAN_BLOCK
-    )
+    mc = monte_carlo_paths(returns, replications=MC_REPLICATIONS, base_seed=seed, mean_block=MC_MEAN_BLOCK)
     d["mc_p5_return"] = mc.p5_return
     d["mc_p50_return"] = mc.p50_return
     d["mc_p95_return"] = mc.p95_return
@@ -289,23 +334,33 @@ def _print_diagnostics(d: dict) -> None:
     print("\n=== diagnostics (not gated) ===")
     print("-- headline --")
     print(f"  sharpe={d['sharpe']:.2f}  cagr={d['cagr_pct']:.1f}%  total_return={d['total_return_pct']:.1f}%")
-    print(f"  maxdd={d['maxdd_pct']:.1f}%  avg_dd={d['avg_dd_pct']:.1f}%  "
-          f"longest_dd={d['dd_duration_days']:.0f}d  profit_factor={d['profit_factor']:.2f}")
-    print(f"  sr_oos={d['sr_oos']:.2f}  se_sr={d['se_sr']:.3f}  haircut={d['trials_haircut']:.3f}  "
-          f"n_trials={d['n_trials']}  wf_efficiency={d['wf_efficiency']:.2f}")
-    print(f"  best-of-three: 1yr={d['score_1yr']:.3f}  2yr={d['score_2yr']:.3f}  3yr={d['score_3yr']:.3f}  "
-          f"(won: {d['winning_train_years']}yr)")
+    print(
+        f"  maxdd={d['maxdd_pct']:.1f}%  avg_dd={d['avg_dd_pct']:.1f}%  "
+        f"longest_dd={d['dd_duration_days']:.0f}d  profit_factor={d['profit_factor']:.2f}"
+    )
+    print(
+        f"  sr_oos={d['sr_oos']:.2f}  se_sr={d['se_sr']:.3f}  haircut={d['trials_haircut']:.3f}  "
+        f"n_trials={d['n_trials']}  wf_efficiency={d['wf_efficiency']:.2f}"
+    )
+    print(
+        f"  best-of-three: 1yr={d['score_1yr']:.3f}  2yr={d['score_2yr']:.3f}  3yr={d['score_3yr']:.3f}  "
+        f"(won: {d['winning_train_years']}yr)"
+    )
 
     print("\n-- walk-forward stability --")
     if not d["n_folds"]:
         print("  no folds — nothing to check")
         return
     print(f"  per fold: {d['fold_sharpes']}")
-    print(f"  mean={d['fold_sharpe_mean']:.2f} std={d['fold_sharpe_std']:.2f} min={d['fold_sharpe_min']:.2f} "
-          f"folds>0={d['folds_positive']}/{d['n_folds']} folds>1={d['folds_gt1']}/{d['n_folds']}")
+    print(
+        f"  mean={d['fold_sharpe_mean']:.2f} std={d['fold_sharpe_std']:.2f} min={d['fold_sharpe_min']:.2f} "
+        f"folds>0={d['folds_positive']}/{d['n_folds']} folds>1={d['folds_gt1']}/{d['n_folds']}"
+    )
     if d["n_folds"] > 3:
-        print(f"  decay(first3 vs last3)={d['decay_pct']:.0f}%  "
-              f"early={d['early_sharpe']:.2f}  late={d['late_sharpe']:.2f}")
+        print(
+            f"  decay(first3 vs last3)={d['decay_pct']:.0f}%  "
+            f"early={d['early_sharpe']:.2f}  late={d['late_sharpe']:.2f}"
+        )
     else:
         print(f"  decay/early/late need >3 folds ({d['n_folds']} here) — not computed")
 
@@ -315,10 +370,14 @@ def _print_diagnostics(d: dict) -> None:
     print(f"  best single fold={d['top_fold_pct']:.1f}% of total")
     print(f"  worst bar return={d['worst_bar']:+.4f}  best bar return={d['best_bar']:+.4f}")
 
-    print(f"\n-- monte carlo (stationary bootstrap, mean block={MC_MEAN_BLOCK:.0f} bars, "
-          f"n={MC_REPLICATIONS}) --")
-    print(f"  total return  p5={d['mc_p5_return']:+.1%}  p50={d['mc_p50_return']:+.1%}  "
-          f"p95={d['mc_p95_return']:+.1%}")
+    print(
+        f"\n-- monte carlo (stationary bootstrap, mean block={MC_MEAN_BLOCK:.0f} bars, "
+        f"n={MC_REPLICATIONS}) --"
+    )
+    print(
+        f"  total return  p5={d['mc_p5_return']:+.1%}  p50={d['mc_p50_return']:+.1%}  "
+        f"p95={d['mc_p95_return']:+.1%}"
+    )
     print(f"  P(drawdown >= 50%)={d['mc_ruin_prob']:.1%}")
 
 
@@ -339,12 +398,19 @@ def _row(commit: str, status: str, description: str, **fields) -> dict:
 
 def score_commit(commit: str, family: str, name: str, description: str, conn=None) -> dict:
     conn = conn or db.get_connection(DB_PATH)
-    strategy_id = db.get_or_create_strategy(conn, name=name, family=family, market=data.MARKET, timeframe=data.TIMEFRAME)
+    strategy_id = db.get_or_create_strategy(
+        conn, name=name, family=family, market=data.MARKET, timeframe=data.TIMEFRAME
+    )
     iteration = db.next_iteration(conn, strategy_id)
     wf_hash = _wf_config_hash(test_years=1, train_years=(1, 2, 3))
     experiment_id = db.insert_experiment(
-        conn, strategy_id, iteration, code_commit=commit, wf_config_hash=wf_hash,
-        eval_engine_version=EVAL_ENGINE_VERSION, random_seed=iteration,
+        conn,
+        strategy_id,
+        iteration,
+        code_commit=commit,
+        wf_config_hash=wf_hash,
+        eval_engine_version=EVAL_ENGINE_VERSION,
+        random_seed=iteration,
         # Stage 1 makes the profile hashes real, so the provenance stamp
         # TRD §6.6 requires is now complete rather than partial.
         market_profile_hash=data.MARKET_PROFILE_HASH,
@@ -369,8 +435,12 @@ def score_commit(commit: str, family: str, name: str, description: str, conn=Non
         db.insert_evaluation(conn, experiment_id, "P0", "fail")
         db.append_results_tsv(
             RESULTS_TSV,
-            _row(commit, "discard", f"{description} | P0 static: " + "; ".join(static_violations),
-                 bar_failed_on="lookahead_static"),
+            _row(
+                commit,
+                "discard",
+                f"{description} | P0 static: " + "; ".join(static_violations),
+                bar_failed_on="lookahead_static",
+            ),
             RESULTS_COLUMNS,
         )
         return {"status": "discard", "phase": "P0", "violations": static_violations}
@@ -385,8 +455,12 @@ def score_commit(commit: str, family: str, name: str, description: str, conn=Non
         db.insert_evaluation(conn, experiment_id, "P0", "fail")
         db.append_results_tsv(
             RESULTS_TSV,
-            _row(commit, "discard", f"{description} | P0 empirical: " + "; ".join(empirical_violations),
-                 bar_failed_on="lookahead_empirical"),
+            _row(
+                commit,
+                "discard",
+                f"{description} | P0 empirical: " + "; ".join(empirical_violations),
+                bar_failed_on="lookahead_empirical",
+            ),
             RESULTS_COLUMNS,
         )
         return {"status": "discard", "phase": "P0", "violations": empirical_violations}
@@ -396,10 +470,17 @@ def score_commit(commit: str, family: str, name: str, description: str, conn=Non
     n_trials_base = db.get_family_trial_count(conn, family) + 1  # this attempt counts too
 
     result = run_best_of_three(
-        df, module.generate_signals, module.params, cost_model,
-        holding_period_days=holding_period, n_trials_base=n_trials_base,
-        param_grid=module.param_grid, test_years=1, cost_multiplier=2.0,
-        periods_per_year=data.PERIODS_PER_YEAR, z_multiplier=Z_MULTIPLIER,
+        df,
+        module.generate_signals,
+        module.params,
+        cost_model,
+        holding_period_days=holding_period,
+        n_trials_base=n_trials_base,
+        param_grid=module.param_grid,
+        test_years=1,
+        cost_multiplier=2.0,
+        periods_per_year=data.PERIODS_PER_YEAR,
+        z_multiplier=Z_MULTIPLIER,
     )
     win = result.winning_window
     max_dd = max_drawdown_from_returns(win.concatenated_returns)
@@ -410,20 +491,33 @@ def score_commit(commit: str, family: str, name: str, description: str, conn=Non
     baseline = db.best_score(conn, strategy_id)
     threshold = MIN_HONEST_SCORE if baseline is None else baseline
     passed, failed_on = _bar_check(
-        win.score.honest_score, win.total_trades, max_dd, win.concatenated_returns,
-        threshold=threshold, ratcheted=baseline is not None,
+        win.score.honest_score,
+        win.total_trades,
+        max_dd,
+        win.concatenated_returns,
+        threshold=threshold,
+        ratcheted=baseline is not None,
     )
 
     db.insert_evaluation(
-        conn, experiment_id, "P3", "pass" if passed else "fail",
-        bar_result="pass" if passed else "fail", bar_failed_on=failed_on,
-        honest_score=win.score.honest_score, sr_oos=win.score.sr_oos, se_sr=win.score.se_sr,
-        z_multiplier=Z_MULTIPLIER, trials_haircut=win.score.trials_haircut, n_trials=win.score.n_trials,
+        conn,
+        experiment_id,
+        "P3",
+        "pass" if passed else "fail",
+        bar_result="pass" if passed else "fail",
+        bar_failed_on=failed_on,
+        honest_score=win.score.honest_score,
+        sr_oos=win.score.sr_oos,
+        se_sr=win.score.se_sr,
+        z_multiplier=Z_MULTIPLIER,
+        trials_haircut=win.score.trials_haircut,
+        n_trials=win.score.n_trials,
         winning_train_years=result.winning_train_years,
         score_1yr=result.windows[1].score.honest_score,
         score_2yr=result.windows[2].score.honest_score,
         score_3yr=result.windows[3].score.honest_score,
-        n_trades=win.total_trades, max_drawdown=max_dd,
+        n_trades=win.total_trades,
+        max_drawdown=max_dd,
     )
 
     plateau = db.record_plateau_step(conn, strategy_id, cleared=passed)
@@ -437,7 +531,9 @@ def score_commit(commit: str, family: str, name: str, description: str, conn=Non
         else f"failed on {failed_on}, plateau={plateau}"
     )
     row = _row(
-        commit, status, f"{description} | {note}",
+        commit,
+        status,
+        f"{description} | {note}",
         score=win.score.honest_score,
         bar_failed_on=failed_on or "",
         baseline_score=baseline,
@@ -452,11 +548,20 @@ def score_commit(commit: str, family: str, name: str, description: str, conn=Non
     if passed:
         db.complete_experiment(conn, experiment_id, "keep", "P3", "passed")
         db.record_improvement(conn, strategy_id, experiment_id, win.score.honest_score)
-        return {"status": "keep", "score": win.score.honest_score,
-                "winning_train_years": result.winning_train_years, "baseline": baseline}
+        return {
+            "status": "keep",
+            "score": win.score.honest_score,
+            "winning_train_years": result.winning_train_years,
+            "baseline": baseline,
+        }
     db.complete_experiment(conn, experiment_id, "discard", "P3", "failed", failed_on)
-    return {"status": "discard", "failed_on": failed_on, "honest_score": win.score.honest_score,
-            "plateau": plateau, "baseline": baseline}
+    return {
+        "status": "discard",
+        "failed_on": failed_on,
+        "honest_score": win.score.honest_score,
+        "plateau": plateau,
+        "baseline": baseline,
+    }
 
 
 def run_null_world(
@@ -490,10 +595,17 @@ def run_null_world(
         df = gen_fn(n_days, seed=seed_base + i)
         holding_period = estimate_holding_period_days(df, module.generate_signals, module.params, cost_model)
         result = run_best_of_three(
-            df, module.generate_signals, module.params, cost_model,
-            holding_period_days=holding_period, n_trials_base=1,
-            param_grid=module.param_grid, test_years=1, cost_multiplier=2.0,
-            periods_per_year=data.PERIODS_PER_YEAR, z_multiplier=Z_MULTIPLIER,
+            df,
+            module.generate_signals,
+            module.params,
+            cost_model,
+            holding_period_days=holding_period,
+            n_trials_base=1,
+            param_grid=module.param_grid,
+            test_years=1,
+            cost_multiplier=2.0,
+            periods_per_year=data.PERIODS_PER_YEAR,
+            z_multiplier=Z_MULTIPLIER,
         )
         win = result.winning_window
         if win.concatenated_returns.size == 0:
@@ -505,7 +617,9 @@ def run_null_world(
             n_discoveries += 1
 
     conn = db.get_connection(DB_PATH)
-    db.insert_null_world_run(conn, generator, n_replications, n_discoveries, float(max_score), EVAL_ENGINE_VERSION)
+    db.insert_null_world_run(
+        conn, generator, n_replications, n_discoveries, float(max_score), EVAL_ENGINE_VERSION
+    )
     return {
         "generator": generator,
         "n_replications": n_replications,
@@ -516,7 +630,7 @@ def run_null_world(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="nanoAQRL evaluate.py")
+    parser = argparse.ArgumentParser(description="aqrl.research evaluate.py")
     sub = parser.add_subparsers(dest="command", required=True)
 
     score_p = sub.add_parser("score")
@@ -526,7 +640,9 @@ def main() -> None:
     score_p.add_argument("--description", default="dual MA crossover")
 
     null_p = sub.add_parser("null-world")
-    null_p.add_argument("--generator", choices=["permuted", "block_bootstrap", "synthetic_path"], required=True)
+    null_p.add_argument(
+        "--generator", choices=["permuted", "block_bootstrap", "synthetic_path"], required=True
+    )
     null_p.add_argument("--replications", type=int, default=30)
     null_p.add_argument("--days", type=int, default=252 * 6)
 

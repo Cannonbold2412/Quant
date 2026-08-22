@@ -119,7 +119,7 @@ def test_case_1_look_ahead_biased_strategy_is_caught_by_p0(resolved):
     window legitimately differs there too, once too little of it remains. The
     static scan exists precisely to catch what that necessary tolerance would
     otherwise let through, which is why `source` must be supplied here — the
-    same reason nanoAQRL's own known-answer suite (`nanoaqrl/tests/test_bar_and_p0.py`)
+    same reason the research loop's own known-answer suite (`tests/research/test_bar_and_p0.py`)
     exercises this case through the static scanner, not the empirical one.
     """
     rng = np.random.default_rng(0)

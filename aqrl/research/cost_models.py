@@ -15,6 +15,7 @@ backtest that uses them.
 This module remains the import site `backtest.py` and the tests use; it is now a
 loader rather than a definition.
 """
+
 from __future__ import annotations
 
 from aqrl.profiles import CostModel, ProfileError, ProfileLoader

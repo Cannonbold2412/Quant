@@ -22,6 +22,7 @@ What stays is the one-instrument, one-cost-model backtest Stage 0 was built
 around. Stage 3's `aqrl/eval/backtest.py` is the panel-native engine; this
 remains the reference the five-file loop runs on.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable

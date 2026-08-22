@@ -23,7 +23,7 @@ is complete after a single `import aqrl.operators`.
         ],
         hypothesis="Trend persists at a 20/100-bar horizon.",
     )
-    signals = compile_spec(spec).to_signal_fn()   # runs in nanoaqrl/evaluate.py
+    signals = compile_spec(spec).to_signal_fn()   # runs in aqrl/research/evaluate.py
 """
 from __future__ import annotations
 

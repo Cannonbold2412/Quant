@@ -2,11 +2,12 @@
 against data with no alpha by construction. This is a *permanent regression
 test* — it must be re-run after any change to `evaluate.py`, the scoring
 rule, or any profile (TRD §15.3)."""
+
 import types
 
 import pytest
 
-from nanoaqrl import evaluate, strategy
+from aqrl.research import evaluate, strategy
 
 
 def _module():

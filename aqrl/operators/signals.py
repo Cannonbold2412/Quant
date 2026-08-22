@@ -8,7 +8,7 @@ long. A *boolean* signal is 0 or 1 and is meant for `filter_logic`. Both are
 NaN during warm-up so a strategy is never handed a confident-looking 0 for a bar
 whose indicators have not converged.
 
-**The lag is not applied here.** `nanoaqrl/_lib/backtest.py` applies
+**The lag is not applied here.** `aqrl/research/backtest.py` applies
 `position[t] = signal[t-1]` centrally and unconditionally, so an operator must
 emit its decision *for* bar `t` using data available *at* bar `t`. Shifting here
 as well would double-lag every strategy.

@@ -23,7 +23,7 @@ _STRATEGY = {"name": "s", "family": "fam", "market": "nse_equity", "timeframe": 
 #: into a brief A2 is not supposed to see (App-Flow §4.1). Note what is
 #: deliberately absent from this list: `bar_failed_on` values like
 #: `min_trades` / `max_drawdown` are *dimension names*, not numbers — the
-#: same "dimensions, not thresholds" disclosure nanoAQRL's own `program.md`
+#: same "dimensions, not thresholds" disclosure the research loop's own `program.md`
 #: makes on purpose ("The bar checks... a minimum trade count, a maximum
 #: out-of-sample drawdown... The exact thresholds are... not disclosed").
 _FORBIDDEN_TERMS = (

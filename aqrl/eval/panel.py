@@ -60,7 +60,7 @@ class PricePanel:
         """A single-instrument pandas OHLCV frame (DatetimeIndex) as a panel.
 
         The bridge nanoAQRL's synthetic generators need: they return exactly
-        this shape (`nanoaqrl/_lib/synthetic_data.py`), and null-world
+        this shape         (`aqrl/research/synthetic_data.py`), and null-world
         calibration through the panel engine (`aqrl evaluate null-world`)
         reuses those same generators rather than duplicating them.
         """

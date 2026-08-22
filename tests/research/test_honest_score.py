@@ -1,6 +1,6 @@
 import numpy as np
 
-from nanoaqrl._lib.honest_score import (
+from aqrl.eval.stats.honest_score import (
     compute_honest_score,
     expected_max_sharpe_under_null,
     se_sharpe,

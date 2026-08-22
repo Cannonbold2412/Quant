@@ -3,8 +3,8 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from nanoaqrl import data
-from nanoaqrl._lib.vault import (
+from aqrl.research import data
+from aqrl.research.vault import (
     VaultAccessDeniedError,
     VaultConfig,
     VaultGuard,
@@ -36,7 +36,8 @@ def test_guard_allows_ranges_outside_the_vault():
 
 def test_guard_blocks_locked_instruments_regardless_of_date():
     config = VaultConfig(
-        locked_start=pd.Timestamp("2099-01-01"), locked_end=pd.Timestamp("2099-12-31"),
+        locked_start=pd.Timestamp("2099-01-01"),
+        locked_end=pd.Timestamp("2099-12-31"),
         locked_instruments=frozenset({"SECRET"}),
     )
     guard = VaultGuard(config)

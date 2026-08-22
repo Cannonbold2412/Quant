@@ -2,12 +2,12 @@
 
 This is where Stage 2 stops being a format and becomes usable. The headline test
 is `test_a_compiled_spec_reproduces_the_handwritten_strategy`: the same idea,
-written once by hand in `nanoaqrl/strategy.py` and once as an operator DAG, must
+written once by hand in `aqrl/research/strategy.py` and once as an operator DAG, must
 produce **identical signals bar for bar**. If it does, the operator library is a
 faithful re-expression of what the loop already does rather than a parallel
 system with its own quiet differences.
 
-The compiled output is also put through nanoAQRL's own P0 scanners, because a
+The compiled output is also put through the research loop's own P0 scanners, because a
 strategy assembled from vetted parts still has to satisfy the same gate as one
 an agent wrote by hand — vetted inputs are not a substitute for the check.
 """
@@ -17,10 +17,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import nanoaqrl.strategy as handwritten
+import aqrl.research.strategy as handwritten
 from aqrl.operators import Node, SpecError, StrategySpec, compile_spec, spec_warmup
-from nanoaqrl._lib.backtest import empirical_leakage_scan, run_backtest
-from nanoaqrl._lib.cost_models import get_cost_model
+from aqrl.research.backtest import empirical_leakage_scan, run_backtest
+from aqrl.research.cost_models import get_cost_model
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ def frame() -> pd.DataFrame:
 
 
 def dual_ma_spec(fast: int = 20, slow: int = 100, gap: float = 0.002) -> StrategySpec:
-    """The operator-DAG form of `nanoaqrl/strategy.py`."""
+    """The operator-DAG form of `aqrl/research/strategy.py`."""
     return StrategySpec(
         entry_logic=[
             Node(id="fast", operator="rolling_mean", params={"window": fast},
@@ -59,7 +59,7 @@ def dual_ma_spec(fast: int = 20, slow: int = 100, gap: float = 0.002) -> Strateg
 
 
 def test_a_compiled_spec_reproduces_the_handwritten_strategy(frame):
-    """Identical signals, bar for bar, against `nanoaqrl/strategy.py`."""
+    """Identical signals, bar for bar, against `aqrl/research/strategy.py`."""
     compiled = compile_spec(dual_ma_spec()).signals(frame)
     reference = handwritten.generate_signals(frame, handwritten.PARAMS)
 
