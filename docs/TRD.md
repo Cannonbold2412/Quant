@@ -1,7 +1,7 @@
 # TRD — AQRL Technical Requirements
 
-> **Status:** Design complete for v1. **Stages 0-4 built** (`nanoaqrl/`, `aqrl/` — foundations, operator library, the evaluation engine, and `aqrl/orchestration/`); Stages 4a-13 not started.
-> **Last updated:** 2026-07-29
+> **Status:** Design complete for v1. **Stages 0-12 built** (see `Implementation_Plan.md` for the stage-by-stage build record); Stage 4a and Stage 13 remain design only.
+> **Last updated:** 2026-08-05
 > **Companion docs:** `PRD.md` (why) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences) · `Implementation_Plan.md` (build order)
 
 ---
@@ -43,19 +43,23 @@ The reference project (PRD §13) runs a complete autonomous research loop in thr
 | `strategy.py` | Signal logic, entries, exits, filters, sizing | **the only writable file** |
 | `evaluate.py` | The scoring harness and the hard bar | **neither readable nor writable** |
 | `program.md` | Operating instructions and the acceptance bar | **human-edited only** |
-| `results.tsv` | `commit \| score \| n_trades \| status \| description` | append only |
+| `results.tsv` | `commit \| status \| score \| n_trades \| description`, then a wide diagnostic block — see §2.6 | append only |
 
 ### 2.2 The loop
 
 ```
 edit strategy.py → commit → run evaluate.py
-      → bar failed?    discard, no score computed
-      → bar cleared?   keep the commit — and STOP (PRD §9.2)
+      → bar failed?    discard
+      → bar cleared?   keep the commit — the bar rises to this score
       → append one row to results.tsv
       → repeat, unattended
 ```
 
 Status values are exactly three: `keep` · `discard` · `crash`. Every experiment gets one — forcing a verdict prevents results piling up unjudged.
+
+**The score threshold ratchets.** The trade-count, drawdown and cost-stress checks are fixed floors. The score threshold is the pre-registered `MIN_HONEST_SCORE` only until a strategy first clears it; from then on the threshold is that strategy's own `strategies.best_score`, and a keep requires strictly beating it. Clearing the bar is therefore no longer the terminal event PRD §9.2 describes — the strategy stays `iterating` rather than moving to `pending_promotion`, and `plateau_counter` (now reset by every improvement, so it counts *consecutive non-improvements*) becomes the signal that the search is finished.
+
+The cost of this is explicit: the reported best is a maximum over a growing number of attempts, and `n_trials`/`trials_haircut` do not price it in — they count grid combinations within one experiment, not the experiment count. The full score column in `results.tsv`, not its last row, is the honest summary of a run.
 
 ### 2.3 One deliberate deviation from the reference
 
@@ -107,7 +111,7 @@ Because the agent cannot read `evaluate.py`, `program.md` is the **only** channe
 
 - **A P0 rejection is a bug in your code, not an obstacle.** Fix the cause. Do not restructure code to pass the check while preserving the behaviour — that is precisely the failure mode this architecture exists to prevent.
 - **Prefer the simpler strategy** where results are close (tertiary criterion, §7.6).
-- **Stop when the bar is cleared.** Do not keep searching for a higher number.
+- **Keep going after a keep.** The bar has risen to your own last score (§2.2); the run ends when it stops improving, not when it first succeeds.
 - **Do not pause to ask the human whether to continue.**
 
 ### 2.5 Minimum viable schema
@@ -115,6 +119,14 @@ Because the agent cannot read `evaluate.py`, `program.md` is the **only** channe
 `Backend-Schema.md` defines 20+ tables. Building all of them before running one experiment is designing the archive before doing the science. v1 starts with **three**: `strategies`, `experiments`, `evaluations`.
 
 `jobs` arrives with the scheduler. Everything else is added on felt need; the designs already exist, so later addition is cheap.
+
+### 2.6 `results.tsv` diagnostic columns
+
+Everything past `description` is **diagnostic only** and gates nothing. It exists so a passing score can be audited rather than trusted: verdict detail (`bar_failed_on`, `baseline_score`, `delta_score`, `plateau`), headline performance, honest-score internals, the best-of-three spread, per-fold walk-forward stability, outlier dependence, and a stationary-bootstrap Monte Carlo. A Sharpe resting on five bars or one fold is indistinguishable from a real one in a single number; these columns are what makes it distinguishable.
+
+Two limits to read them with. Concentration is measured **per bar**, not per trade — the single-series engine keeps no tradebook, so a multi-bar trade's contribution is spread across its bars, and `top5_bars_pct` is a *floor* on concentration rather than a measure of it. The Monte Carlo reports the distribution of total return and a ruin probability, reusing `aqrl.eval.stats.monte_carlo` rather than adding a second block bootstrap (§6.1).
+
+The writer rotates `results.tsv` to `.bak` if the file on disk carries a different header. Appending a wide row under a narrow header would still parse, silently, with every column after the fifth misaligned — and this is the file the whole loop is read from.
 
 ---
 
@@ -273,6 +285,8 @@ ONE repo, forever
 
 **File-layout consequence:** nanoAQRL's single `strategy.py` works only because exactly one hypothesis is live at a time. Once strategies coexist, each must live at its own path — `strategies/<strategy_id>/strategy.py` — so two strategies' code can merge into one branch without touching the same file.
 
+> ✅ **Built as designed** — Stage 5 (A2 Quant Engineer) creates `strategy/<strategy_id>` branches; Stage 9 (Human Gates) merges them. See `Implementation_Plan.md` §8–12.
+
 ### 5.3 Merging — only forward, only on approval
 
 **Most branches are never merged anywhere.** Two unrelated hypotheses have no shared content to combine. A rejected or plateaued strategy's branch simply stays where it is, permanently.
@@ -289,6 +303,8 @@ This gives both human gates a concrete, auditable action instead of only a datab
 **The merge commit doubles as an audit record.** Its message references the `promotions` row that authorised it, so `git show deploy/live` answers *"what is trading right now"* unambiguously.
 
 **Retirement removes a strategy from its deploy branch, never from its research branch.**
+
+> ✅ **Built** — `gates.approve()` (Stage 9) is the only code path that merges; `StrategyRepo.merge()` is idempotent, so recovery from mid-commit crashes is safe. Git runs outside the DB transaction. See `Implementation_Plan.md` §12.
 
 ---
 
@@ -462,6 +478,8 @@ Fail any item → **`discard`, no score computed, stop.**
 **Drawdown deliberately does not enter the score.** Max drawdown is a single worst-moment statistic — very noisy, highly dependent on the sample window. Ranking on it means ranking partly on luck. As a *gate* its noisiness is harmless; as a *ranking* it is corrosive.
 
 **Clearing the bar is an immediate, unconditional stop.** The first passing iteration is the last — the worker routes straight to A4 without invoking A3 (PRD §9.2, App-Flow §6.1). Since the bar already contains a minimum score, clearing it already means "good enough by a standard set in advance."
+
+> **Divergence: nanoAQRL no longer satisfices.** §2.2 replaced its score threshold with a ratchet — a keep must beat the strategy's own best, and the loop continues. This paragraph still describes the **orchestrated** loop (`aqrl/orchestration/handlers/evaluate.py`, which calls `StrategyRepository.record_bar_clear` and moves the strategy to `pending_promotion`); that path is unchanged. The two now stop on different conditions — plateau for nanoAQRL, first clear for the orchestrator — and should be reconciled deliberately rather than left to drift.
 
 **Gates are enforced in `evaluate.py`, not merely stated in `program.md`.** `program.md` is *instructions* — the agent decides whether it complied, and will eventually persuade itself that 40 trades is close enough to 100. The bar therefore lives in both files with different jobs: `program.md` states the target; `evaluate.py` **enforces** it. Since the agent can neither read nor edit `evaluate.py`, the gate is a fact rather than a request.
 
@@ -724,6 +742,8 @@ Append-only. Key requirement: **every experiment must be reproducible from its s
 
 A5 reads the **complete** set of a strategy's iterations at once and writes one well-formed lesson, rather than a half-formed summary after each attempt. Nothing is lost — the raw layer already captured everything.
 
+> ✅ **Built** — Stage 8 (A5 Knowledge Manager) writes `lab_notebooks`, `knowledge_entries`, `knowledge_edges`, and `research_questions` on strategy completion. Idempotency guard ensures A5 runs once per strategy. See `Implementation_Plan.md` §11.
+
 ### 12.2 External ingestion — the Librarian ★
 
 A **single uniform pipeline for every source type.** A GitHub source contributes its text through the same path as a paper — no separate code-graph tooling.
@@ -752,6 +772,8 @@ Dedup by content_hash · cheap relevance filter (before any LLM cost)
                     ▼
               Consumed by A1
 ```
+
+> ✅ **Built** — Stage 10 (Librarian & Curiosity Engine) implements `aqrl/librarian/`: ArxivCollector, FeedCollector (covering SSRN, blogs, journals), structural chunking, two-pass extraction (per-chunk then cross-chunk synthesis), and novelty scoring via embedding cache. GitHub deliberately out of scope. See `Implementation_Plan.md` §10.
 
 **Claude is not a crawler.** A document is read **exactly once, ever**; every later access is to the structured rows.
 
@@ -949,6 +971,8 @@ Every other protection depends on honestly counting trials. Once an LLM generate
 - Every open is logged and counts against a lifetime budget.
 - A family that exhausts its budget cannot be promoted again until genuinely new data exists.
 
+> ✅ **Built (gate only)** — Stage 9 (Human Gates) implements vault access logging and budget enforcement (`vault_budget_per_family`, default 1). Vault opening is gated behind `gates.approve()` and tracked in `vault_access_log`. Note: full vault-snapshot scoring deferred — `vault_access_log.result_score` and `outcome` remain NULL. See `Implementation_Plan.md` §12.
+
 ### 15.3 Null-world calibration — measuring our own false discovery rate
 
 - Generate datasets with **no alpha by construction**: permuted returns, block bootstrap, synthetic paths with matched volatility and fat tails.
@@ -996,6 +1020,8 @@ Experiment throughput is **tied to measured FDR**. If FDR rises, throughput auto
 - **Live capital ramps in stages** (1–5% → scale up), never straight to full allocation.
 - **Rollback:** any promoted strategy can be demoted or halted immediately.
 - **Sandboxed code execution.** A2's code runs isolated, with no network and no credentials.
+
+> ✅ **Built** — Stage 9 (Human Gates) implements the research→paper gate via `aqrl review` CLI (`gates.approve/reject/defer`). `gates.approve()` is the sole path to merge, vault access, and deployment record creation. Stage 11 (Paper Trading & Health Monitoring) adds the paper→live gate via regime-aware health checks and kill-switch enforcement (risk_breach checked independent of health verdict). Stage 12 (Dashboard) surfaces both gates and provides a defer button. See `Implementation_Plan.md` §12–13.
 
 ---
 
@@ -1063,10 +1089,10 @@ Deliberately boring. **The novelty budget is spent on the research loop, not the
 - [ ] Minimum fold count before a score is meaningful
 - [ ] Which Monte Carlo variant is canonical
 - [ ] Null-world: which null models, how many replications, and what counts as a "discovery"?
-- [ ] Near-duplicate spec detection: exact hash only, or embedding similarity?
+- [x] **Near-duplicate spec detection** — Closed Stage 7: exact `spec_hash` match before compute, plus structural Jaccard-overlap check on spec_operators; recorded to audit log.
 - [ ] **How `evaluate.py` isolation is enforced** — separate Unix user with `chmod 700`, container, or a local service? Recommended: the first, near-zero effort and genuinely blocks `cat`
 - [ ] Operator library versioning against in-flight experiments
-- [ ] Vector index choice for v1
+- [x] **Vector index choice for v1** — Closed Stage 7: Voyage AI embeddings with StubEmbedder fallback for tests; search bounded to recency-ordered window before embedding (not a table scan).
 - [ ] Chunk size / section detection for poorly-marked-up documents
 - [ ] Librarian scheduling and compute budget
 - [ ] Branch-count threshold before a lighter ref namespace is needed
@@ -1085,3 +1111,4 @@ Deliberately boring. **The novelty budget is spent on the research loop, not the
 | 2026-07-28 | **Data integrity added** — corporate-action adjustment at load time, and point-in-time index membership. |
 | 2026-07-28 | **Full rewrite.** Promoted data integrity to its own section (§14) beside adversarial integrity (§15), with an explicit statement of why they are different threats — §15 defends against the agent fooling us, §14 against the data fooling us, and **null-world calibration cannot catch the latter** because the null generator inherits the same corrupted assumptions. Renumbered sequentially §1–§21; folded the locked-in decisions into the body rather than leaving them as appended edits; consolidated the changelog. No decisions changed in this pass. |
 | 2026-07-29 | **§4 (Execution Model) built** as `aqrl/orchestration/` (Stage 4) — the event-driven job queue, atomic lease/heartbeat claiming, the state machines, transient/deterministic failure classification with backoff, poison-pill quarantine, budget back-pressure, and the scheduler tick. This is also the first time two processes write the metadata database concurrently: `aqrl/db/connection.py` gained WAL mode, a configurable `busy_timeout`, and an `immediate=True` `BEGIN IMMEDIATE` path for every claim/complete write, so §3.2's later PostgreSQL swap stays a backend change rather than a concurrency redesign. No §4 decisions changed — this is the section built as specified, not revised. |
+| 2026-08-05 | **Stages 7–12 built** — A1 Research Scientist, A4 Promotion + A5 Knowledge Manager, Human Gates, Librarian & Curiosity Engine, Paper Trading & Health Monitoring, and Dashboard. Marked §5.2/5.3 (branching, merge-on-approve), §12.1 (A5 lab notebooks), §12.2 (Librarian: collectors, extraction, novelty), §15.2 (vault gate), §18 (human gates). Closed open questions: near-duplicate detection (structural Jaccard + audit log) and vector-index choice (Voyage AI + bounded window search). See `Implementation_Plan.md` for full stage-by-stage detail. |

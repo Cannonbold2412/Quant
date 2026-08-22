@@ -1,7 +1,7 @@
 # App Flow — AQRL
 
-> **Status:** Design complete for v1. **Stages 0-1 built** (`nanoaqrl/`, `aqrl/`); Stages 2-13 not started.
-> **Last updated:** 2026-07-28
+> **Status:** Design complete for v1. **Stages 0-12 built** (see `Implementation_Plan.md` for the stage-by-stage build record); Stage 4a and Stage 13 remain design only.
+> **Last updated:** 2026-08-05
 > **Companion docs:** `PRD.md` (why) · `TRD.md` (architecture) · `Backend-Schema.md` (state) · `UI-UX-Brief.md` (human touchpoints)
 
 ---
@@ -92,13 +92,14 @@
    │        SR_oos − 1.65·SE(SR) − SR*(N_trials)     [N_trials ×3]
    │        │
    │        ▼
-   │    keep the commit — and STOP (satisficing, PRD §10.2)
+   │    beat the threshold? keep the commit — and the threshold
+   │        rises to this score (TRD §2.2)
    │        │
    │        ▼
-   │    append row to results.tsv
+   │    append row to results.tsv (+ diagnostic columns, TRD §2.6)
    │    insert row into experiments (SQLite, with code_commit)
    │        │
-   └────────┘   below-bar attempts repeat, unattended, no human interruption
+   └────────┘   every attempt repeats, unattended, no human interruption
 ```
 
 ### 2.1 Rules
@@ -109,7 +110,7 @@
 - **`program.md` is human-edited.** As the agent makes avoidable mistakes, the human adds a line. That file — not an agent-maintained knowledge base — is where accumulated wisdom lives in v1. Required contents in TRD §2.4.
 - **Every run gets a status:** `keep` · `discard` · `crash`. No result goes unjudged.
 - **Do not stop to ask the human.** Human gates exist only at paper trading and live capital.
-- **Stop on satisficing, not maximising.** The first strategy clearing the pre-set bar wins.
+- **The score threshold ratchets** (TRD §2.2). The trade-count, drawdown and cost-stress floors are fixed; the score threshold becomes the strategy's own best once it first clears the pre-registered value, and a keep must strictly beat it. The run ends on plateau — consecutive experiments that fail to improve — not on the first success. This replaces the original satisficing rule, and its cost is that the reported best is a maximum over many attempts.
 
 ### 2.2 What this flow deliberately omits
 
@@ -173,6 +174,8 @@ NEW, untested (external_knowledge, from the Librarian):
 **Anti-amnesia check:** before proposing, the worker surfaces prior failures matching the proposed operators. If knowledge says "ATR > 3.0 always overfits here," A1 receives that and must **justify contradicting it.**
 
 ### 3.4 A1's output
+
+> ✅ **Built.** (`aqrl/agents/research_brief.py`, `handlers/generate.py`) A1 reads both knowledge bases via embedding-cached relevance search, proposes a strategy spec with identity, hypothesis, and operator DAG via `GENERATE_SPEC`. Exact duplicates rejected via `spec_hash`; structural near-duplicates proceed but log to audit_log. Nightly batch + curiosity closure + novelty push triggers, weighted 70/20/10. Proven end to end through the full A1→A2→evaluate→A3 loop unmodified.
 
 ```
 Structured output (→ strategy_specs, Backend-Schema §4):
@@ -447,6 +450,8 @@ Decision:
                   → enqueue ARCHIVE (A5) in parallel
 ```
 
+> ✅ **Built.** Stage 8, `handlers/promote.py`. One deliberate exception to the system's redaction scheme: A4's brief includes `honest_score` and full metrics, since A4 only ever emits a human-confirmed recommendation, never a spec-shaping signal. `persist()` hardcodes `requires_human_approval=1` regardless of what A4 recommended. **Deviation:** REJECT transitions the strategy straight to `rejected` — the schema originally drew that edge only off the never-cleared-the-bar branch (Backend-Schema §14.1); documented in `states.py`. DEFER opens a fresh `research_goals` row (`created_by` left `NULL` at this stage — no human-facing "request more research" control existed until Stage 12's dashboard added one, see §9 below).
+
 ### 7.1 A4 must weigh iteration count
 
 A strategy that cleared the bar on iteration 31 of a 47-try grind is a fundamentally different object from one that cleared it on try 2. **More attempts = more multiple testing = higher overfitting risk**, and A4 sees that explicitly.
@@ -472,6 +477,8 @@ Correlation still reaches the human, but computed independently by the dashboard
 ## 8. Flow 6 — Knowledge Capture (A5)
 
 **Trigger:** `ARCHIVE` job — for **every** experiment, promoted or rejected — plus a weekly `MINE_PATTERNS` job.
+
+> ✅ **Built.** Stage 8, `handlers/archive.py`, serving both `ARCHIVE` and `MINE_PATTERNS`. Idempotency-guarded on `lab_notebooks` (one row per strategy, ever, exactly as designed). Keeps A3's asymmetric redaction (withholds `honest_score`) since A5's lessons DO reach a future A1 brief. `repeat_failure_rate` (`db.repositories.knowledge.repeat_failure_rate`, `aqrl knowledge rate`) operationalizes the anti-amnesia claim below: a repeat is an experiment whose `failure_reason` was already documented in a non-superseded, applicable `knowledge_entries` row created before that experiment's own spec — matched against a structured field, not free-text prose. `MINE_PATTERNS` now fires weekly for real (was a designed-but-empty schedule entry before Stage 8).
 
 ### 8.1 Per-strategy archival
 
@@ -569,6 +576,8 @@ Human sees:
 
 **Approval requires a typed note.** Friction on purpose — it forces the human to articulate why, and it becomes the data for evaluating A4's calibration later.
 
+> ✅ **Built.** Stage 9, `aqrl/gates.py` (`pending`/`evidence`/`approve`/`reject`) plus `aqrl review` CLI; Stage 12 added the dashboard's Decisions screen over the same functions. `gates.approve` is the **only** code path in the system that merges a branch, opens the vault, or writes a `deployments` row. **Scoping note:** the DEFER path above ("request more research") had no human-facing control until Stage 12 (`gates.defer` + migration `0010_promotion_defer.sql`, adding `promotions.deferred_at`) — Stage 9 shipped only Approve/Reject. A rejection writes `knowledge_entries` directly rather than by re-running A5 (whose idempotency guard would no-op a second `ARCHIVE` for the same strategy).
+
 ---
 
 ## 10. Flow 8 — Paper Trading & Monitoring
@@ -609,6 +618,8 @@ All true → enqueue PROMOTE (paper → live_small) → Human Gate 2
 **The gate is trades, not calendar.** A strategy trading 5×/year and one trading 5×/day need completely different elapsed times to produce the same evidence.
 
 **Regime context matters more than drawdown.** A drawdown occurring in a regime where the strategy historically struggled is *expected behaviour*, not evidence of death. This single check prevents the most common bad decision — killing a healthy strategy for an expected drawdown.
+
+> ✅ **Built.** Stage 11, `aqrl/monitoring.py` + `handlers/monitor.py` (`MONITOR_DEPLOYMENT`, daily fan-out via `scheduler.fire_due_monitor_batch`). **The paper trading executor is snapshot replay, not a broker connection** — no live feed or credentials exist in this codebase; `monitoring.replay` backtests the deployed spec once via the same `compile_spec`/`run_backtest` path `evaluate.py` used, split at `deployments.started_at` into a baseline yardstick and genuine forward evidence. The regime rule (the actual point of the stage) demotes a would-be red/orange verdict ONE level, never below yellow. **Deviation:** the promotion row (`stage_to='live_small'`) is written directly with no LLM call on a passing gate — a mechanical five-condition check doesn't need A4's judgment, unlike "enqueue PROMOTE" as drawn above. Execution quality is wired but not yet measurable: `actual_slippage_bps` equals `expected_slippage_bps` by construction in a replay simulation, so this dimension needs a real broker to ever disagree with the model.
 
 ---
 
@@ -654,6 +665,8 @@ These exist so that **a 100% drawdown is structurally unreachable.** If a strate
 A retired strategy is not deleted. It becomes a knowledge entry: what worked, for how long, in what regimes, why it decayed. **Edge decay is itself a research finding.**
 
 **Retirement removes the strategy from `deploy/live` (or `deploy/paper`), never from `strategy/<id>`.** The deploy branches answer "what is running right now," so a retired strategy must leave them; the research branch keeps the full history forever (TRD §5.3).
+
+> ✅ **Built.** Gate 2 wiring is Stage 9 (`_STAGE_TO_TARGET["live_small"]`); its producer is Stage 11 — `handlers/monitor.py` writes the promotion row directly, no LLM call. The kill switch (`monitoring.risk_breach`) is checked independent of the health verdict per TRD §18, discarding every trade at/after a breach bar rather than merely flagging it; `aqrl deploy kill` is the same path, human-triggered. Retirement (`aqrl deploy retire`) removes the file from the deploy branch only via the one new git operation, `StrategyRepo.remove_from_branch` — exactly as designed above.
 
 ---
 
@@ -705,6 +718,8 @@ arXiv/SSRN   GitHub       Blogs        Market data
 **Targeted mode:** collectors also consume the `research_questions` queue, so searches are driven by the lab's own gaps rather than only broad topical sweeps.
 
 **The Librarian runs outside the five-agent loop.** Never invoked by A3 or A4, never blocks an experiment — it only adds candidates to the shelf A1 reads from next cycle.
+
+> ✅ **Built**, scoped down from the diagram above. Stage 10, `aqrl/librarian/` + `handlers/librarian.py` (`COLLECT_PAPERS`, `EXTRACT_KNOWLEDGE`, `COLLECT_MARKET_DATA`). **GitHub is deliberately out of scope** — `COLLECT_GITHUB` stays unregistered; only arXiv and SSRN/blogs/journals ship, via one `Collector` protocol (`ArxivCollector`, `FeedCollector`). Zero new dependencies — `urllib`/`xml.etree`/`html.parser` cover everything. Chunking and two-pass extraction match this flow exactly, proven never to cut a formula's paragraph across a chunk boundary. `COLLECT_MARKET_DATA` reads freshness/coverage of already-ingested data only — no vendor is configured, so it does not recompute regimes or volatility as "daily post-close" above might imply; that needs a real vendor feed, still not addressed. Loop closure (`produced_spec_ids`, `curiosity_payoff_rate` via `aqrl knowledge curiosity`) needed no schema change.
 
 ---
 
@@ -792,6 +807,8 @@ Check vault budget for this FAMILY (not this strategy)
 
 **The loop has no read path to the vault** — not "must not," *cannot*. Every other protection depends on honestly counting trials, which becomes unknowable once hypotheses are influenced by memory of past results. **This is the one defence that does not depend on counting anything.**
 
+> ✅ **Built, gate-only — narrower than the "score on data the loop never touched" step above.** Stage 9, inside `gates.approve`. It logs the vault open and decrements the family's lifetime budget (`vault_access_log`, `Settings.vault_budget_per_family`), but does **not** load the vault snapshot or re-score the strategy against it — `vault_access_log.result_score`/`outcome` stay `NULL`. A known limit, not a shortcut papered over: it needs a vault snapshot that does not exist yet, so the "confirmed / contradicted" branch above is not yet exercised.
+
 ---
 
 ## 16. Error & Edge-Case Flows
@@ -835,7 +852,7 @@ trade
 
 ## 18. Open Flow Questions
 
-- [ ] Does A1 run as a nightly batch, purely event-driven, or both?
+- [x] Does A1 run as a nightly batch, purely event-driven, or both? — **Both.** Stage 7: `scheduler.fire_due_hypothesis_batch` (nightly, weighted 70/20/10 across active goals) plus event triggers (curiosity closure from Stage 10, high-novelty push).
 - [ ] Parallel iteration: may several variants of one spec be evaluated simultaneously, or is the loop strictly sequential per strategy?
 - [ ] Should P1 failures skip A3 entirely and go straight to A5 to save tokens?
 - [ ] Re-evaluation policy when the engine version bumps — everything, promoted only, or on demand?
@@ -852,3 +869,4 @@ trade
 | 2026-07-28 | Clearing the bar became an immediate stop routing straight to A4; A3 lost its `PROMOTE` verdict; plateau collapsed to a below-the-bar concept always routing to A5. Git merge actions wired into both human gates. |
 | 2026-07-28 | **Full rewrite.** Sequential numbering §1–§18; the hard bar shown explicitly in the evaluation flow where it runs; A5 documented as running once per strategy over the complete iteration set. |
 | 2026-07-28 | Flow 0 and Flow 3 updated for the locked-in scoring rule — `z = 1.65`, all three train windows evaluated with the best reported and `N_trials` ×3, per-fold tuning on training data only. Cross-references updated to the renumbered TRD. |
+| 2026-08-05 | **Flows 1, 5–10, 13 built** (Stages 7–12: A1, A4/A5, both human gates, the Librarian, paper trading/health monitoring, vault access, and the dashboard's Decisions/Health screens over the same flows). ✅ Built annotations added inline noting real deviations from the diagrams: A4's REJECT now transitions the strategy straight to `rejected`; Gate 1's DEFER control and the vault's confirm/contradict scoring step were not implemented until Stage 12 and remain gate-only respectively; the paper-trading executor is snapshot replay, not a broker; Stage 11's promotion write is direct, no LLM call. See `Implementation_Plan.md` for full stage-by-stage detail. |

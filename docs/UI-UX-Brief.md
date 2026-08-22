@@ -1,7 +1,7 @@
 # UI/UX Brief — AQRL
 
-> **Status:** Design complete for v1. **Stages 0-1 built** (`nanoaqrl/`, `aqrl/`); Stages 2-13 not started.
-> **Last updated:** 2026-07-28
+> **Status:** Design complete for v1, and Stage 12 (the dashboard this brief specifies) is built — see Implementation_Plan.md §15 for the full build record and known limits. Stages 0-12 built overall; Stage 4a and Stage 13 remain design only.
+> **Last updated:** 2026-08-05
 > **Companion docs:** `PRD.md` (gates & criteria) · `App-Flow.md` (what the human sees and when) · `Backend-Schema.md` (what backs each view)
 
 ---
@@ -93,6 +93,8 @@ They are **stages on one lifecycle track**, not two separate rooms. Three reason
 
 ## 3. Screen: Decisions
 
+> ✅ **Built.** The Decisions screen ships live at `aqrl dashboard serve`, displaying pending promotions (Research → Paper and Paper → Live), with all five stacked sections per §3.2 in the specified order. The decision control implements exactly the three buttons shown: Reject, Request more research (Defer), and Approve, routing through `gates.defer` (new 0010_promotion_defer.sql migration) and `gates.approve`. Rejection reasons flow to A5; approval requires a typed note recorded to `promotions.human_notes`.
+
 ### 3.1 Queue view
 
 A ranked list, not a grid:
@@ -117,6 +119,10 @@ Sort by recommendation strength × waiting time. Aging items grow more prominent
 ### 3.2 Review view — the decision page
 
 Five stacked sections, in this order. The order is deliberate: **the story first, the doubts second, the numbers third.**
+
+> **Case-against panel (§3.2/②):** Built as a programmatic assembly — iteration count as a warning badge, closest-to-failing tests (ranked by margin), worst-performing regimes with unprofitable-fold counts, cost-breakeven multiplier, portfolio correlation above 0.5, and any knowledge entries with counter-evidence, rendered above the evidence section (never below).
+>
+> **Charts (§3.2/④):** Built via hand-coded inline SVG (`charts.py`). Replay computed on-demand per session (exact chain from `monitoring.replay` / Stage 11's validated path), cached per session, with caption noting this is NOT the concatenated walk-forward series the honest score was scored on — a material difference stated rather than hidden. Portfolio correlation computed fresh from stored return series, dashboard-only for v1 (not fed to A4).
 
 **① The claim, in one sentence**
 > *"JMA slope steepening combined with ATR expansion predicts multi-day breakouts in NSE mid-caps."*
@@ -181,6 +187,8 @@ A timeline of all iterations: what changed, what the bar said each time. This is
 
 ## 4. Screen: Health
 
+> ✅ **Built.** A flat list ranked by concern (computed as deviation from validated behavior), with colour semantics per §9.2 — green for "behaving as validated", not profit. Deployment detail includes live vs expected paired metrics with z-scores, regime context, execution quality, and promotion progress. Kill switch always reachable, confirmed with typed strategy name.
+
 ### 4.1 Deployment list
 
 **Flat and ranked by concern — deliberately ignoring the Pipeline screen's grouping (§5.2).** A health concern can occur in paper or live, under any strategy, in any market; burying it in a tree is how you miss the one thing you needed to see.
@@ -216,6 +224,8 @@ Always reachable, always confirmed with a typed strategy name. Never behind a me
 ---
 
 ## 5. Screen: Pipeline
+
+> ✅ **Built as designed**, deployment (`strategy × market × mode`) as the atomic unit, the lifecycle track, and the strategy/market grouping toggle all shipped exactly per §5.1–§5.4. **One bug caught before merge:** the "no strategies yet" empty state was also hiding the §5.3 data-quality queue — fixed to render the queue independently, since it must gate throughput regardless of whether any strategy exists yet. **A second bug, same fix location:** the HTTP layer never parsed a request's query string at all, so `?group=market` (§5.2's toggle) was silently dropped — fixed once in the server's dispatch, shared by every screen.
 
 ### 5.1 Lifecycle track
 
@@ -275,6 +285,8 @@ The same idea tried across 3 markets is **not "one strategy, three markets" — 
 
 ## 6. Screen: Laboratory
 
+> ✅ **Built, with stated known limits rather than silent gaps.** The funnel counts (Hypotheses → Implemented → Passed P0 → Cleared the bar) are proxies over the closest existing columns — there is no dedicated funnel-tracking table, and the page says so. **Reproducibility rate reads "not measured"**: nothing in the schema records a re-run against its original result for comparison. **Agent calibration** only scores A4's numeric `confidence` against the human's eventual decision — A1's `expected_behavior` and A3's `expected_effect` are free text with no comparable outcome to calibrate against, so those stay uncalibrated. Null-world FDR and repeat-failure rate render as designed, reading the metrics Stage 0/Stage 8 already operationalized.
+
 The screen the Research Director cares about long-term. It answers: **is this thing getting smarter, or just busier?**
 
 ```
@@ -303,6 +315,8 @@ Panels, in order of importance:
 
 ## 7. Screen: Knowledge
 
+> ✅ **Built as designed.** Lessons & rules, external claims, the knowledge graph, and the research-questions/curiosity queue all render from the tables Stage 8 (A5) and Stage 10 (the Librarian) now write for real — see Backend-Schema §9–§10 for which stage drives which table.
+
 Browsable memory. **The two trust tiers are never mixed in one list** (PRD §8.3).
 
 **Lessons & rules** (internal, tested) — searchable `knowledge_entries`, filterable by scope, market, confidence. Each shows evidence count **and counter-evidence count side by side**. A lesson with contradicting evidence must *look* visibly less certain.
@@ -322,6 +336,8 @@ Edge thickness = evidence count. Clicking an edge lists the supporting experimen
 ---
 
 ## 8. Screen: System & Observability ★
+
+> **Design only — Stage 4a not started.** Everything below remains unbuilt; it is the one screen in this brief the dashboard (Stage 12) does not cover. Stages 4–12 shipped without it — a terminal (`aqrl` CLI) and direct database inspection stood in.
 
 **Not the decision layer.** This exists to debug the machine, not to approve capital — and it ships at **Stage 4a**, long before §3–§7.
 
@@ -453,3 +469,4 @@ Deliberately sparse. The system should be quiet enough that a notification means
 | 2026-07-28 | Restructured navigation: paper/live replaced by a lifecycle-track Pipeline screen with deployment as the atomic unit and a strategy/market grouping toggle; family trial count on group headers. Added Observability, shipped early and kept structurally separate from the decision layer. |
 | 2026-07-28 | **Full rewrite.** Sequential numbering §0–§13; the two build waves stated up front; Knowledge screen separates the two trust tiers. |
 | 2026-07-28 | Added the **data-quality queue** (§5.5) — unresolved validation flags block their snapshot, so resolving them is a real human task the dashboard must surface. Cross-references updated to the renumbered TRD. |
+| 2026-08-05 | **This brief's dashboard is built (Stage 12)**, `aqrl/dashboard/`, stdlib-only, all five screens (Decisions → Health → Pipeline → Laboratory → Knowledge) in the specified order. ✅ Built annotations added per screen, noting the Decisions screen's new third button (Defer, via `gates.defer` + migration `0010_promotion_defer.sql`), two real bugs caught and fixed before merge on the Pipeline screen, and known limits stated on the Laboratory screen (funnel counts are proxies, reproducibility rate unmeasured). §8 System & Observability remains design-only — Stage 4a not started. See `Implementation_Plan.md` §15 for full detail. |

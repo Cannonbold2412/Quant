@@ -96,7 +96,7 @@ data.py        # snapshots, calendars, costs, universe   — agent: READ ONLY
 strategy.py    # the one file the agent edits
 evaluate.py    # the harness + hard bar                  — agent: NO READ, NO WRITE
 program.md     # instructions + acceptance bar           — human-edited only
-results.tsv    # commit | score | n_trades | status | description
+results.tsv    # commit | status | score | n_trades | description + diagnostics (TRD §2.6)
 ```
 
 Plus three SQLite tables (`strategies`, `experiments`, `evaluations`) with `experiments.code_commit` pointing at git. No job queue, no scheduler, no agents beyond the one.

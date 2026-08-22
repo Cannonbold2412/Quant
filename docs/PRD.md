@@ -1,7 +1,7 @@
 # PRD — AQRL (Autonomous Quantitative Research Laboratory)
 
-> **Status:** Design complete for v1. **Stages 0-1 built** (`nanoaqrl/`, `aqrl/`); Stages 2-13 not started.
-> **Last updated:** 2026-07-28
+> **Status:** Design complete for v1. **Stages 0-12 built** (see Implementation_Plan.md for the stage-by-stage build record); Stage 4a and Stage 13 remain design only.
+> **Last updated:** 2026-08-05
 > **Companion docs:** `TRD.md` (how) · `Backend-Schema.md` (data) · `App-Flow.md` (sequences) · `Implementation_Plan.md` (build order) · `UI-UX-Brief.md` (interface)
 > **Design reference:** [karpathy/autoresearch](https://github.com/karpathy/autoresearch) — see §13
 
@@ -108,6 +108,8 @@ Not "number of strategies generated," not "number of backtests run." Generating 
 | Novel lessons added to the knowledge base | Is the lab learning? |
 | Cost per credible discovery | Efficiency of the funnel |
 
+> ✅ **Repeat-failure rate operationalized.** Stage 8. `db.repositories.knowledge.repeat_failure_rate` matches experiments against `knowledge_entries.evidence.failure_reasons` (structured field, not free text), counting a repeat only if the prior lesson was created before the experiment's own spec, and is still applicable to the strategy's market/timeframe. Exposed via `aqrl knowledge rate [--since]`. Directly tracks whether A5's learning actually prevents similar future failures.
+
 ### 4.5 Research portfolio allocation
 
 Borrowed from pharma R&D. A1's hypothesis budget is split:
@@ -143,9 +145,13 @@ Five agents form the research loop. A sixth — the Librarian — runs outside i
 | **A5** | Knowledge Manager | "What did the laboratory learn?" | Knowledge entries + graph updates |
 | **—** | **Librarian** | "What is this external document saying?" | Structured external-knowledge records |
 
+> ✅ **A1 & Librarian built.** Stages 7 and 10. A1 via `aqrl/agents/research_brief.py` (embedding-cached relevance search over both knowledge bases, duplicate rejection, anti-amnesia injection) + `handlers/generate.py`. Librarian via `aqrl/librarian/` (collectors for arXiv and SSRN/blogs, structural chunker, two-pass extraction) + `handlers/librarian.py` (`COLLECT_PAPERS`, `EXTRACT_KNOWLEDGE`). A1 receives relevance-ranked briefs; the Librarian feeds curiosity-driven research questions back (Stage 10). See Implementation_Plan §10 and §13.
+
 ### 6.1 Why A3 produces a plan, never code
 
 A3 says *"replace the fixed stop with an ATR trailing stop, because exits are cutting winners short in trending regimes."* It does **not** write the function — A2 decides how. This keeps the scientist separate from the engineer and makes A3's reasoning reviewable in plain language.
+
+> ✅ **A2 & A3 built.** Stages 5–6. A2 via `aqrl/agents/` + `aqrl/orchestration/handlers/implement.py` (spec→code renderer, static checks, git branch per strategy). A3 via `handlers/review.py` (iteration logic, plan output, no code generation). Both follow the spec-compilation discipline: A2 emits schema-validated `ProposedSpec` (never freeform Python), and `render.py` deterministically compiles it into `strategy.py`, with `spec_hash` equality verified on every render. See Implementation_Plan §8–9.
 
 ### 6.2 Why A4 and A5 are separate
 
@@ -158,6 +164,8 @@ A4 receives the **entire research history**, not just the winning result. A stra
 A4 assesses **capacity and liquidity** — can this strategy alone trade at real size. It does **not** assess portfolio correlation (§3): that is portfolio-construction work, out of scope for v1, and judging a strategy on its own merits keeps A4's job coherent.
 
 **A4 can reject or defer on its own authority. It can never approve on its own** — approval only ever produces a recommendation that a human must confirm.
+
+> ✅ **A4 & A5 built.** Stage 8. A4 via `aqrl/orchestration/handlers/promote.py` (the only agent seeing `honest_score` and full metrics; rejection/defer transitions on its authority; approval never self-certifying). A5 via `handlers/archive.py` serving both `ARCHIVE` (once-per-strategy) and `MINE_PATTERNS` (weekly cross-experiment synthesis). See Implementation_Plan §11 for deviations (A4's reject now transitions to `rejected`; A4's defer opens a fresh research_goals without re-running code); metric `repeat_failure_rate` exposed via `aqrl knowledge rate`.
 
 ### 6.4 The Librarian sits outside the loop ★
 
@@ -172,6 +180,8 @@ A1–A5 iterate on one strategy at a time inside Research → Code → Evaluate 
 Kept separate for the same reason A4 and A5 are: different inputs, different failure modes.
 
 Full mechanics in TRD §12.2; output schema in Backend-Schema §10.
+
+> ✅ **Librarian built.** Stage 10. `aqrl/librarian/` covers arXiv and SSRN/blogs/journals (zero new dependencies: `urllib`, `xml.etree`, `html.parser` only). GitHub deliberately out of scope. Structural chunking (headings-first, paragraph-boundary fallback), two-pass extraction (per-chunk then cross-chunk synthesis). Loop closure via `produced_spec_ids` and `curiosity_payoff_rate` (both new columns already in Stage 1 schema, only needed code). See Implementation_Plan §13.
 
 ---
 
@@ -217,6 +227,8 @@ The most important caveat in the design. A closed loop on a fixed dataset with a
 - Live and paper trading results fed back
 - Research questions generated by the lab's own failures
 
+> ✅ **Librarian implemented.** Stage 10 feeds all four external-knowledge tiers (Research, Market, Software, Infrastructure) via collectors and the Curiosity Engine. Market data collection via `COLLECT_MARKET_DATA` reads freshness/coverage only (no vendor configured yet — Stage 11's concern). The feedback loop closes via `produced_spec_ids` tracking whether a curiosity-driven question ever produced a usable hypothesis.
+
 ### 7.2 The Curiosity Engine
 
 The lab must not passively consume external knowledge. A failure **generates a targeted search**:
@@ -232,6 +244,8 @@ Better hypothesis next cycle
 ```
 
 This is the difference between a retrieval system and a researcher. Each question tracks whether it *ever produced a usable hypothesis*, so the loop's own value is auditable.
+
+> ✅ **Curiosity Engine built.** Stage 10 closes the loop: `research_questions` row written by A5 on each failure pattern, pushed to collectors via `HIGH_NOVELTY_EXTRACTION` event, Librarian consumes and writes `external_knowledge` rows, A1 reads them via relevance search, and `research_questions.produced_spec_ids` + `curiosity_payoff_rate` (`aqrl knowledge curiosity`) track payoff. A failure pattern that never produced a hypothesis shows 0 payoff — auditable investment of lab cycles.
 
 ---
 
@@ -254,6 +268,8 @@ The raw layer captures *everything* as it happens. A5 then reads the complete se
 
 **This is the moat.** Not Claude Code — anyone can use Claude Code. The moat is a large, well-curated experiment database plus a validation pipeline that reliably kills weak ideas.
 
+> ✅ **Internal Knowledge layer built.** Stage 8. A5 writes once per strategy via `ARCHIVE` job (idempotency guard on `lab_notebooks` row). Knowledge entries record `evidence` + `counter_evidence` counts and `failure_reasons` structured field, enabling deterministic `repeat_failure_rate` matching via `db.repositories.knowledge.repeat_failure_rate`. Every A5 lesson is synthesized from the complete iteration set, never per-experiment summaries. `repeat_failure_rate` exposed via `aqrl knowledge rate`.
+
 ### 8.2 External Knowledge — the world's memory
 
 Four layers:
@@ -269,11 +285,15 @@ Four layers:
 
 **Claude does not browse the web.** Python collectors gather and pre-process; the Librarian consumes prepared documents.
 
+> ✅ **External Knowledge layer built.** Stage 10. Collectors cover Research (arXiv HTML + abstracts, SSRN/blogs via RSS/Atom, one `Collector` protocol) and Market (freshness/coverage reading only, no vendor configured). Structural chunker splits by headings before falling back to paragraph boundaries. Two-pass extraction: per-chunk then cross-chunk synthesis into distinct ideas. Every row tagged `evidence_tier = external_claim` with `extraction_confidence` (reading accuracy, not truth). GitHub scoped out deliberately. See Implementation_Plan §13.
+
 ### 8.3 A claim is not a fact ★
 
 Everything the Librarian writes is tagged `evidence_tier = external_claim`. Its confidence field measures **the Librarian's confidence that it read the source correctly** — never a claim that the underlying idea is true.
 
 Only Internal Knowledge carries tested-evidence weight. **A strategy is never promoted because "a paper said so"** — only because our own experiments confirmed it. An external claim is a candidate worth testing; it earns promotion to real knowledge only by surviving our own pipeline.
+
+> ✅ **Implemented as designed.** Stage 10 keeps all Librarian-extracted knowledge at `evidence_tier = external_claim`, permanently. Only tested internal knowledge (passing evaluate.py and surviving A4 approval + human gate) is ever promoted to higher tiers. A1 sees external claims as *candidates*, weighted lower in relevance search when internal knowledge exists — not as facts to assume.
 
 ---
 
@@ -287,6 +307,8 @@ Idea → Spec → Code → Evaluate → [bar cleared] → A4
                                                               │
                                               Monitor → Retire / Return to research
 ```
+
+> ✅ **Pipeline gates and dashboards built.** Stage 9 (`aqrl review list/show/approve/reject`) implements the first human gate (A4 recommendation → paper trading). Stage 11 implements the second gate (approval after paper trading via `aqrl deploy kill/retire`, pass via direct promotion row). Stage 12 adds the dashboard (`aqrl dashboard serve`): five screens (Decisions, Health, Pipeline, Laboratory, Knowledge) with decision buttons (Approve, Reject, Defer) and monitoring views. See Implementation_Plan §12, §14, §15.
 
 ### 9.2 The iteration stop rule ★
 
@@ -306,6 +328,8 @@ The moment any iteration clears the bar, that strategy stops iterating — perma
 | Hard iteration cap (~20–25) — backstop only | **A5** (forced plateau) |
 
 **Iteration count is recorded and passed to A4 as an overfitting signal** regardless of outcome.
+
+> ✅ **Implemented as designed.** Stages 6 & 9. A3's bar-clear short-circuit (`handlers/review.py`) enforces the stop before any A3 call. A4 receives full iteration history; `gates.approve` records the decision to `promotions` row, which triggers `handlers/monitor.py` for paper trading. Below-bar plateaus route to A5 via `ARCHIVE` job.
 
 ### 9.3 Paper trading promotion — trades, not calendar
 
@@ -328,6 +352,8 @@ Trade count alone is insufficient. **All** of the following are required:
 
 The question is never *"has it paper traded for 6 months?"* but **"have we collected enough high-quality evidence to justify risking real capital?"**
 
+> ✅ **Paper trading executor built.** Stage 11. `aqrl/monitoring.py` implements snapshot replay (not a broker connection — none exists in this codebase yet). Daily `MONITOR_DEPLOYMENT` job checks all five conditions via z-scores (anchored to human-approved `expected_*` baseline, never recomputed), regime coverage, and execution metrics. A passing strategy is promoted directly (no LLM call, same shape as `gates.reject`) to `stage_to='live_small'` pending human Gate 2 via `aqrl review`. See Implementation_Plan §14.
+
 ### 9.4 Live monitoring — the health question ★
 
 Never decide on drawdown alone. The question is not *"has this lost money?"* but:
@@ -348,6 +374,8 @@ Monitored dimensions: performance, statistical behaviour (win rate, average trad
 **Regime context prevents the most common bad decision.** A drawdown occurring in a regime where the strategy historically struggled is *expected behaviour*, not evidence of death.
 
 A 20% drawdown may be perfectly acceptable if validation showed a 15–25% range. A 100% drawdown means risk limits and kill switches failed long before — **hard limits must make that state structurally unreachable** (TRD §18).
+
+> ✅ **Health monitoring & regime rule built.** Stage 11. `monitoring.replay` scores each dimension against the validated baseline. The regime rule (`health_verdict`, line 870–877 in Implementation_Plan.md): if current regime is one the baseline showed weak performance in, demote one level (never below yellow). Independent kill switch (`risk_breach`) checks cumulative loss/drawdown against hard limits, discards trades at/after breach regardless of health verdict. `aqrl deploy kill/retire` provide human controls (kill persists as `triggered_by='human'`); retirement removes file from `deploy/` branch only.
 
 ---
 
@@ -536,11 +564,11 @@ Owner marked where the decision is the human's to make.
 
 **Design questions still open:**
 - [ ] Does the agent tune parameters per fold, or write fixed-parameter strategies? Changes what walk-forward tests and how `evaluate.py` is built (TRD §8.5). *Owner: human*
-- [ ] Whether A1 hypothesis generation is nightly-batch, purely event-driven, or both
+- [x] Whether A1 hypothesis generation is nightly-batch, purely event-driven, or both — **Both.** Stage 7: `scheduler.fire_due_hypothesis_batch` (nightly, weighted 70/20/10) plus event triggers (curiosity closure, high-novelty push).
 - [ ] Capacity/AUM modelling — at what point does liquidity invalidate a backtest
 - [ ] Human review SLA — how long may a candidate sit in the queue
 - [ ] Does an `external_claim` ever earn a higher trust tier from repeated corroboration across many papers, or strictly only via our own tested experiments (§8.3)?
-- [ ] Broker/data-feed choice for paper trading per market
+- [ ] Broker/data-feed choice for paper trading per market — **still open.** Stage 11 shipped snapshot replay (backtesting the deployed spec over the newest ingested snapshot) rather than a broker connection, since no live feed or credentials exist in this codebase; a real broker/data-feed integration remains M7's concern, and execution-quality dimensions (slippage deviation, missed fills) stay unmeasurable until then
 
 **Deferred to a future portfolio-construction capability (§3):**
 - [ ] How "genuinely different" is measured for Phase B admission — correlation ceiling, and over which window
@@ -557,3 +585,4 @@ Owner marked where the decision is the human's to make.
 | 2026-07-28 | Clearing the bar became an immediate stop; portfolio-correlation checks removed from A4 and added to non-goals. |
 | 2026-07-28 | **Design decisions locked in** — bar values (min score 0.50, max DD 15% / 20% crypto, min trades 100, z = 1.65), continuous 24/7 operation with Phase B layering onto Phase A rather than replacing it, the final market and instrument list, 1s–1month timeframes, ₹10 lakh initial live capital, and the two Indian-equity data gaps. |
 | 2026-07-28 | **Full rewrite.** Integrated the locked-in decisions into the body rather than as appended edits; §12.4 restated as two compounding data gaps with survivorship now fix-chosen-blocked-on-data; cross-references updated to the renumbered TRD; changelog consolidated. No decisions changed. |
+| 2026-08-05 | **Stages 7–12 built** — A1, A4/A5, both human gates, the Librarian/curiosity engine, paper trading/health monitoring, and the dashboard. ✅ Built annotations added throughout §4, §6–9 noting what shipped and real deviations from the design (A4's reject now transitions the strategy directly to `rejected`; the paper-trading executor is snapshot replay, not a broker; vault access is gate-only). Resolved the A1 batch-vs-event-driven open question (both); the broker/data-feed question remains open. See `Implementation_Plan.md` for full stage-by-stage detail. |

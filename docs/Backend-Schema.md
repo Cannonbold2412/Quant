@@ -1,7 +1,7 @@
 # Backend Schema — AQRL
 
-> **Status:** Design complete for v1. **Implemented in `aqrl/db/migrations/`** as of Stage 1 — every table below exists, most still empty. `jobs` is driven for real as of Stage 4 (`aqrl/orchestration/`).
-> **Last updated:** 2026-07-29
+> **Status:** Design complete for v1. **Implemented in `aqrl/db/migrations/`** as of Stage 1 — every table below exists. As of Stage 12, every table is driven for real by the agent that owns it (see `Implementation_Plan.md` for the stage-by-stage build record); only a handful of columns remain unpopulated placeholders (noted inline below).
+> **Last updated:** 2026-08-05
 > **Target:** SQLite for v1, PostgreSQL-compatible by design. No SQLite-only features.
 > **Companion docs:** `TRD.md` (architecture) · `App-Flow.md` (who writes what, when)
 
@@ -79,6 +79,8 @@ jobs · budgets · audit_log · market_profiles · timeframe_profiles   infrastr
 ### `research_goals`
 Top-level direction set by the human Research Director. Drives A1's hypothesis budget.
 
+> **Driven for real by:** A1's `GENERATE_SPEC` handler (Stage 7, creating rows directly); A4's `defer` action (Stage 8, leaves `created_by=NULL` since the CHECK constraint only allows `'human'`/`'agent5'`); dashboard actions (Stage 12). A4/dashboard may also create rows on future A4 rejections promoting to research.
+
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
@@ -125,6 +127,8 @@ The durable identity of a research thread. One strategy has many experiments (it
 ### `strategy_specs`
 A1's output. **Immutable** once created; a revised spec is a new row.
 
+> **Driven for real by:** A1's `GENERATE_SPEC` handler (Stage 7, creates all rows); `source_question_id` becomes populated by Stage 10's curiosity-loop back-edge from the Librarian.
+
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
@@ -138,7 +142,7 @@ A1's output. **Immutable** once created; a revised spec is a new row.
 | **spec_hash** | TEXT UNIQUE | Canonical hash of the operator DAG — duplicate detection (TRD §11.1). An exact re-run is rejected at insert |
 | **source_external_knowledge_ids** | TEXT (JSON) | Which `external_knowledge` rows (candidate, untested) inspired this |
 | **source_internal_knowledge_ids** | TEXT (JSON) | Which `knowledge_entries` (tested, trusted) this respects or deliberately overrides |
-| source_question_id | FK → research_questions | If curiosity-driven |
+| source_question_id | FK → research_questions | If curiosity-driven. **Populated starting Stage 10** |
 | expected_behavior | TEXT | A1's prediction, so A1's calibration can be scored later |
 | prompt_version | TEXT | |
 | created_at | | |
@@ -176,6 +180,8 @@ Join table making operator usage queryable — *"which experiments ever used a K
 
 ### `experiments`
 **The central table.** One row per iteration of the A2↔A3 loop.
+
+> **Driven for real by:** IMPLEMENT handler (Stage 5, creates with `status=code_pending`), EVALUATE handler (Stage 3+, updates metrics), REVIEW handler (Stage 6, adds `research_plan_id`), entire promotion/archive/monitor pipeline (Stages 8–12).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -226,6 +232,8 @@ Every implementation A2 produces.
 
 ### `evaluations`
 One row per phase run of `evaluate.py`.
+
+> **Driven for real by:** EVALUATE handler (all stages from 3 onwards, running the orchestrated engine).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -280,7 +288,8 @@ One row per phase run of `evaluate.py`.
 | cost_breakeven_multiplier | REAL | At what cost multiple the edge vanishes |
 | regime_consistency_score | REAL | |
 | **Artifacts & cost** | | |
-| equity_curve_path, tradebook_path, report_path | TEXT | Parquet / report references |
+| equity_curve_path | TEXT | **STILL NULL** — Stage 12's dashboard recomputes equity curves on demand via `series.py` rather than persisting a second write path. A known limit, not a future feature. |
+| tradebook_path, report_path | TEXT | Parquet / report references |
 | metrics_json | TEXT (JSON) | Everything not promoted to a column |
 | duration_seconds | REAL | Wall clock, tracked against the per-experiment budget (TRD §9.6) |
 | cpu_seconds | REAL | Total across workers — reveals parallel efficiency |
@@ -319,6 +328,8 @@ Per-regime breakdown. Feeds promotion checks, health monitoring, and the knowled
 ### `research_plans`
 A3's output. **Never contains code** — it is a research instruction (App-Flow §6.4).
 
+> **Driven for real by:** REVIEW handler (Stage 6, A3 writes one row per bar-failing experiment).
+
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
@@ -342,6 +353,8 @@ A4's decision. Sees the **entire** research history, not just the winner.
 
 **No portfolio-correlation column, by design** (App-Flow §7.2) — multi-strategy portfolio construction is out of scope for v1 (PRD §3), and A4 judges each strategy on its own merits.
 
+> **Driven for real by:** PROMOTE handler (Stage 8, A4 writes; `defer` action leaves `created_by=NULL` on the resulting `research_goals` row), `gates.approve`/`gates.reject` (Stage 9, human approval/rejection), `handlers/monitor.py` (Stage 11, direct `stage_to='live_small'` write on passing health gate).
+
 | Column | Type | Notes |
 |---|---|---|
 | id, uid | | |
@@ -360,6 +373,7 @@ A4's decision. Sees the **entire** research history, not just the winner.
 | human_decided_by, human_decided_at | TEXT | |
 | human_notes | TEXT | **Mandatory on approval** — friction on purpose |
 | **merge_commit** | TEXT | Set only on `approve`: the commit where `strategy/<id>` merged into `deploy/paper` or `deploy/live` (TRD §5.3). The merge message references this row's `uid`, so git and this table cross-reference |
+| **deferred_at** | TEXT | **Added Stage 12** (migration 0010). Set only on `defer`: the timestamp when the human chose to defer this decision, supporting the defer flow without rewriting the `human_decision` CHECK constraint. |
 | prompt_version | TEXT | |
 | created_at | | |
 
@@ -367,6 +381,8 @@ A4's decision. Sees the **entire** research history, not just the winner.
 
 ### `deployments`
 A strategy running in paper or live mode.
+
+> **Driven for real by:** `gates.approve` (Stage 9, Gate 1: creates on research→paper or paper→live transition). Expected metrics copied from the winning validation's `evaluations` row.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -390,6 +406,8 @@ A strategy running in paper or live mode.
 ### `trades`
 Individual paper/live executions. Parquet mirror for analytics; SQLite row for state.
 
+> **Driven for real by:** `handlers/monitor.py` (Stage 11, MONITOR_DEPLOYMENT, idempotent writes on paper/live deployments).
+
 | Column | Type |
 |---|---|
 | id, uid | |
@@ -399,7 +417,8 @@ Individual paper/live executions. Parquet mirror for analytics; SQLite row for s
 | entry_price, exit_price, quantity | REAL |
 | pnl_minor_units, currency | INTEGER/TEXT |
 | fees_minor_units | INTEGER |
-| **expected_slippage_bps, actual_slippage_bps** | REAL |
+| expected_slippage_bps | REAL | |
+| actual_slippage_bps | REAL | **Equals `expected_slippage_bps` by construction** — snapshot-replay simulation, no real broker, so slippage deviation is not yet meaningful |
 | execution_quality | TEXT (`good` / `degraded` / `failed`) |
 | regime_at_entry | TEXT |
 | signal_reference | TEXT |
@@ -410,6 +429,8 @@ Individual paper/live executions. Parquet mirror for analytics; SQLite row for s
 
 ### `health_checks`
 The periodic verdict on *"is this still behaving like what we validated?"* (PRD §9.4).
+
+> **Driven for real by:** `handlers/monitor.py` (Stage 11, MONITOR_DEPLOYMENT, daily fan-out via scheduler.fire_due_monitor_batch).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -426,7 +447,8 @@ The periodic verdict on *"is this still behaving like what we validated?"* (PRD 
 | current_regime | TEXT | |
 | **regime_historically_weak** | INTEGER (bool) | A drawdown in a known-weak regime is *expected*, not evidence of death. This single field prevents the most common bad decision |
 | **Execution** | | |
-| slippage_deviation, missed_fill_rate, liquidity_change | REAL | |
+| slippage_deviation, missed_fill_rate | REAL | |
+| liquidity_change | REAL | **STILL NULL** — needs ADV history that the data layer does not currently collect. |
 | verdict_reason | TEXT | |
 | recommended_action | TEXT | `continue` \| `reduce` \| `pause` \| `stop` |
 
@@ -449,6 +471,8 @@ Immutable audit trail of everything that happened to a deployment.
 ## 9. Internal Knowledge — tested, ground truth
 
 Two layers (TRD §12.1): the **raw record** above (`experiments` + `evaluations`, written automatically for every attempt), and the **synthesized lessons** below, written by A5 once per strategy.
+
+> **Driven for real by:** A5's `ARCHIVE`/`MINE_PATTERNS` handler (Stage 8, `knowledge_entries`/`knowledge_edges`/`lab_notebooks` all written here, idempotency-guarded — one `lab_notebooks` row per strategy, ever) and the Librarian's `EXTRACT_KNOWLEDGE` (Stage 10, `knowledge_entries` scope-tagged `evidence_tier=external_claim` via the sibling `external_knowledge` table below, not written to `knowledge_entries` directly). `knowledge_entries.evidence` gained a structured `failure_reasons` field (Stage 8) that `repeat_failure_rate` reads for deterministic matching, rather than free-text `statement` prose.
 
 ### `knowledge_entries`
 A5's output. The permanent scientific record.
@@ -503,6 +527,8 @@ The human-readable record per strategy (TRD §16).
 ---
 
 ## 10. External Knowledge — the Librarian's output, untested
+
+> **Driven for real by:** the Librarian (Stage 10) — `external_documents`/`document_chunks` via `COLLECT_PAPERS`, `external_knowledge` via `EXTRACT_KNOWLEDGE`. Collectors cover arXiv and SSRN/blogs/journals only (`source='github'` rows are not produced — GitHub was deliberately scoped out; the `source` enum below still lists it for a future collector). `document_chunks` splits structurally (headings first, paragraph-boundary fallback), never a blind token window. `research_questions.produced_spec_ids` is populated starting Stage 10 (the curiosity loop's back-edge); `curiosity_payoff_rate` (`aqrl knowledge curiosity`) reads it.
 
 ### `external_documents`
 Raw ingested artifacts. **Read once, ever.**
@@ -587,6 +613,8 @@ Built alongside the integrity work (TRD §14), which precedes any real-data resu
 
 ### `vault_access_log`
 Every opening of the locked holdout. The vault is the one defence that does not depend on honestly counting trials, so **its own bookkeeping must be exact.**
+
+> **Driven for real by:** `gates.approve` (Stage 9) — logs the open and decrements the family's lifetime budget (derived from this table's own row count, no separate counter to drift). **Gate-only, narrower than a full scoring flow:** `result_score`/`outcome` below stay `NULL` — this does not load the vault snapshot or re-score the strategy against it, since no vault snapshot exists yet. A stated known limit, not a silent gap.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -805,6 +833,8 @@ draft → spec_ready → coding → evaluating → evaluated
       → retired | quarantined
 ```
 
+> **Deviation, built and documented (Stage 8).** A4's `reject` transition adds `pending_promotion → rejected` — the diagram above only draws `rejected` off the never-cleared-the-bar branch, but a bar-clearing strategy A4 judges unfit can now also be rejected directly. Recorded in `states.py`'s docstring, following the precedent earlier stages set for schema gaps this specific.
+
 ### 14.2 `experiments.status`
 ```
 created → code_pending → code_ready → evaluating → evaluated → reviewed → archived
@@ -875,6 +905,8 @@ Each must be a simple indexed query, not a scan. These drove the design.
 - The `jobs` table moves to Redis in v2; the lease/heartbeat model already matches Redis semantics, so **agent code does not change.**
 - Parquet paths are relative to a configurable root, so local → object storage is a config change.
 
+**Migrations added after Stage 1's initial schema:** `jobs.dedupe_key` (Stage 4, atomic job-claim dedup); `0010_promotion_defer.sql` (Stage 12) — a single portable `ALTER TABLE promotions ADD COLUMN deferred_at`, giving a human "defer" decision somewhere honest to record itself without rewriting the three-value `human_decision` CHECK constraint.
+
 ---
 
 ## 17. Open Schema Questions
@@ -898,3 +930,4 @@ Each must be a simple indexed query, not a scan. These drove the design.
 | 2026-07-28 | Added `corporate_actions`, `index_membership` and `data_validation_flags`; `data_snapshots` restructured so identity is `(raw_content_hash, corporate_actions_version)`. |
 | 2026-07-28 | **Full rewrite.** Split the data-quality tables out of Infrastructure into their own **§12 Data Integrity** section, beside §11 Research Integrity — they defend against different threats (the data fooling us vs the process fooling us), and null-world calibration cannot catch the former. Renumbered §12–§17; added two data-integrity queries to §15; updated all cross-references to the renumbered TRD. No schema decisions changed in this pass. |
 | 2026-07-29 | **`jobs` driven for real (Stage 4).** Added `jobs.dedupe_key` (migration 0008, `UNIQUE`, nullable) so `enqueue` is idempotent — the property `aqrl/orchestration/events.py`'s single-transaction state-change-plus-enqueue and TRD §4.2's period-stamped time-driven jobs both depend on. No other column changes; the rest of §13 shipped exactly as designed in Stage 1. |
+| 2026-08-05 | **Every table now driven for real (Stages 5–12).** Inline notes added on §4 (`strategy_specs`, `experiments`), §7 (`promotions`, `deployments`, `trades`, `health_checks`), §9 (`knowledge_entries`/`knowledge_edges`/`lab_notebooks`), §10 (`external_documents`/`document_chunks`/`external_knowledge`/`research_questions`) and §11 (`vault_access_log`) naming which stage/agent writes each table and any column still a stated NULL placeholder (`evaluations.equity_curve_path`, `trades.actual_slippage_bps` by construction, `health_checks.liquidity_change`, `vault_access_log.result_score`/`outcome`). One real schema deviation documented at §14.1: `pending_promotion → rejected`, added Stage 8. One new migration beyond `jobs.dedupe_key`: `0010_promotion_defer.sql` adds `promotions.deferred_at` (Stage 12). See `Implementation_Plan.md` for full stage-by-stage detail. |

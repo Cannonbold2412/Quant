@@ -1,7 +1,7 @@
 # AQRL — Autonomous Quantitative Research Laboratory
 
-> **Status: Stages 0–6 built.**
-> `nanoaqrl/` is the original research loop (Stage 0); `aqrl/` is the foundation layer (Stage 1), operator library (Stage 2), the single productionised evaluation engine (Stage 3), the job queue and scheduler (Stage 4, `aqrl/orchestration/`), A2 the Quant Engineer (Stage 5, `aqrl/agents/`) — spec in, rendered code out, static-checked in a sandbox, committed to git, evaluated unattended — and now A3 the Research Reviewer (Stage 6, `aqrl/orchestration/handlers/review.py`), which closes the loop: a below-the-bar evaluation is reviewed autonomously and either iterates (back to A2) or plateaus/rejects, while clearing the bar short-circuits straight to promotion without A3 ever being invoked. Stage 4a and Stages 7–13 remain design only.
+> **Status: Stages 0–12 built.**
+> `nanoaqrl/` is the original research loop (Stage 0); `aqrl/` is the foundation layer (Stage 1), operator library (Stage 2), the single productionised evaluation engine (Stage 3), the job queue and scheduler (Stage 4), A2 the Quant Engineer (Stage 5) and A3 the Research Reviewer (Stage 6) — the inner loop that iterates or short-circuits straight to promotion on a bar clear — A1 the Research Scientist (Stage 7, `aqrl/agents/research_brief.py`), which proposes new hypotheses from both knowledge bases so the full A1→A2→evaluate→A3 loop runs unattended, A4 the Promotion Committee and A5 the Knowledge Manager (Stage 8), which close the learning loop by turning a bar-clearing evaluation into a human-reviewable recommendation and a rejected one into a lesson a future A1 will see, the human gates (Stage 9, `aqrl/gates.py`) — the only code paths that merge a strategy branch, open the vault, or write a deployment — the Librarian and curiosity engine (Stage 10, `aqrl/librarian/`), which closes the loop's other risk by reading external papers and answering questions the loop itself raised, paper trading and health monitoring (Stage 11, `aqrl/monitoring.py`), which turns an approved deployment into forward evidence and a Green/Yellow/Orange/Red verdict, and the dashboard (Stage 12, `aqrl/dashboard/`), the decision layer's five screens, stdlib-only. Stage 4a and Stage 13 remain design only.
 >
 > ```bash
 > pip install -e .            # Python 3.11+
@@ -11,7 +11,8 @@
 >     --market nse_equity --timeframe daily --asset-class cash_equity --snapshot-id 1
 > aqrl scheduler run --once  # renders, checks, commits, then evaluates — unattended
 > aqrl code show 1           # the rendered module's static-check results
-> pytest                      # 885 tests
+> aqrl dashboard serve        # the decision layer — Decisions, Health, Pipeline, Laboratory, Knowledge
+> pytest                      # 1012+ tests collect on Windows; tests/orchestration/* need WSL/Linux (aqrl/vcs.py imports fcntl)
 > ```
 
 ---
@@ -58,7 +59,9 @@ The deflated lower bound on out-of-sample Sharpe. *What Sharpe can we be confide
 
 **The bar and the score are separate.** A pass/fail bar — minimum trades, max drawdown, breadth, 2× cost survival, complexity cap — runs before any score is computed. Drawdown gates but does not rank; a worst-moment statistic is too noisy to rank on. → TRD §7.5
 
-**Clearing the bar is an immediate, unconditional stop.** The first passing iteration is the last one — enforced in Python before A3 is even asked. This is satisficing made structural: the bar already contains a minimum score, so clearing it already means "good enough by a standard set in advance." → PRD §9.2
+**Clearing the bar is an immediate, unconditional stop** — in the orchestrated loop. The first passing iteration is the last one, enforced in Python before A3 is even asked. This is satisficing made structural: the bar already contains a minimum score, so clearing it already means "good enough by a standard set in advance." → PRD §9.2
+
+**nanoAQRL diverges here:** its score threshold ratchets instead, so its loop stops on plateau rather than on first clear. The two paths currently stop on different conditions. → TRD §2.2, §7.5
 
 **Walk-forward** — rolling, test window **always 1 year**, evaluated at **all three train windows (1/2/3 yr) with the best reported**, purged with embargo ≥ holding period, folds concatenated. Taking the best of three is a selection, so **`N_trials` is multiplied by three** — the deflated Sharpe absorbs it and the haircut grows accordingly. The *scheme* stays fixed and unsearched, because selecting a scheme by result would sit outside the trial count where the haircut cannot see it. → TRD §8
 
@@ -107,16 +110,18 @@ Five files. The five-agent architecture, job queue, knowledge graph and full sch
 | `strategy.py` | Signal logic, entries, exits, sizing | **the only writable file** |
 | `evaluate.py` | Scoring harness + hard bar | **no read, no write** |
 | `program.md` | Instructions and the acceptance bar | human-edited only |
-| `results.tsv` | `commit \| score \| n_trades \| status \| description` | append only |
+| `results.tsv` | `commit \| status \| score \| n_trades \| description` + diagnostic columns | append only |
 
 ```
 edit strategy.py → commit → run evaluate.py
-     → bar fails?    discard, no score computed
-     → bar clears?   keep the commit — and STOP
+     → bar fails?    discard
+     → bar clears?   keep the commit — the bar rises to this score
      → append one row, repeat unattended
 ```
 
 Statuses are exactly three: `keep` · `discard` · `crash`. Every experiment gets one.
+
+The score threshold **ratchets**: trade count, drawdown and cost stress are fixed floors, but once a strategy clears the pre-registered score it must strictly beat its own best from then on. The run ends when it stops improving, not when it first succeeds — so the score *column*, not the last row, is the honest summary of a run. Everything past `description` is diagnostic and gates nothing (TRD §2.6).
 
 → TRD §2, App-Flow §2
 
@@ -141,9 +146,9 @@ Steps 1–4 are the real work. Step 5 is small. **That ratio is the point.**
 
 ## The dashboard, and what ships before it
 
-**The decision layer** — Decisions, Health, Pipeline, Laboratory, Knowledge — is built **last**, at Stage 12, once the pipeline reliably produces candidates worth reviewing.
+**The decision layer** — Decisions, Health, Pipeline, Laboratory, Knowledge — was built **last**, at Stage 12 (`aqrl/dashboard/`, `aqrl dashboard serve`), once the pipeline reliably produced candidates worth reviewing. Stdlib-only: `http.server`, f-string HTML, hand-built inline SVG — no new dependency. Every write reuses Stage 9/11's own functions (`aqrl.gates`, `aqrl.monitoring`) rather than a second decision path, and Decisions gained the third button — Reject / **Defer** (`gates.defer`) / Approve — App-Flow's DEFER path never had a human-facing implementation for until now.
 
-**Observability ships much earlier**, at Stage 4a — a live feed of which agent is doing what, and a read-only browser over the database. Once a scheduler dispatches to more than one agent, a terminal stops being enough to see what's happening. It exists to debug the machine, not to approve capital, and stays structurally separate from the decision screens.
+**Observability (Stage 4a — a live feed of which agent is doing what, and a read-only browser over the database) remains design only.** Once a scheduler dispatches to more than one agent, a terminal stops being enough to see what's happening. It exists to debug the machine, not to approve capital, and stays structurally separate from the decision screens.
 
 The Pipeline screen uses **deployment** (`strategy × market × mode`) as its atomic unit, grouped by strategy or market via a toggle. Paper and live are stages on one lifecycle track, not separate tabs. → UI-UX-Brief §0, §8
 

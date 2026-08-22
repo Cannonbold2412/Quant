@@ -20,6 +20,7 @@ are mapped onto that enum below.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,10 @@ FAILURE_REASONS: dict[str, str | None] = {
     "min_trades": "insufficient_trades",
     "cost_stress": "costs_exceed_edge",
     "min_score": "deflated_sharpe_insufficient",
+    # The ratchet: cleared every validity floor but did not beat the best score
+    # this strategy has already recorded. The bar it failed against *is* the
+    # running best, so `plateaued_below_bar` is the literal description.
+    "baseline": "plateaued_below_bar",
     # Drawdown has no research-finding category — it gates but does not rank,
     # being too noisy a worst-moment statistic (TRD §7.5). `bar_failed_on`
     # carries it rather than forcing it into an ill-fitting enum value.
@@ -158,23 +163,52 @@ def complete_experiment(
     )
 
 
-def record_bar_clear(
+def best_score(conn: sqlite3.Connection, strategy_id: int) -> float | None:
+    """The ratchet's baseline: the best honest score this strategy has recorded,
+    or `None` if it has never cleared the bar.
+
+    Deliberately read from `strategies.best_score` rather than a side-car
+    `.baseline.json`. That column is already written on every keep, so a second
+    copy on disk could only ever drift out of step with it — and unlike a single
+    global file it is scoped per strategy, which is the scope a baseline
+    actually has.
+    """
+    row = StrategyRepository(conn).get(strategy_id)
+    if row is None or row["best_score"] is None:
+        return None
+    return float(row["best_score"])
+
+
+def record_improvement(
     conn: sqlite3.Connection, strategy_id: int, experiment_id: int, score: float
 ) -> None:
-    StrategyRepository(conn).record_bar_clear(strategy_id, experiment_id, score)
+    """Advance the ratchet: this experiment is the new best.
+
+    Distinct from `StrategyRepository.record_bar_clear`, which also flips the
+    strategy to `pending_promotion` because clearing a *fixed* bar ends the
+    loop. Under a ratchet nothing is ever final — beating the previous best
+    raises the bar and the loop keeps going — so the strategy stays
+    `iterating`, and reaching promotion becomes the plateau counter's job.
+    """
+    StrategyRepository(conn).update(
+        strategy_id,
+        best_experiment_id=experiment_id,
+        best_score=score,
+        status="iterating",
+    )
 
 
 def record_plateau_step(conn: sqlite3.Connection, strategy_id: int, cleared: bool) -> int:
     """Advance the plateau counter and return it.
 
-    Clearing the bar is an immediate, unconditional stop, so there is no
-    "improvement" case that resets the counter — a cleared bar simply reports
-    the current value and the loop ends (Backend-Schema §4).
+    Under the ratchet a keep is an *improvement*, not a stop, so it resets the
+    counter to zero — the column now means "consecutive experiments that failed
+    to improve", which is the only remaining signal that the search is done.
     """
     strategies = StrategyRepository(conn)
     if cleared:
-        row = strategies.get(strategy_id)
-        return int(row["plateau_counter"]) if row else 0
+        strategies.update(strategy_id, plateau_counter=0)
+        return 0
     return strategies.record_bar_failure(strategy_id)
 
 
@@ -205,14 +239,29 @@ def insert_null_world_run(
     )
 
 
-def append_results_tsv(
-    path: str | Path, commit: str, score: Any, n_trades: int, status: str, description: str
-) -> None:
-    """Append one row to `results.tsv`. Append only, one verdict per experiment."""
+def append_results_tsv(path: str | Path, row: dict[str, Any], columns: Sequence[str]) -> None:
+    """Append one row to `results.tsv`. Append only, one verdict per experiment.
+
+    `columns` is the caller's schema; missing keys are written empty rather than
+    raising, so a crash row can carry only the handful of fields it knows.
+
+    If the file on disk was written under a *different* schema, it is rotated to
+    `.bak` and started fresh. Appending a wide row under a narrow header would
+    produce a file that still parses — silently, with every column after the
+    fifth misaligned — and this is the run log the whole loop is read from.
+    """
     path = Path(path)
+    header = "\t".join(columns)
+    if path.exists():
+        with path.open(encoding="utf-8") as handle:
+            existing = handle.readline().rstrip("\n")
+        if existing and existing != header:
+            path.replace(path.with_suffix(path.suffix + ".bak"))
     is_new = not path.exists()
-    with path.open("a") as handle:
+    with path.open("a", encoding="utf-8", newline="") as handle:
         if is_new:
-            handle.write("commit\tscore\tn_trades\tstatus\tdescription\n")
-        score_str = "" if score is None else f"{score:.6f}"
-        handle.write(f"{commit}\t{score_str}\t{n_trades}\t{status}\t{description}\n")
+            handle.write(header + "\n")
+        # A tab or newline inside a free-text description would shift every
+        # later column of that row; TSV has no quoting to fall back on.
+        cells = (str(row.get(column, "")).replace("\t", " ").replace("\n", " ") for column in columns)
+        handle.write("\t".join(cells) + "\n")

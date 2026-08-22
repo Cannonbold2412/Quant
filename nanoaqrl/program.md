@@ -16,8 +16,8 @@
 
 ```
 edit strategy.py → commit → run evaluate.py
-      bar failed?   discard, no score computed
-      bar cleared?  keep the commit — and STOP
+      bar failed?   discard
+      bar cleared?  keep the commit — the bar rises to this score
       append one row to results.tsv, repeat
 ```
 
@@ -30,6 +30,25 @@ The bar checks, in this order: a **minimum trade count**, a **maximum
 out-of-sample drawdown**, **survival at stressed costs**, and a **minimum
 honest score**. The exact thresholds are pre-registered in `evaluate.py` and
 are not disclosed here on purpose — see the note above.
+
+**The score threshold ratchets.** The first three are fixed floors and never
+move. The fourth does: once a strategy has cleared the pre-registered score
+once, that experiment's score *becomes* the threshold, and every later
+experiment must strictly beat the best score so far. Matching it is not
+enough. This is disclosed because it is not a number and not gameable — it is
+the shape of the loop, and an agent that did not know it would stop after its
+first keep and leave the run half-done.
+
+Two consequences worth stating plainly:
+
+- **Every keep makes the next one harder.** A run that keeps five times has
+  taken the maximum of five attempts, and the maximum of many attempts is
+  higher than any one of them deserves. `results.tsv` records the whole
+  sequence for exactly this reason — the last row is not the honest summary of
+  the run, the column of scores is.
+- **A discard on `baseline` is not the same failure as a discard on the
+  floors.** It means the work was valid and simply not better. Read
+  `bar_failed_on` before concluding anything about why an experiment failed.
 
 ## Required — anti-look-ahead rules
 
@@ -73,8 +92,9 @@ are not disclosed here on purpose — see the note above.
 - **A P0 rejection is a bug in your code, not an obstacle.** Fix the cause.
   Do not restructure code to pass the check while preserving the behaviour.
 - **Prefer the simpler strategy** where results are close.
-- **Stop when the bar is cleared.** Do not keep searching for a higher
-  number — the first passing iteration is the last one.
+- **Keep going after a keep.** The bar has risen to your own last score; the
+  next experiment must beat it. The run ends when it stops improving, not when
+  it first succeeds.
 - **Do not pause to ask whether to continue.**
 
 ## Data notes
