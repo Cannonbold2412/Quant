@@ -45,7 +45,13 @@ def test_kill_9_loses_nothing(conn, strategy_id, experiment_id, evaluate_job_id,
         ],
     )
     time.sleep(0.15)  # let it past interpreter startup, into the handler
-    os.kill(process.pid, signal.SIGKILL)
+    if os.name == "posix":
+        os.kill(process.pid, signal.SIGKILL)
+    else:
+        # Windows has no SIGKILL; TerminateProcess is its equivalent —
+        # unconditional, no cleanup handlers, exactly the semantics this
+        # test needs.
+        process.kill()
     process.wait(timeout=15)
 
     # Nothing durable happened: either the job never even reached `running`,

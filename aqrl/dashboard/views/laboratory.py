@@ -145,16 +145,19 @@ def _survival_curve_html(conn: sqlite3.Connection) -> str:
         return "<h2>Survival curve</h2>" + empty_state("no live deployments yet")
 
     now = datetime.now(UTC)
-    thresholds = [("3 months", 90), ("6 months", 180), ("12 months", 365)]
+    thresholds = [("3 months", 3), ("6 months", 6), ("12 months", 12)]
     rows = []
-    for label, days in thresholds:
+    for label, months in thresholds:
         eligible = survived = 0
         for deployment in live:
             started = deployment.get("started_at")
             if not started:
                 continue
-            age_days = (now - datetime.fromisoformat(started)).days
-            if age_days < days:
+            start = datetime.fromisoformat(started)
+            age_months = (now.year - start.year) * 12 + (now.month - start.month)
+            if start.day > now.day:
+                age_months -= 1
+            if age_months < months:
                 continue
             eligible += 1
             if deployment.get("status") != "stopped" and deployment.get("current_health") != "red":

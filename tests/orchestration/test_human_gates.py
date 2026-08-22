@@ -58,10 +58,9 @@ def _give_branch(conn, settings, strategy_id: int) -> str:
     same shape `implement.py` would have left."""
     strategy = StrategyRepository(conn).get(strategy_id)
     branch = f"strategy/{strategy['uid']}"
-    StrategyRepo(settings.strategy_repo_path).commit_file(
-        branch, f"strategies/{strategy['uid']}/strategy.py", "x = 1\n", "iteration 1"
-    )
-    StrategyRepository(conn).update(strategy_id, git_branch=branch)
+    code_path = f"strategies/{strategy['uid']}/strategy.py"
+    StrategyRepo(settings.strategy_repo_path).commit_file(branch, code_path, "x = 1\n", "iteration 1")
+    StrategyRepository(conn).update(strategy_id, git_branch=branch, code_path=code_path)
     return branch
 
 

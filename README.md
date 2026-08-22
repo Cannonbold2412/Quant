@@ -4,7 +4,7 @@
 > `nanoaqrl/` is the original research loop (Stage 0); `aqrl/` is the foundation layer (Stage 1), operator library (Stage 2), the single productionised evaluation engine (Stage 3), the job queue and scheduler (Stage 4), A2 the Quant Engineer (Stage 5) and A3 the Research Reviewer (Stage 6) — the inner loop that iterates or short-circuits straight to promotion on a bar clear — A1 the Research Scientist (Stage 7, `aqrl/agents/research_brief.py`), which proposes new hypotheses from both knowledge bases so the full A1→A2→evaluate→A3 loop runs unattended, A4 the Promotion Committee and A5 the Knowledge Manager (Stage 8), which close the learning loop by turning a bar-clearing evaluation into a human-reviewable recommendation and a rejected one into a lesson a future A1 will see, the human gates (Stage 9, `aqrl/gates.py`) — the only code paths that merge a strategy branch, open the vault, or write a deployment — the Librarian and curiosity engine (Stage 10, `aqrl/librarian/`), which closes the loop's other risk by reading external papers and answering questions the loop itself raised, paper trading and health monitoring (Stage 11, `aqrl/monitoring.py`), which turns an approved deployment into forward evidence and a Green/Yellow/Orange/Red verdict, and the dashboard (Stage 12, `aqrl/dashboard/`), the decision layer's five screens, stdlib-only. Stage 4a and Stage 13 remain design only.
 >
 > ```bash
-> pip install -e .            # Python 3.11+
+> uv sync --extra dev         # Python 3.11+ — creates .venv from pyproject.toml + uv.lock
 > aqrl db migrate             # create the schema
 > aqrl profile show nse_equity --timeframe daily
 > aqrl strategy new --spec strategy.json --name my-strategy --family my-family \
@@ -12,8 +12,12 @@
 > aqrl scheduler run --once  # renders, checks, commits, then evaluates — unattended
 > aqrl code show 1           # the rendered module's static-check results
 > aqrl dashboard serve        # the decision layer — Decisions, Health, Pipeline, Laboratory, Knowledge
-> pytest                      # 1012+ tests collect on Windows; tests/orchestration/* need WSL/Linux (aqrl/vcs.py imports fcntl)
+> uv run pytest               # 1143 tests pass on Windows and Linux
 > ```
+>
+> Dependencies are managed with [uv](https://docs.astral.sh/uv/): `pyproject.toml` declares them,
+> `uv.lock` pins exact versions for reproducible backtests. `uv sync` installs everything into
+> `.venv`; `uv run <cmd>` executes inside it. The pinned Python lives in `.python-version`.
 
 ---
 

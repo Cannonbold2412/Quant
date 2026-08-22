@@ -19,7 +19,8 @@ guarantees TRD §5.2 states as requirements, not preferences:
 theory.** `Dispatcher.max_concurrent` (Stage 4) defaults to 4, and nothing
 stops two `IMPLEMENT`/`FIX_CODE` jobs for two *different* strategies from
 running in two worker subprocesses at once. Every public method here
-therefore holds an OS file lock (`fcntl.flock`, exclusive, blocking) across
+therefore holds an OS file lock (`fcntl.flock` on POSIX, `msvcrt.locking` on
+Windows, exclusive, blocking) across
 its *entire* git sequence — `checkout` changes which branch the one shared
 working tree points at, so two processes interleaving a checkout with
 another's add/commit is not a slow-down, it is corruption: writes landing on
@@ -33,14 +34,54 @@ throughput concern at the scale one research lab's worker pool runs at.
 """
 from __future__ import annotations
 
-import fcntl
+import os
 import shutil
 import subprocess
+import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
+if TYPE_CHECKING:
+    from io import TextIOWrapper
 
 __all__ = ["StrategyRepo", "VcsError"]
+
+_LOCK_FILENAME = ".aqrl-vcs.lock"
+
+
+def _lock_file(handle: TextIOWrapper) -> None:
+    """Exclusive, blocking lock on `handle` (POSIX: `flock`; Windows: `msvcrt`).
+
+    `msvcrt.LK_LOCK` gives up after ~10 seconds of contention (`OSError
+    EDEADLOCK`) where `flock` blocks indefinitely — the retry loop restores
+    `flock`'s blocking semantics so a slow `git` sequence on another worker
+    cannot fail this one.
+    """
+    if os.name == "nt":
+        handle.seek(0)
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError:
+                time.sleep(0.05)
+    else:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+
+
+def _unlock_file(handle: TextIOWrapper) -> None:
+    if os.name == "nt":
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(handle, fcntl.LOCK_UN)
 
 _LOCK_FILENAME = ".aqrl-vcs.lock"
 
@@ -90,11 +131,11 @@ class StrategyRepo:
         """
         self.root.mkdir(parents=True, exist_ok=True)
         with (self.root / _LOCK_FILENAME).open("w") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+            _lock_file(handle)
             try:
                 yield
             finally:
-                fcntl.flock(handle, fcntl.LOCK_UN)
+                _unlock_file(handle)
 
     # -- public API ---------------------------------------------------------------
 

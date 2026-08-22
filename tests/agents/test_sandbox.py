@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 
 import pytest
 
@@ -167,8 +168,34 @@ def test_sandbox_does_not_leave_a_process_running_after_timeout(crossover_spec, 
         pass
     reset_settings_cache()
 
-    result = subprocess.run(
-        ["pgrep", "-f", "aqrl.agents._sandbox_worker"], capture_output=True, text=True
-    )
-    survivors = [pid for pid in result.stdout.split() if pid != str(os.getpid())]
+    def _worker_pids() -> list[str]:
+        if os.name == "nt":
+            # pgrep does not exist on Windows; query process command lines via WMI.
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                "-Command",
+                (
+                    "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
+                    "Where-Object { $_.CommandLine -like '*aqrl.agents._sandbox_worker*' } | "
+                    "Select-Object -ExpandProperty ProcessId"
+                ),
+                ],
+                capture_output=True,
+                text=True,
+            )
+        else:
+            result = subprocess.run(
+                ["pgrep", "-f", "aqrl.agents._sandbox_worker"], capture_output=True, text=True
+            )
+        return [pid for pid in result.stdout.split() if pid != str(os.getpid())]
+
+    # Process termination is asynchronous on Windows — a just-killed worker can
+    # still appear in a process snapshot for a moment. Poll until it is gone.
+    survivors = _worker_pids()
+    deadline = time.monotonic() + 10
+    while survivors and time.monotonic() < deadline:
+        time.sleep(0.25)
+        survivors = _worker_pids()
     assert not survivors, f"sandbox worker(s) still running after timeout: {survivors}"

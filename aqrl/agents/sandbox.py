@@ -84,6 +84,10 @@ def run_sandboxed_checks(
     # turning a memory limit on generated code into a crash in NumPy's import.
     env = {
         "PATH": os.environ.get("PATH", ""),
+        # platform.machine() reads this on Windows; without it polars' CPU
+        # capability probe silently disables CPUID and rejects its own
+        # required feature flags at import.
+        "PROCESSOR_ARCHITECTURE": os.environ.get("PROCESSOR_ARCHITECTURE", ""),
         "OPENBLAS_NUM_THREADS": "1",
         "OMP_NUM_THREADS": "1",
         "MKL_NUM_THREADS": "1",

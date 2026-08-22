@@ -140,7 +140,13 @@ def handle_job_failure(
 
     strategy_id = job["strategy_id"]
     if strategy_id is not None and result == "failed":
-        reason = f"job {job['uid']} ({job['job_type']}) failed: {error_message or failure_class}"
+        # The audit trail must say *why* a strategy is quarantined (states.py):
+        # the streak length that tripped it, plus the failure that tipped it over.
+        streak = get_settings().quarantine_after_failures
+        reason = (
+            f"{streak} consecutive job failures — latest: "
+            f"job {job['uid']} ({job['job_type']}) failed: {error_message or failure_class}"
+        )
         if maybe_quarantine(conn, strategy_id, reasoning=reason):
             result = "quarantined"
 

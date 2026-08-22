@@ -1,6 +1,11 @@
-# Dependencies are declared in pyproject.toml as of Stage 1. This file remains
-# as a convenience entry point.
+# Dependencies are declared in pyproject.toml and locked in uv.lock.
+# This file remains as a convenience entry point for pip users:
 #
-#   pip install -r requirements.txt   # runtime
-#   pip install -e ".[dev]"           # runtime + pytest/ruff
+#   pip install -r requirements.txt       # runtime
+#   pip install -e ".[dev]"               # runtime + pytest/ruff
+#
+# The supported workflow is uv, which is faster and reproducible:
+#
+#   uv sync --extra dev                   # runtime + dev into .venv
+#   uv run pytest                         # run inside .venv
 -e .

@@ -64,9 +64,13 @@ def test_two_strategies_get_isolated_orphan_branches(tmp_path):
 
 def test_branches_are_never_deleted_by_anything_in_this_module():
     """Not a runtime assertion — a documentation-level guard that this
-    module's public surface has no delete operation to accidentally call."""
+    module's public surface has no *branch*-delete operation to accidentally
+    call. `remove_from_branch` removes one file from `deploy/*` (retirement,
+    App-Flow §11.2); no method deletes or rewrites a branch's history."""
     public_methods = {name for name in dir(StrategyRepo) if not name.startswith("_")}
-    assert not any("delete" in name or "remove" in name for name in public_methods)
+    guarded = public_methods - {"remove_from_branch"}
+    assert not any("delete" in name or "remove" in name for name in guarded)
+    assert "remove_from_branch" in public_methods  # retire only ever touches deploy/*
 
 
 def test_commit_file_survives_a_missing_working_tree_file(tmp_path):
